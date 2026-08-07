@@ -10,6 +10,7 @@ import {
   type RelayAuth,
 } from './auth';
 import { readRelayBuildIdentity } from './build-identity';
+import { readRelayCompatWindow } from './compat-window';
 import { createRedisFanOutBackend, type FanOutBackend } from './fanout';
 import { runMigrations } from './migrate';
 import { resolveVapidKeys } from './push';
@@ -147,6 +148,17 @@ export async function start(): Promise<StartedRelayHandle> {
     `loombox relay: build ${buildIdentity.version}${buildIdentity.commit ? `@${buildIdentity.commit.slice(0, 12)}` : ' (commit unknown)'}`,
   );
 
+  // Issue #657: the compatibility window this relay declares and enforces
+  // — LOOMBOX_MIN_NODE_VERSION/LOOMBOX_MIN_CLIENT_VERSION, unset by
+  // default (every relay running today), so this is a strictly additive
+  // change until an operator sets one in `deploy/relay/.env`. See
+  // `compat-window.ts`'s own doc comment and `docs/deploy-relay.md`'s
+  // "Updating the relay" section for when/why to set it.
+  const compatWindow = readRelayCompatWindow();
+  console.log(
+    `loombox relay: compat window node>=${compatWindow.minNodeVersion ?? '(none)'} client>=${compatWindow.minClientVersion ?? '(none)'}`,
+  );
+
   const { url, close } = await startRelay({
     host,
     port,
@@ -172,6 +184,7 @@ export async function start(): Promise<StartedRelayHandle> {
     // when unset.
     deviceAuth: process.env.LOOMBOX_APP_URL ? { appUrl: process.env.LOOMBOX_APP_URL } : undefined,
     buildIdentity,
+    compatWindow,
   });
   console.log(
     `loombox relay listening on ${url}${databaseUrl ? ' (Postgres-backed)' : ' (in-memory)'}`,

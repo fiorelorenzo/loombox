@@ -14,6 +14,7 @@ import {
   type StopLocalNodeResult,
   type UninstallLocalNodeRequest,
   type UninstallLocalNodeResult,
+  type UpdateCheckResult,
 } from '../shared/bridge';
 
 /**
@@ -42,6 +43,9 @@ const api: LoomboxBridgeApi = {
   stopLocalNode: (): Promise<StopLocalNodeResult> =>
     ipcRenderer.invoke(BRIDGE_CHANNELS.stopLocalNode),
   status: (): Promise<BridgeStatus> => ipcRenderer.invoke(BRIDGE_CHANNELS.status),
+  checkForUpdate: (): Promise<UpdateCheckResult> =>
+    ipcRenderer.invoke(BRIDGE_CHANNELS.checkForUpdate),
+  applyUpdate: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(BRIDGE_CHANNELS.applyUpdate),
 };
 
 contextBridge.exposeInMainWorld('loombox', api);

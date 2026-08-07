@@ -2458,23 +2458,15 @@ export class RelayClient {
       return Promise.reject(new Error('RelayClient: cannot list targets, no open connection'));
     }
     const requestId = generateId('targets');
-    return new Promise<TargetListEntry[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTargetListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for target_list'));
-      }, timeoutMs);
-      this.pendingTargetListRequests.set(requestId, {
-        resolve: (targets) => {
-          clearTimeout(timer);
-          resolve(targets);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({ type: 'target_list_request', protocolVersion: PROTOCOL_V1, requestId });
-    });
+    return this.sendTrackedRequest(
+      this.pendingTargetListRequests,
+      requestId,
+      () => {
+        this.send({ type: 'target_list_request', protocolVersion: PROTOCOL_V1, requestId });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for target_list',
+    );
   }
 
   /**
@@ -2503,28 +2495,20 @@ export class RelayClient {
       );
     }
     const requestId = generateId('sshdisco');
-    return new Promise<SshDiscoveryResultV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingSshDiscoveryRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for ssh_discovery_response'));
-      }, timeoutMs);
-      this.pendingSshDiscoveryRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'ssh_discovery_request',
-        protocolVersion: PROTOCOL_V1,
-        nodeId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingSshDiscoveryRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'ssh_discovery_request',
+          protocolVersion: PROTOCOL_V1,
+          nodeId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for ssh_discovery_response',
+    );
   }
 
   /**
@@ -2552,30 +2536,22 @@ export class RelayClient {
       );
     }
     const requestId = generateId('decommission');
-    return new Promise<DecommissionTargetResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingDecommissionTargetRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for decommission_target_response'));
-      }, timeoutMs);
-      this.pendingDecommissionTargetRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'decommission_target_request',
-        protocolVersion: PROTOCOL_V1,
-        nodeId: options.nodeId,
-        targetId: options.targetId,
-        requestId,
-        ...(options.removeFiles !== undefined ? { removeFiles: options.removeFiles } : {}),
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingDecommissionTargetRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'decommission_target_request',
+          protocolVersion: PROTOCOL_V1,
+          nodeId: options.nodeId,
+          targetId: options.targetId,
+          requestId,
+          ...(options.removeFiles !== undefined ? { removeFiles: options.removeFiles } : {}),
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for decommission_target_response',
+    );
   }
 
   /**
@@ -2596,29 +2572,21 @@ export class RelayClient {
       return Promise.reject(new Error('RelayClient: cannot update a target, no open connection'));
     }
     const requestId = generateId('targetupdate');
-    return new Promise<TargetUpdateResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTargetUpdateRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for target_update_response'));
-      }, timeoutMs);
-      this.pendingTargetUpdateRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'target_update_request',
-        protocolVersion: PROTOCOL_V1,
-        nodeId: options.nodeId,
-        targetId: options.targetId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingTargetUpdateRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'target_update_request',
+          protocolVersion: PROTOCOL_V1,
+          nodeId: options.nodeId,
+          targetId: options.targetId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for target_update_response',
+    );
   }
 
   /**
@@ -2645,28 +2613,20 @@ export class RelayClient {
       );
     }
     const requestId = generateId('nodeselfupdate');
-    const { promise, resolve, reject } = Promise.withResolvers<NodeSelfUpdateApplyResponse>();
-    const timer = setTimeout(() => {
-      this.pendingNodeSelfUpdateApplyRequests.delete(requestId);
-      reject(new Error('RelayClient: timed out waiting for node_self_update_apply_response'));
-    }, timeoutMs);
-    this.pendingNodeSelfUpdateApplyRequests.set(requestId, {
-      resolve: (response) => {
-        clearTimeout(timer);
-        resolve(response);
-      },
-      reject: (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    });
-    this.send({
-      type: 'node_self_update_apply_request',
-      protocolVersion: PROTOCOL_V1,
-      nodeId: options.nodeId,
+    return this.sendTrackedRequest(
+      this.pendingNodeSelfUpdateApplyRequests,
       requestId,
-    });
-    return promise;
+      () => {
+        this.send({
+          type: 'node_self_update_apply_request',
+          protocolVersion: PROTOCOL_V1,
+          nodeId: options.nodeId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for node_self_update_apply_response',
+    );
   }
 
   /**
@@ -2715,29 +2675,21 @@ export class RelayClient {
       };
     }
     const requestId = generateId('githubconnect');
-    const result = new Promise<GithubConnectOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGithubConnectRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for github_connect_result'));
-      }, timeoutMs);
-      this.pendingGithubConnectRequests.set(requestId, {
-        onDeviceCode,
-        resolve: (outcome) => {
-          clearTimeout(timer);
-          resolve(outcome);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'github_connect_start_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId,
-      });
-    });
+    const result: Promise<GithubConnectOutcome> = this.sendTrackedRequest(
+      this.pendingGithubConnectRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'github_connect_start_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for github_connect_result',
+      { onDeviceCode },
+    );
     return {
       requestId,
       cancel: () => {
@@ -2772,31 +2724,23 @@ export class RelayClient {
       );
     }
     const requestId = generateId('jiraconnect');
-    return new Promise<JiraConnectOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingJiraConnectRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for jira_connect_response'));
-      }, timeoutMs);
-      this.pendingJiraConnectRequests.set(requestId, {
-        resolve: (outcome) => {
-          clearTimeout(timer);
-          resolve(outcome);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'jira_connect_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId,
-        siteUrl: credentials.siteUrl,
-        email: credentials.email,
-        apiToken: credentials.apiToken,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingJiraConnectRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'jira_connect_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+          siteUrl: credentials.siteUrl,
+          email: credentials.email,
+          apiToken: credentials.apiToken,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for jira_connect_response',
+    );
   }
 
   /**
@@ -2819,30 +2763,22 @@ export class RelayClient {
       );
     }
     const requestId = generateId('githubpatconnect');
-    return new Promise<GithubPatConnectOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGithubPatConnectRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for github_pat_connect_response'));
-      }, timeoutMs);
-      this.pendingGithubPatConnectRequests.set(requestId, {
-        resolve: (outcome) => {
-          clearTimeout(timer);
-          resolve(outcome);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'github_pat_connect_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId,
-        token: credentials.token,
-        host: credentials.host,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGithubPatConnectRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'github_pat_connect_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+          token: credentials.token,
+          host: credentials.host,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for github_pat_connect_response',
+    );
   }
 
   /**
@@ -2871,31 +2807,21 @@ export class RelayClient {
       );
     }
     const requestId = generateId('acctdisc');
-    return new Promise<ConnectedAccountDisconnectResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingDisconnectRequests.delete(requestId);
-        reject(
-          new Error('RelayClient: timed out waiting for connected_account_disconnect_response'),
-        );
-      }, timeoutMs);
-      this.pendingDisconnectRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'connected_account_disconnect_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId,
-        accountId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingDisconnectRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'connected_account_disconnect_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+          accountId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for connected_account_disconnect_response',
+    );
   }
 
   /**
@@ -2923,29 +2849,21 @@ export class RelayClient {
       return Promise.reject(new Error('RelayClient: cannot scan account pins, no open connection'));
     }
     const requestId = generateId('acctpinscan');
-    return new Promise<AccountPinScanHitV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAccountPinScanRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for account_pin_scan_response'));
-      }, timeoutMs);
-      this.pendingAccountPinScanRequests.set(requestId, {
-        resolve: (affected) => {
-          clearTimeout(timer);
-          resolve(affected);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'account_pin_scan_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId,
-        accountId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAccountPinScanRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'account_pin_scan_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+          accountId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for account_pin_scan_response',
+    );
   }
 
   /** Asks `nodeId` for `projectPath`'s full per-capability pin map (SPEC §7.26/#227, issue #230) — `AccountPinStore.get`'s wire counterpart. */
@@ -3027,25 +2945,15 @@ export class RelayClient {
       );
     }
     const requestId = generateId('acctpin');
-    return new Promise<AccountPinMapV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAccountPinRequests.delete(requestId);
-        reject(
-          new Error(`RelayClient: timed out waiting for account_pin_response (${message.type})`),
-        );
-      }, timeoutMs);
-      this.pendingAccountPinRequests.set(requestId, {
-        resolve: (pins) => {
-          clearTimeout(timer);
-          resolve(pins);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({ ...message, requestId });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAccountPinRequests,
+      requestId,
+      () => {
+        this.send({ ...message, requestId });
+      },
+      timeoutMs,
+      `RelayClient: timed out waiting for account_pin_response (${message.type})`,
+    );
   }
 
   /**
@@ -3105,25 +3013,15 @@ export class RelayClient {
       );
     }
     const requestId = generateId('trackermode');
-    return new Promise<TrackerMode | undefined>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTrackerModeRequests.delete(requestId);
-        reject(
-          new Error(`RelayClient: timed out waiting for tracker_mode_response (${message.type})`),
-        );
-      }, timeoutMs);
-      this.pendingTrackerModeRequests.set(requestId, {
-        resolve: (mode) => {
-          clearTimeout(timer);
-          resolve(mode);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({ ...message, requestId });
-    });
+    return this.sendTrackedRequest(
+      this.pendingTrackerModeRequests,
+      requestId,
+      () => {
+        this.send({ ...message, requestId });
+      },
+      timeoutMs,
+      `RelayClient: timed out waiting for tracker_mode_response (${message.type})`,
+    );
   }
 
   /**
@@ -3156,33 +3054,25 @@ export class RelayClient {
       );
     }
     const requestId = generateId('acctpinresolve');
-    return new Promise<AccountPinResolveOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAccountPinResolveRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for account_pin_resolve_response'));
-      }, timeoutMs);
-      this.pendingAccountPinResolveRequests.set(requestId, {
-        resolve: (outcome) => {
-          clearTimeout(timer);
-          resolve(outcome);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'account_pin_resolve_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId,
-        projectPath: params.projectPath,
-        capability: params.capability,
-        mode: params.mode,
-        target: params.target,
-        accounts: params.accounts,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAccountPinResolveRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'account_pin_resolve_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId,
+          projectPath: params.projectPath,
+          capability: params.capability,
+          mode: params.mode,
+          target: params.target,
+          accounts: params.accounts,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for account_pin_resolve_response',
+    );
   }
 
   /**
@@ -3205,29 +3095,21 @@ export class RelayClient {
       return Promise.reject(new Error('RelayClient: cannot archive a session, no open connection'));
     }
     const requestId = generateId('archive');
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingArchiveRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for session_archive_response'));
-      }, timeoutMs);
-      this.pendingArchiveRequests.set(requestId, {
-        resolve: () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'session_archive_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        sessionId,
-        removeWorktree: options.removeWorktree,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingArchiveRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'session_archive_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          sessionId,
+          removeWorktree: options.removeWorktree,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for session_archive_response',
+    );
   }
 
   /**
@@ -3272,31 +3154,23 @@ export class RelayClient {
       );
     }
     const requestId = generateId('provision');
-    return new Promise<ProvisionTargetResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingProvisionRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for provision_target_result'));
-      }, timeoutMs);
-      this.pendingProvisionRequests.set(requestId, {
-        onProgress: options.onProgress,
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'provision_target_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        nodeId: options.nodeId,
-        targetId: options.targetId,
-        host: options.host,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingProvisionRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'provision_target_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          nodeId: options.nodeId,
+          targetId: options.targetId,
+          host: options.host,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for provision_target_result',
+      { onProgress: options.onProgress },
+    );
   }
 
   /**
@@ -3326,26 +3200,12 @@ export class RelayClient {
     }
     const { nodeId, targetId, path } = options;
     const requestId = generateId('dirlist');
-    return new Promise<TargetFsListResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTargetFsListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for target_fs_list_response'));
-      }, timeoutMs);
-      this.pendingTargetFsListRequests.set(requestId, {
-        targetId,
-        resolve: (payload) => {
-          clearTimeout(timer);
-          resolve(payload);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: TargetFsListRequestPayloadV1 = { path };
-      this.envelopeCrypto
-        .seal('target', targetId, targetId, payload)
-        .then((envelope) => {
+    return this.sendTrackedRequest(
+      this.pendingTargetFsListRequests,
+      requestId,
+      () => {
+        const payload: TargetFsListRequestPayloadV1 = { path };
+        return this.envelopeCrypto.seal('target', targetId, targetId, payload).then((envelope) => {
           this.send({
             type: 'target_fs_list_request',
             protocolVersion: PROTOCOL_V1,
@@ -3354,13 +3214,12 @@ export class RelayClient {
             requestId,
             envelope,
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingTargetFsListRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
         });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for target_fs_list_response',
+      { targetId },
+    );
   }
 
   /**
@@ -3388,41 +3247,26 @@ export class RelayClient {
     }
     const { nodeId, targetId, command } = options;
     const requestId = generateId('customagentprobe');
-    const { promise, resolve, reject } = Promise.withResolvers<CustomAgentProbeResultV1>();
-    const timer = setTimeout(() => {
-      this.pendingCustomAgentProbeRequests.delete(requestId);
-      reject(new Error('RelayClient: timed out waiting for custom_agent_probe_response'));
-    }, timeoutMs);
-    this.pendingCustomAgentProbeRequests.set(requestId, {
-      targetId,
-      resolve: (result) => {
-        clearTimeout(timer);
-        resolve(result);
-      },
-      reject: (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    });
-    const payload: CustomAgentProbeRequestPayloadV1 = { command };
-    this.envelopeCrypto
-      .seal('target', targetId, targetId, payload)
-      .then((envelope) => {
-        this.send({
-          type: 'custom_agent_probe_request',
-          protocolVersion: PROTOCOL_V1,
-          nodeId,
-          targetId,
-          requestId,
-          envelope,
+    return this.sendTrackedRequest(
+      this.pendingCustomAgentProbeRequests,
+      requestId,
+      () => {
+        const payload: CustomAgentProbeRequestPayloadV1 = { command };
+        return this.envelopeCrypto.seal('target', targetId, targetId, payload).then((envelope) => {
+          this.send({
+            type: 'custom_agent_probe_request',
+            protocolVersion: PROTOCOL_V1,
+            nodeId,
+            targetId,
+            requestId,
+            envelope,
+          });
         });
-      })
-      .catch((error: unknown) => {
-        this.pendingCustomAgentProbeRequests.delete(requestId);
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-    return promise;
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for custom_agent_probe_response',
+      { targetId },
+    );
   }
 
   /**
@@ -3440,28 +3284,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('permpolicy');
-    return new Promise<PermissionPolicyV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPermissionPolicyRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
-      }, timeoutMs);
-      this.pendingPermissionPolicyRequests.set(requestId, {
-        resolve: (policy) => {
-          clearTimeout(timer);
-          resolve(policy);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'permission_policy_get',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingPermissionPolicyRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'permission_policy_get',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for permission_policy_result',
+    );
   }
 
   /**
@@ -3487,39 +3323,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('permpolicy');
-    return new Promise<PermissionPolicyV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPermissionPolicyRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for permission_policy_result'));
-      }, timeoutMs);
-      this.pendingPermissionPolicyRequests.set(requestId, {
-        resolve: (saved) => {
-          clearTimeout(timer);
-          resolve(saved);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: PermissionPolicySetPayloadV1 = { policy };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'permission_policy_set',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingPermissionPolicyRequests,
+      requestId,
+      () => {
+        const payload: PermissionPolicySetPayloadV1 = { policy };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'permission_policy_set',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingPermissionPolicyRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for permission_policy_result',
+    );
   }
 
   /**
@@ -3540,28 +3363,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('propenpreview');
-    return new Promise<PrOpenPreviewOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPrOpenPreviewRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for pr_open_preview_result'));
-      }, timeoutMs);
-      this.pendingPrOpenPreviewRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'pr_open_preview_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingPrOpenPreviewRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'pr_open_preview_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for pr_open_preview_result',
+    );
   }
 
   /**
@@ -3588,39 +3403,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('propen');
-    return new Promise<PrOpenOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPrOpenRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for pr_open_result'));
-      }, timeoutMs);
-      this.pendingPrOpenRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: PrOpenRequestPayloadV1 = { title: pr.title, body: pr.body };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'pr_open_request',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingPrOpenRequests,
+      requestId,
+      () => {
+        const payload: PrOpenRequestPayloadV1 = { title: pr.title, body: pr.body };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'pr_open_request',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingPrOpenRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for pr_open_result',
+    );
   }
 
   /**
@@ -3650,40 +3452,27 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('checkpoint');
-    return new Promise<CheckpointResultPayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingCheckpointCreateRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for checkpoint_result'));
-      }, timeoutMs);
-      this.pendingCheckpointCreateRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const trimmed = message?.trim();
-      const payload: CheckpointCreatePayloadV1 = trimmed ? { message: trimmed } : {};
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'checkpoint_create',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingCheckpointCreateRequests,
+      requestId,
+      () => {
+        const trimmed = message?.trim();
+        const payload: CheckpointCreatePayloadV1 = trimmed ? { message: trimmed } : {};
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'checkpoint_create',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingCheckpointCreateRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for checkpoint_result',
+    );
   }
 
   /**
@@ -3702,28 +3491,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('checkpointlist');
-    return new Promise<CheckpointListResultPayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingCheckpointListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for checkpoint_list_result'));
-      }, timeoutMs);
-      this.pendingCheckpointListRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'checkpoint_list',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingCheckpointListRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'checkpoint_list',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for checkpoint_list_result',
+    );
   }
 
   /**
@@ -3750,29 +3531,21 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('checkpointpreview');
-    return new Promise<CheckpointRestorePreviewResultPayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingCheckpointRestorePreviewRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for checkpoint_restore_preview_result'));
-      }, timeoutMs);
-      this.pendingCheckpointRestorePreviewRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'checkpoint_restore_preview',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        checkpointId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingCheckpointRestorePreviewRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'checkpoint_restore_preview',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          checkpointId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for checkpoint_restore_preview_result',
+    );
   }
 
   /**
@@ -3806,30 +3579,22 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('checkpointrestore');
-    return new Promise<CheckpointRestoreResultPayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingCheckpointRestoreRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for checkpoint_restore_result'));
-      }, timeoutMs);
-      this.pendingCheckpointRestoreRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'checkpoint_restore',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        checkpointId,
-        confirm,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingCheckpointRestoreRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'checkpoint_restore',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          checkpointId,
+          confirm,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for checkpoint_restore_result',
+    );
   }
 
   /**
@@ -3862,28 +3627,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('agentprofiles');
-    return new Promise<AgentProfileV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAgentProfileListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_profile_list_result'));
-      }, timeoutMs);
-      this.pendingAgentProfileListRequests.set(requestId, {
-        resolve: (profiles) => {
-          clearTimeout(timer);
-          resolve(profiles);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'agent_profile_list_get',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAgentProfileListRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'agent_profile_list_get',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for agent_profile_list_result',
+    );
   }
 
   /** Saves (fully replaces — never a partial patch) this account's agent-profile catalog (issue #752). Resolves with the saved result, mirrors {@link setPermissionPolicy}. */
@@ -3899,39 +3656,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('agentprofiles');
-    return new Promise<AgentProfileV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAgentProfileListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_profile_list_result'));
-      }, timeoutMs);
-      this.pendingAgentProfileListRequests.set(requestId, {
-        resolve: (saved) => {
-          clearTimeout(timer);
-          resolve(saved);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: AgentProfileListSetPayloadV1 = { profiles };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'agent_profile_list_set',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingAgentProfileListRequests,
+      requestId,
+      () => {
+        const payload: AgentProfileListSetPayloadV1 = { profiles };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'agent_profile_list_set',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingAgentProfileListRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for agent_profile_list_result',
+    );
   }
 
   /** Reads which profile is currently active for `sessionId` (issue #752) — `null` means unrestricted. No envelope on the request. */
@@ -3943,28 +3687,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('sessionprofile');
-    return new Promise<string | null>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAgentProfileSessionRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_profile_session_result'));
-      }, timeoutMs);
-      this.pendingAgentProfileSessionRequests.set(requestId, {
-        resolve: (profileId) => {
-          clearTimeout(timer);
-          resolve(profileId);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'agent_profile_session_get',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAgentProfileSessionRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'agent_profile_session_get',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for agent_profile_session_result',
+    );
   }
 
   /**
@@ -3988,39 +3724,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('sessionprofile');
-    return new Promise<string | null>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAgentProfileSessionRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_profile_session_result'));
-      }, timeoutMs);
-      this.pendingAgentProfileSessionRequests.set(requestId, {
-        resolve: (saved) => {
-          clearTimeout(timer);
-          resolve(saved);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: AgentProfileSessionPayloadV1 = { profileId };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'agent_profile_session_set',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingAgentProfileSessionRequests,
+      requestId,
+      () => {
+        const payload: AgentProfileSessionPayloadV1 = { profileId };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'agent_profile_session_set',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingAgentProfileSessionRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for agent_profile_session_result',
+    );
   }
 
   /**
@@ -4039,23 +3762,15 @@ export class RelayClient {
       return Promise.reject(new Error('RelayClient: cannot get keymap, no open connection'));
     }
     const requestId = generateId('keymap');
-    return new Promise<KeymapV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingKeymapRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for keymap_result'));
-      }, timeoutMs);
-      this.pendingKeymapRequests.set(requestId, {
-        resolve: (keymap) => {
-          clearTimeout(timer);
-          resolve(keymap);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({ type: 'keymap_get_request', protocolVersion: PROTOCOL_V1, requestId });
-    });
+    return this.sendTrackedRequest(
+      this.pendingKeymapRequests,
+      requestId,
+      () => {
+        this.send({ type: 'keymap_get_request', protocolVersion: PROTOCOL_V1, requestId });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for keymap_result',
+    );
   }
 
   /**
@@ -4079,37 +3794,24 @@ export class RelayClient {
       return Promise.reject(new Error('RelayClient: cannot save keymap, no open connection'));
     }
     const requestId = generateId('keymap');
-    return new Promise<KeymapV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingKeymapRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for keymap_result'));
-      }, timeoutMs);
-      this.pendingKeymapRequests.set(requestId, {
-        resolve: (keymap) => {
-          clearTimeout(timer);
-          resolve(keymap);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.envelopeCrypto
-        .seal('keymap', this.accountId, this.accountId, candidate)
-        .then((envelope) => {
-          this.send({
-            type: 'keymap_set_request',
-            protocolVersion: PROTOCOL_V1,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingKeymapRequests,
+      requestId,
+      () => {
+        return this.envelopeCrypto
+          .seal('keymap', this.accountId, this.accountId, candidate)
+          .then((envelope) => {
+            this.send({
+              type: 'keymap_set_request',
+              protocolVersion: PROTOCOL_V1,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingKeymapRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for keymap_result',
+    );
   }
 
   /**
@@ -4128,28 +3830,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('runnercfg');
-    return new Promise<TestRunnerCommandsV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTestRunnerConfigRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for test_runner_config_result'));
-      }, timeoutMs);
-      this.pendingTestRunnerConfigRequests.set(requestId, {
-        resolve: (commands) => {
-          clearTimeout(timer);
-          resolve(commands);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'test_runner_config_get',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingTestRunnerConfigRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'test_runner_config_get',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for test_runner_config_result',
+    );
   }
 
   /**
@@ -4173,39 +3867,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('runnercfg');
-    return new Promise<TestRunnerCommandsV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTestRunnerConfigRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for test_runner_config_result'));
-      }, timeoutMs);
-      this.pendingTestRunnerConfigRequests.set(requestId, {
-        resolve: (saved) => {
-          clearTimeout(timer);
-          resolve(saved);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: TestRunnerConfigSetPayloadV1 = { commands };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'test_runner_config_set',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingTestRunnerConfigRequests,
+      requestId,
+      () => {
+        const payload: TestRunnerConfigSetPayloadV1 = { commands };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'test_runner_config_set',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingTestRunnerConfigRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for test_runner_config_result',
+    );
   }
 
   /**
@@ -4227,28 +3908,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('runnercfgdetect');
-    return new Promise<TestRunnerCommandsV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTestRunnerConfigDetectRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for test_runner_config_detected'));
-      }, timeoutMs);
-      this.pendingTestRunnerConfigDetectRequests.set(requestId, {
-        resolve: (suggestions) => {
-          clearTimeout(timer);
-          resolve(suggestions);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'test_runner_config_detect',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingTestRunnerConfigDetectRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'test_runner_config_detect',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for test_runner_config_detected',
+    );
   }
 
   /**
@@ -4399,32 +4072,24 @@ export class RelayClient {
     );
 
     const requestId = generateId('fork');
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingForkRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for session_fork_response'));
-      }, timeoutMs);
-      this.pendingForkRequests.set(requestId, {
-        resolve: () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'session_fork_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        sessionId,
-        sourceSessionId,
-        targetId: source.targetId,
-        provider: source.provider,
-        privateEnvelope,
-      });
-    });
+    await this.sendTrackedRequest(
+      this.pendingForkRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'session_fork_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          sessionId,
+          sourceSessionId,
+          targetId: source.targetId,
+          provider: source.provider,
+          privateEnvelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for session_fork_response',
+    );
 
     return sessionId;
   }
@@ -4783,30 +4448,22 @@ export class RelayClient {
     };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('mcpprompt');
-    return new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingMcpPromptRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for mcp_prompt_get_response'));
-      }, timeoutMs);
-      this.pendingMcpPromptRequests.set(requestId, {
-        sessionId,
-        resolve: (text) => {
-          clearTimeout(timer);
-          resolve(text);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'mcp_prompt_get_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingMcpPromptRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'mcp_prompt_get_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for mcp_prompt_get_response',
+      { sessionId },
+    );
   }
 
   /**
@@ -4966,30 +4623,22 @@ export class RelayClient {
     const payload: FsReadRequestPayloadV1 = { path };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('fsread');
-    return new Promise<FsReadResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingFsReadRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for fs_read_response'));
-      }, timeoutMs);
-      this.pendingFsReadRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'fs_read_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        targetId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingFsReadRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'fs_read_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          targetId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for fs_read_response',
+    );
   }
 
   /**
@@ -5023,30 +4672,22 @@ export class RelayClient {
     this.ensureSubscribed(sessionId);
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
     const requestId = generateId('fswrite');
-    return new Promise<FsWriteResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingFsWriteRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for fs_write_response'));
-      }, timeoutMs);
-      this.pendingFsWriteRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'fs_write_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        targetId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingFsWriteRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'fs_write_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          targetId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for fs_write_response',
+    );
   }
 
   /**
@@ -5079,28 +4720,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('gitdiff');
-    return new Promise<GitDiffResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitDiffRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_diff_response'));
-      }, timeoutMs);
-      this.pendingGitDiffRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_diff_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitDiffRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_diff_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_diff_response',
+    );
   }
 
   /**
@@ -5130,28 +4763,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('githunkdiff');
-    return new Promise<GitHunkDiffResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitHunkDiffRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_hunk_diff_response'));
-      }, timeoutMs);
-      this.pendingGitHunkDiffRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_hunk_diff_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitHunkDiffRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_hunk_diff_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_hunk_diff_response',
+    );
   }
 
   /**
@@ -5188,29 +4813,21 @@ export class RelayClient {
     const payload: GitHunkActionRequestPayloadV1 = { ...params };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('githunkaction');
-    return new Promise<GitHunkActionResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitHunkActionRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_hunk_action_response'));
-      }, timeoutMs);
-      this.pendingGitHunkActionRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_hunk_action_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitHunkActionRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_hunk_action_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_hunk_action_response',
+    );
   }
 
   /**
@@ -5241,28 +4858,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('gitcommitdraft');
-    return new Promise<GitCommitDraftResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitCommitDraftRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_commit_draft_response'));
-      }, timeoutMs);
-      this.pendingGitCommitDraftRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_commit_draft_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitCommitDraftRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_commit_draft_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_commit_draft_response',
+    );
   }
 
   /**
@@ -5296,29 +4905,21 @@ export class RelayClient {
     const payload: GitCommitRequestPayloadV1 = { ...params };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitcommit');
-    return new Promise<GitCommitResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitCommitRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_commit_response'));
-      }, timeoutMs);
-      this.pendingGitCommitRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_commit_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitCommitRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_commit_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_commit_response',
+    );
   }
 
   /**
@@ -8127,31 +7728,23 @@ export class RelayClient {
     }
     const envelope = await this.envelopeCrypto.seal('project', projectPath, projectPath, payload);
     const requestId = generateId('trackerwrite');
-    return new Promise<TrackerWriteResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingTrackerWriteRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for tracker_write_response'));
-      }, timeoutMs);
-      this.pendingTrackerWriteRequests.set(requestId, {
-        projectPath,
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'tracker_write_request',
-        protocolVersion: PROTOCOL_V1,
-        nodeId,
-        projectPath,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingTrackerWriteRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'tracker_write_request',
+          protocolVersion: PROTOCOL_V1,
+          nodeId,
+          projectPath,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for tracker_write_response',
+      { projectPath },
+    );
   }
 
   /**
@@ -8568,28 +8161,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('gitbranchlist');
-    return new Promise<GitBranchListResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitBranchListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_branch_list_response'));
-      }, timeoutMs);
-      this.pendingGitBranchListRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_branch_list_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitBranchListRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_branch_list_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_branch_list_response',
+    );
   }
 
   /**
@@ -8621,29 +8206,21 @@ export class RelayClient {
     };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitbranchcreate');
-    return new Promise<GitBranchCreateResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitBranchCreateRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_branch_create_response'));
-      }, timeoutMs);
-      this.pendingGitBranchCreateRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_branch_create_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitBranchCreateRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_branch_create_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_branch_create_response',
+    );
   }
 
   /**
@@ -8672,29 +8249,21 @@ export class RelayClient {
     const payload: GitBranchSwitchRequestPayloadV1 = { ...params };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitbranchswitch');
-    return new Promise<GitBranchSwitchResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitBranchSwitchRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_branch_switch_response'));
-      }, timeoutMs);
-      this.pendingGitBranchSwitchRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_branch_switch_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitBranchSwitchRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_branch_switch_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_branch_switch_response',
+    );
   }
 
   /**
@@ -8720,29 +8289,21 @@ export class RelayClient {
     const payload: GitBranchMergeRequestPayloadV1 = { ...params };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitbranchmerge');
-    return new Promise<GitBranchMergeResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitBranchMergeRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_branch_merge_response'));
-      }, timeoutMs);
-      this.pendingGitBranchMergeRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_branch_merge_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitBranchMergeRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_branch_merge_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_branch_merge_response',
+    );
   }
 
   /**
@@ -8763,28 +8324,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('gitbranchmergeabort');
-    return new Promise<GitBranchMergeAbortResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitBranchMergeAbortRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_branch_merge_abort_response'));
-      }, timeoutMs);
-      this.pendingGitBranchMergeAbortRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_branch_merge_abort_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitBranchMergeAbortRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_branch_merge_abort_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_branch_merge_abort_response',
+    );
   }
 
   /**
@@ -8803,28 +8356,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('gitstashlist');
-    return new Promise<GitStashListResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitStashListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_stash_list_response'));
-      }, timeoutMs);
-      this.pendingGitStashListRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_stash_list_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitStashListRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_stash_list_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_stash_list_response',
+    );
   }
 
   /**
@@ -8849,29 +8394,21 @@ export class RelayClient {
     const payload: GitStashSaveRequestPayloadV1 = { message: params.message ?? null };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitstashsave');
-    return new Promise<GitStashSaveResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitStashSaveRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_stash_save_response'));
-      }, timeoutMs);
-      this.pendingGitStashSaveRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_stash_save_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitStashSaveRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_stash_save_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_stash_save_response',
+    );
   }
 
   /**
@@ -8899,29 +8436,21 @@ export class RelayClient {
     const payload: GitStashPopRequestPayloadV1 = { index: params.index ?? null };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitstashpop');
-    return new Promise<GitStashPopResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitStashPopRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_stash_pop_response'));
-      }, timeoutMs);
-      this.pendingGitStashPopRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_stash_pop_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitStashPopRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_stash_pop_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_stash_pop_response',
+    );
   }
 
   /**
@@ -8945,29 +8474,21 @@ export class RelayClient {
     const payload: GitStashDropRequestPayloadV1 = { ...params };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitstashdrop');
-    return new Promise<GitStashDropResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitStashDropRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_stash_drop_response'));
-      }, timeoutMs);
-      this.pendingGitStashDropRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_stash_drop_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitStashDropRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_stash_drop_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_stash_drop_response',
+    );
   }
 
   /** The owning node's reply to one of this client's own {@link requestBranches} calls (issue #234). Fanned out to every client subscribed to the session, so a `requestId` not in {@link pendingGitBranchListRequests} means this reply is to a sibling device's own request — silently ignored, exactly like {@link handleGitDiffResponse}. */
@@ -9169,28 +8690,20 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('agentinstrget');
-    return new Promise<AgentInstructionsGetResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAgentInstructionsGetRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_instructions_get_response'));
-      }, timeoutMs);
-      this.pendingAgentInstructionsGetRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'agent_instructions_get_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAgentInstructionsGetRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'agent_instructions_get_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for agent_instructions_get_response',
+    );
   }
 
   /**
@@ -9225,29 +8738,21 @@ export class RelayClient {
     this.ensureSubscribed(sessionId);
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
     const requestId = generateId('agentinstrset');
-    return new Promise<AgentInstructionsSetResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAgentInstructionsSetRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for agent_instructions_set_response'));
-      }, timeoutMs);
-      this.pendingAgentInstructionsSetRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'agent_instructions_set_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingAgentInstructionsSetRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'agent_instructions_set_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for agent_instructions_set_response',
+    );
   }
 
   /**
@@ -9382,29 +8887,21 @@ export class RelayClient {
     const payload: GitPushRequestPayloadV1 = { ...params };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitpush');
-    return new Promise<GitPushResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitPushRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_push_response'));
-      }, timeoutMs);
-      this.pendingGitPushRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_push_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitPushRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_push_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_push_response',
+    );
   }
 
   /** The owning node's reply to one of this client's own {@link pushBranch} calls (issue #235) — same sibling-device awareness as {@link handleGitBranchSwitchResponse}: a requesting client resolves its own pending call by `requestId`; any other subscribed client (or a device with no matching pending request) simply has nothing to do with this message. */
@@ -9446,30 +8943,22 @@ export class RelayClient {
     }
     const { nodeId, targetId } = options;
     const requestId = generateId('sessiontemplates');
-    return new Promise<SessionTemplateV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingSessionTemplateListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for session_template_list_result'));
-      }, timeoutMs);
-      this.pendingSessionTemplateListRequests.set(requestId, {
-        targetId,
-        resolve: (templates) => {
-          clearTimeout(timer);
-          resolve(templates);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'session_template_list_get',
-        protocolVersion: PROTOCOL_V1,
-        nodeId,
-        targetId,
-        requestId,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingSessionTemplateListRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'session_template_list_get',
+          protocolVersion: PROTOCOL_V1,
+          nodeId,
+          targetId,
+          requestId,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for session_template_list_result',
+      { targetId },
+    );
   }
 
   /**
@@ -9490,26 +8979,12 @@ export class RelayClient {
     }
     const { nodeId, targetId } = options;
     const requestId = generateId('sessiontemplates');
-    return new Promise<SessionTemplateV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingSessionTemplateListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for session_template_list_result'));
-      }, timeoutMs);
-      this.pendingSessionTemplateListRequests.set(requestId, {
-        targetId,
-        resolve: (saved) => {
-          clearTimeout(timer);
-          resolve(saved);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: SessionTemplateListSetPayloadV1 = { templates };
-      this.envelopeCrypto
-        .seal('target', targetId, targetId, payload)
-        .then((envelope) => {
+    return this.sendTrackedRequest(
+      this.pendingSessionTemplateListRequests,
+      requestId,
+      () => {
+        const payload: SessionTemplateListSetPayloadV1 = { templates };
+        return this.envelopeCrypto.seal('target', targetId, targetId, payload).then((envelope) => {
           this.send({
             type: 'session_template_list_set',
             protocolVersion: PROTOCOL_V1,
@@ -9518,13 +8993,12 @@ export class RelayClient {
             requestId,
             envelope,
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingSessionTemplateListRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(errorMessage(error)));
         });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for session_template_list_result',
+      { targetId },
+    );
   }
 
   /**
@@ -9589,29 +9063,21 @@ export class RelayClient {
     };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('gitgraph');
-    return new Promise<GitGraphResponsePayloadV1>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingGitGraphRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for git_graph_response'));
-      }, timeoutMs);
-      this.pendingGitGraphRequests.set(requestId, {
-        resolve: (response) => {
-          clearTimeout(timer);
-          resolve(response);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({
-        type: 'git_graph_request',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        requestId,
-        envelope,
-      });
-    });
+    return this.sendTrackedRequest(
+      this.pendingGitGraphRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_graph_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_graph_response',
+    );
   }
 
   /** The owning node's reply to one of this client's own {@link requestCommitGraph} calls (issue #231) — same sibling-device awareness as {@link handleGitBranchListResponse}. */
@@ -9660,39 +9126,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('prmerge');
-    return new Promise<PrMergeOutcome>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPrMergeRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for pr_merge_result'));
-      }, timeoutMs);
-      this.pendingPrMergeRequests.set(requestId, {
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: PrMergeRequestPayloadV1 = { method };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'pr_merge_request',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingPrMergeRequests,
+      requestId,
+      () => {
+        const payload: PrMergeRequestPayloadV1 = { method };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'pr_merge_request',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingPrMergeRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for pr_merge_result',
+    );
   }
 
   /**
@@ -9906,23 +9359,15 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('snippets');
-    return new Promise<SnippetV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingSnippetListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for snippet_list_result'));
-      }, timeoutMs);
-      this.pendingSnippetListRequests.set(requestId, {
-        resolve: (snippets) => {
-          clearTimeout(timer);
-          resolve(snippets);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      this.send({ type: 'snippet_list_get', protocolVersion: PROTOCOL_V1, sessionId, requestId });
-    });
+    return this.sendTrackedRequest(
+      this.pendingSnippetListRequests,
+      requestId,
+      () => {
+        this.send({ type: 'snippet_list_get', protocolVersion: PROTOCOL_V1, sessionId, requestId });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for snippet_list_result',
+    );
   }
 
   /** Saves (fully replaces — never a partial patch) this account's snippet catalog (issue #261). Resolves with the saved result, mirrors {@link saveAgentProfiles}. */
@@ -9932,39 +9377,26 @@ export class RelayClient {
     }
     this.ensureSubscribed(sessionId);
     const requestId = generateId('snippets');
-    return new Promise<SnippetV1[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingSnippetListRequests.delete(requestId);
-        reject(new Error('RelayClient: timed out waiting for snippet_list_result'));
-      }, timeoutMs);
-      this.pendingSnippetListRequests.set(requestId, {
-        resolve: (saved) => {
-          clearTimeout(timer);
-          resolve(saved);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      const payload: SnippetListSetPayloadV1 = { snippets };
-      this.envelopeCrypto
-        .seal('session', sessionId, sessionId, payload)
-        .then((envelope) => {
-          this.send({
-            type: 'snippet_list_set',
-            protocolVersion: PROTOCOL_V1,
-            sessionId,
-            requestId,
-            envelope,
+    return this.sendTrackedRequest(
+      this.pendingSnippetListRequests,
+      requestId,
+      () => {
+        const payload: SnippetListSetPayloadV1 = { snippets };
+        return this.envelopeCrypto
+          .seal('session', sessionId, sessionId, payload)
+          .then((envelope) => {
+            this.send({
+              type: 'snippet_list_set',
+              protocolVersion: PROTOCOL_V1,
+              sessionId,
+              requestId,
+              envelope,
+            });
           });
-        })
-        .catch((error: unknown) => {
-          this.pendingSnippetListRequests.delete(requestId);
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for snippet_list_result',
+    );
   }
 
   /** The owning node's reply to one of this client's own {@link listSnippets}/{@link saveSnippets} calls (issue #261). Mirrors {@link handleAgentProfileListResult}. */
@@ -9979,5 +9411,61 @@ export class RelayClient {
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       });
+  }
+
+  /**
+   * Shared by every "send a request, remember it in a pending map, resolve
+   * or reject it when the matching response (or a timeout) arrives" method
+   * on this class (issue #652's duplicate sweep — this exact timer/cleanup
+   * dance was independently hand-written per message type, drifted just
+   * enough between copies that #582 and #505 both had to separately fix
+   * the same "unhelpful timeout message" bug, and #650 fixed the same
+   * class of drift for the loading/error/empty triple).
+   *
+   * `TEntry` is inferred from `pendingMap` itself, so a caller's own
+   * pending-map field type is the single source of truth for what a
+   * pending entry carries — this helper only requires it to carry a
+   * `resolve`/`reject` pair for `TValue`. `dispatch` performs the actual
+   * send — usually just `this.send(message)`, sometimes an async
+   * `this.envelopeCrypto.seal(...).then(...)` chain for a request whose
+   * payload needs encrypting first. A `dispatch` rejection (a failed seal,
+   * not a timeout) tears down the pending entry exactly like a timeout
+   * does. `extra` seeds any bookkeeping fields (`targetId`, `onProgress`,
+   * `sessionId`, ...) a caller's own message handlers read off the pending
+   * entry beyond the bare resolve/reject pair.
+   */
+  private sendTrackedRequest<
+    TValue,
+    TEntry extends { resolve: (value: TValue) => void; reject: (error: Error) => void },
+  >(
+    pendingMap: Map<string, TEntry>,
+    requestId: string,
+    dispatch: () => void | Promise<void>,
+    timeoutMs: number,
+    timeoutMessage: string,
+    extra?: Omit<TEntry, 'resolve' | 'reject'>,
+  ): Promise<TValue> {
+    return new Promise<TValue>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingMap.delete(requestId);
+        reject(new Error(timeoutMessage));
+      }, timeoutMs);
+      pendingMap.set(requestId, {
+        ...(extra as Omit<TEntry, 'resolve' | 'reject'>),
+        resolve: (value: TValue) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      } as TEntry);
+      Promise.resolve(dispatch()).catch((error: unknown) => {
+        pendingMap.delete(requestId);
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
   }
 }

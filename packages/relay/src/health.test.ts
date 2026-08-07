@@ -193,4 +193,32 @@ describe('relay /health readiness probe (#270, SPEC §7.21)', () => {
     expect(await res.json()).toEqual({ status: 'unhealthy', failed: ['redis'] });
     expect(elapsedMs).toBeLessThan(1000);
   });
+
+  it("includes this relay's build identity and compatibility window when configured (issue #657: self-consistency answerable from one place, without SSH)", async () => {
+    const { url, close } = await startRelay({
+      host: '127.0.0.1',
+      port: 0,
+      buildIdentity: { version: '0.5.1', commit: 'relay-sha' },
+      compatWindow: { minNodeVersion: '0.5.0', minClientVersion: '0.4.0' },
+    });
+    closers.push(close);
+
+    const res = await fetch(`${httpBaseUrl(url)}/health`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'ok',
+      build: { version: '0.5.1', commit: 'relay-sha' },
+      compatWindow: { minNodeVersion: '0.5.0', minClientVersion: '0.4.0' },
+    });
+  });
+
+  it('omits build and compatWindow when neither is configured — the exact pre-#657 response shape, unchanged', async () => {
+    const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+    closers.push(close);
+
+    const res = await fetch(`${httpBaseUrl(url)}/health`);
+
+    expect(await res.json()).toEqual({ status: 'ok' });
+  });
 });

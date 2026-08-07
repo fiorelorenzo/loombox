@@ -1,17 +1,9 @@
-import { PROTOCOL_V1, type LeaseRequestAction, type WireMessageV1 } from '@loombox/protocol';
+import { PROTOCOL_V1, type LeaseRequestAction } from '@loombox/protocol';
 
-/**
- * The minimal surface `RelayLeaseClient` needs off this node's *existing*
- * relay connection — never a new one, mirroring `attachments.ts`'s
- * `RelayLike` (issue #156's precedent). `RelayConnection` (this package's
- * real production connection) already satisfies this shape; a test
- * substitutes a tiny fake with no WebSocket/network involved at all.
- */
-export interface RelayLike {
-  send(message: WireMessageV1): void;
-  on(event: 'message', listener: (message: WireMessageV1) => void): void;
-  off(event: 'message', listener: (message: WireMessageV1) => void): void;
-}
+import { awaitRelayMessage, NO_MATCH, type RelayLike } from '../relay-request';
+
+/** Re-exported for existing `import { type RelayLike } from './relay-lease-client'` call sites (`index.ts`'s own `RelayLeaseRelayLike` alias included) — see `relay-request.ts`'s own doc comment for what it is and why it lives there now. */
+export type { RelayLike };
 
 export type RelayLeaseOutcome =
   { granted: true; expiresAt: number } | { granted: false; heldBy?: string; expiresAt?: number };
@@ -88,32 +80,23 @@ export class RelayLeaseClient {
   async release(sessionId: string, nodeId: string): Promise<boolean> {
     await this.whenReady();
     const requestId = nextRequestId('lease-release');
-    return new Promise((resolve, reject) => {
-      const onMessage = (message: WireMessageV1): void => {
-        if (message.type === 'lease_release_result' && message.requestId === requestId) {
-          clearTimeout(timer);
-          this.relay.off('message', onMessage);
-          resolve(message.released);
-        }
-      };
-      this.relay.on('message', onMessage);
-      const timer = setTimeout(() => {
-        this.relay.off('message', onMessage);
-        reject(
-          new Error(
-            `RelayLeaseClient: timed out waiting for lease_release_result (session ${sessionId})`,
-          ),
-        );
-      }, this.timeoutMs);
-
-      this.relay.send({
-        type: 'lease_release',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        sessionId,
-        nodeId,
-      });
-    });
+    return awaitRelayMessage(
+      this.relay,
+      (message) =>
+        message.type === 'lease_release_result' && message.requestId === requestId
+          ? message.released
+          : NO_MATCH,
+      () =>
+        this.relay.send({
+          type: 'lease_release',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          sessionId,
+          nodeId,
+        }),
+      this.timeoutMs,
+      `RelayLeaseClient: timed out waiting for lease_release_result (session ${sessionId})`,
+    );
   }
 
   /**
@@ -149,41 +132,30 @@ export class RelayLeaseClient {
   ): Promise<RelayLeaseOutcome> {
     await this.whenReady();
     const requestId = nextRequestId(`lease-${action}`);
-    return new Promise((resolve, reject) => {
-      const onMessage = (message: WireMessageV1): void => {
-        if (message.type === 'lease_result' && message.requestId === requestId) {
-          clearTimeout(timer);
-          this.relay.off('message', onMessage);
-          resolve(
-            message.result.outcome === 'granted'
-              ? { granted: true, expiresAt: message.result.expiresAt }
-              : {
-                  granted: false,
-                  heldBy: message.result.heldBy,
-                  expiresAt: message.result.expiresAt,
-                },
-          );
-        }
-      };
-      this.relay.on('message', onMessage);
-      const timer = setTimeout(() => {
-        this.relay.off('message', onMessage);
-        reject(
-          new Error(
-            `RelayLeaseClient: timed out waiting for lease_result (session ${sessionId}, action ${action})`,
-          ),
-        );
-      }, this.timeoutMs);
-
-      this.relay.send({
-        type: 'lease_request',
-        protocolVersion: PROTOCOL_V1,
-        requestId,
-        sessionId,
-        nodeId,
-        action,
-        ttlMs,
-      });
-    });
+    return awaitRelayMessage(
+      this.relay,
+      (message) =>
+        message.type === 'lease_result' && message.requestId === requestId
+          ? message.result.outcome === 'granted'
+            ? { granted: true, expiresAt: message.result.expiresAt }
+            : {
+                granted: false,
+                heldBy: message.result.heldBy,
+                expiresAt: message.result.expiresAt,
+              }
+          : NO_MATCH,
+      () =>
+        this.relay.send({
+          type: 'lease_request',
+          protocolVersion: PROTOCOL_V1,
+          requestId,
+          sessionId,
+          nodeId,
+          action,
+          ttlMs,
+        }),
+      this.timeoutMs,
+      `RelayLeaseClient: timed out waiting for lease_result (session ${sessionId}, action ${action})`,
+    );
   }
 }

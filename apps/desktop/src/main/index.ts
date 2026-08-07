@@ -1,12 +1,14 @@
 import path from 'node:path';
 
 import { app, ipcMain } from 'electron';
+import { autoUpdater } from 'electron-updater';
 
 import { resolvePwaUrl } from './config';
 import { resolveDesktopEnvironmentConfig } from './environment';
 import { registerBridgeHandlers } from './ipc/handlers';
 import { LocalNodeBridge } from './local-node/bridge';
 import { getLaunchAtLogin } from './login-item';
+import { createUpdateController } from './updater';
 import { createMainWindow } from './window';
 import { createTray } from './tray';
 import { pickTrayIconPath } from './tray-icon';
@@ -30,6 +32,25 @@ const APP_ICON_PATH = path.join(__dirname, '../../assets/icon.png');
 // several paths, including session storage, from them as soon as the app
 // starts initializing, not only once 'ready' fires.
 const desktopEnv = resolveDesktopEnvironmentConfig();
+
+// Issue #657: this app's own self-update, via electron-updater against the
+// GitHub Releases feed `../../electron-builder.ts`'s `publish` config
+// points at. Constructed once here (module scope, not inside
+// `whenReady`) so the periodic check below and the tray's menu (wired
+// once the window/tray exist) share the exact same controller instance —
+// see `./updater.ts`'s own doc comment for the consent boundary
+// (`autoDownload`/`autoInstallOnAppQuit` forced off; only the tray's
+// explicit click downloads and installs).
+const updateController = createUpdateController(autoUpdater);
+
+// How often this app asks the feed whether a newer build exists, on its
+// own, with no user action — allowed under the epic's own "Out of scope"
+// wording (#653: "detecting and surfacing a newer version costs the user
+// nothing and needs no confirmation"; only downloading+installing needs
+// the explicit click). 4 hours: frequent enough that "Behind" is never
+// stale for long, infrequent enough that it is not meaningfully different
+// from a user-visible cost.
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 // The dock/menu-bar identity (issue #866). Also the identity Electron would
 // otherwise derive `userData` from — set explicitly below anyway, so this
@@ -82,7 +103,7 @@ void app.whenReady().then(() => {
     window.focus();
   });
 
-  createTray({
+  const trayHandle = createTray({
     iconPath: pickTrayIconPath(process.platform, {
       template: TRAY_ICON_TEMPLATE_PATH,
       colored: TRAY_ICON_COLORED_PATH,
@@ -90,6 +111,15 @@ void app.whenReady().then(() => {
     window,
     productName: desktopEnv.productName,
     onQuit: () => app.quit(),
+    update: {
+      getState: () => updateController.getState(),
+      onCheckForUpdates: () => {
+        void updateController.checkForUpdates().then(() => trayHandle.refreshMenu());
+      },
+      onApplyUpdate: () => {
+        void updateController.applyUpdate().then(() => trayHandle.refreshMenu());
+      },
+    },
   });
 
   // Launch-at-login is off by default (issue #403: "behind a setting") —
@@ -102,7 +132,17 @@ void app.whenReady().then(() => {
   registerBridgeHandlers(ipcMain, {
     localNode: new LocalNodeBridge(),
     app,
+    updateController,
   });
+
+  // Issue #657: one check right at startup (so "Behind" is visible from
+  // the first menu open, not only after the first `UPDATE_CHECK_INTERVAL_MS`
+  // tick), plus the recurring one. Never downloads on its own — see
+  // `./updater.ts`'s own doc comment.
+  void updateController.checkForUpdates().then(() => trayHandle.refreshMenu());
+  setInterval(() => {
+    void updateController.checkForUpdates().then(() => trayHandle.refreshMenu());
+  }, UPDATE_CHECK_INTERVAL_MS);
 });
 
 // Menubar apps conventionally stay alive with no windows open (quitting is

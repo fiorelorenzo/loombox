@@ -196,6 +196,56 @@ re-run the generator instead. Issue #866's acceptance is met without a
 visually-distinct icon: the product name, the in-app chrome marker, and (on macOS) two
 separate Dock entries are what make the two installs distinguishable at a glance.
 
+## Self-update (issue #657, epic #653)
+
+The shell updates itself via [`electron-updater`](https://www.electron.build/auto-update),
+consent-gated per the epic's own "Out of scope: auto-updating without consent" —
+detecting a newer build costs the user nothing (a periodic background check, every 4
+hours, plus one at startup), but downloading and installing it is one explicit click
+("Restart to Update" in the tray menu), never automatic.
+
+**The feed**: GitHub Releases, targeting the exact `@loombox/desktop@<version>` tag
+`.github/workflows/release.yml` (changesets) already creates for every version bump —
+`electron-builder.ts`'s `publish.tagNamePrefix` is set explicitly to that, _not_
+electron-builder's own default (a bare `v${version}` tag), because this repo already has
+an unrelated `vX.Y.Z` tag sequence (`scripts/deploy-prod.sh`'s prod-deploy trigger — see
+that file and `CONTRIBUTING.md#deploying-to-prod`) that a default-shaped tag would
+collide with. Two things attach artifacts to that same release after changesets creates
+it: `.github/workflows/release-desktop.yml` (Windows + Linux, automatic on
+`release: published`) and `scripts/release-desktop.sh` (macOS, run by hand on Lorenzo's
+Mac — signing/notarization need his certificate, which only exists there). `channel`
+(`electron-builder.ts`) keeps production and preview builds from ever offering each
+other's artifact, mirroring issue #866's `userData`/`appId`/deep-link-scheme isolation.
+
+**The code**: `src/main/updater.ts`'s `createUpdateController` wraps electron-updater's
+`autoUpdater` singleton behind an injectable `AutoUpdaterLike`, the same pattern
+`login-item.ts` uses — `autoDownload`/`autoInstallOnAppQuit` are forced `false` at
+construction, so nothing below `applyUpdate()` can ever run without that being the one
+method a user action called. `checkForUpdates()`/`applyUpdate()` are exposed over the
+IPC bridge (`checkForUpdate`/`applyUpdate` channels, `BridgeStatus.update`) for a future
+in-app surface, and driven today by the tray menu (`tray.ts`'s "Check for Updates" /
+"Restart to Update" item, `index.ts`'s periodic timer).
+
+**What's verified**: `updater.test.ts` (12 tests) drives `createUpdateController`
+against a plain fake `AutoUpdaterLike` — every state transition (checking, available,
+not-available, downloading, downloaded, error), that `applyUpdate` is a no-op until
+something is actually available/downloaded, and that `autoDownload`/
+`autoInstallOnAppQuit` are forced off regardless of what the fake starts with. The
+`electron-builder.ts` config, the two release scripts, and every bridge/tray/index.ts
+wiring point typecheck and (where testable, i.e. not `tray.ts`/`index.ts` themselves —
+see "Architecture" below) unit-test clean.
+
+**What's unverified, honestly**: this scaffold was written on a headless devbox with no
+Electron runtime (see "Running it" above) — nothing here has ever driven a real
+`electron-updater` network check, downloaded a real artifact, or run `quitAndInstall()`
+against a real installed app. Specifically unverified: that the GitHub Releases feed
+actually resolves and serves the right channel manifest to a real running app; that a
+real macOS `.dmg`/Squirrel update, a real Windows NSIS differential update, and a real
+Linux AppImage update each apply cleanly; that the tray menu item's label/click handler
+actually renders and works in a real menubar. None of that is reachable without a real
+release cut and a real install on each platform — the first real `@loombox/desktop`
+version bump after this lands is what proves it, not this PR.
+
 ## The bridge
 
 `src/shared/bridge.ts` defines the typed contract both sides share:
@@ -239,6 +289,7 @@ src/
     login-item.ts            # launch-at-login (app.setLoginItemSettings), testable via a fake `app`
     config.ts                 # resolvePwaUrl()
     status.ts                  # status() bridge method
+    updater.ts                  # createUpdateController — electron-updater wiring (issue #657)
     ssh-candidates.ts           # listSshHostCandidates() TODO stub
     local-node/
       process-manager.ts        # real child-process supervision

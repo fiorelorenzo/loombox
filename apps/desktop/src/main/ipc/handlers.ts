@@ -13,11 +13,13 @@ import {
   type StopLocalNodeResult,
   type UninstallLocalNodeRequest,
   type UninstallLocalNodeResult,
+  type UpdateCheckResult,
 } from '../../shared/bridge';
 import type { LocalNodeBridge } from '../local-node/bridge';
 import type { AppVersionSource } from '../status';
 import type { LoginItemApp } from '../login-item';
 import { buildStatus } from '../status';
+import type { UpdateController } from '../updater';
 import {
   resolveProvisionTargetDeps,
   runProvisionTarget,
@@ -55,6 +57,8 @@ export interface IpcMainLike {
 export interface BridgeHandlerDeps {
   localNode: LocalNodeBridge;
   app: LoginItemApp & AppVersionSource;
+  /** Drives `checkForUpdate`/`applyUpdate`/`status`'s `update` field (issue #657) — `../index.ts` constructs this once at startup from the real `electron-updater` `autoUpdater`; tests inject a plain fake instead of a real feed check. */
+  updateController: UpdateController;
   /** Overrides `resolveProvisionTargetDeps()`'s own (currently always-`undefined`) result — tests inject real deps against a `FakeTransport`; production leaves this unset until #398/#399 land. */
   provisionTargetDeps?: ProvisionTargetDeps;
   /** Overrides `resolveProvisionLocalNodeDeps()`'s own real resolution; tests inject a fake `SupervisorBackend`/`fetchArchive` instead of touching this machine's real `~/.loombox/releases` or launchd. */
@@ -136,6 +140,14 @@ export function registerBridgeHandlers(ipcMain: IpcMainLike, deps: BridgeHandler
   });
 
   ipcMain.handle(BRIDGE_CHANNELS.status, async (): Promise<BridgeStatus> => {
-    return buildStatus(deps.app, deps.localNode);
+    return buildStatus(deps.app, deps.localNode, deps.updateController);
+  });
+
+  ipcMain.handle(BRIDGE_CHANNELS.checkForUpdate, async (): Promise<UpdateCheckResult> => {
+    return deps.updateController.checkForUpdates();
+  });
+
+  ipcMain.handle(BRIDGE_CHANNELS.applyUpdate, async (): Promise<UpdateCheckResult> => {
+    return deps.updateController.applyUpdate();
   });
 }
