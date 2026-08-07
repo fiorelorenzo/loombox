@@ -175,6 +175,7 @@ import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runn
 import { ciCheckStatus } from './ci-check';
 import { ciAutoIterateStatus, ciAutoIterateStop } from './ci-auto-iterate';
 import { runStatus } from './run-status';
+import { trackerConnectivityStatus } from './tracker-connectivity';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -347,6 +348,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitCommitRequest,
   gitCommitResponse,
   ciCheckStatus,
+  trackerConnectivityStatus,
   agentInstructionsGetRequest,
   agentInstructionsGetResponse,
   agentInstructionsSetRequest,

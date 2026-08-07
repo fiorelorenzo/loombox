@@ -6,6 +6,8 @@
    * (`RelayClient.attentionInbox()`'s own sort, not re-sorted here). Renders
    * all five classes SPEC §7.13/§7.15 name, each visually distinguishable
    * via its `data-kind` attribute and a `.kind-badge` label:
+   * all five classes SPEC §7.13 names, each visually distinguishable via its
+   * `data-kind` attribute and a `.kind-badge` label:
    * - `'permission'` — an actionable pending tool-call approval.
    * - `'awaiting_input'` — a session waiting on the user's next message.
    * - `'session_outcome'` — a session that finished (`outcome: 'exited'`) or
@@ -17,12 +19,16 @@
    *   status aggregates to failing (`RelayClient.attentionInbox()`, issue
    *   #247); shows which configured run(s) failed. The exact sibling of
    *   `'ci_failure'`, minus the PR link (a local run has none).
+   * - `'tracker_failure'` — a session whose project's live tracker
+   *   (GitHub/Jira) is unreachable or its credential was rejected
+   *   (`TrackerConnectivityWatcher`, SPEC §7.10, issue #219); wording
+   *   distinguishes the two, since the corrective action differs (retry
+   *   later vs. reconnect the account).
    * - `'review_request'` — modeled and rendered here so the inbox already
    *   has a distinct look for it, but `RelayClient` never produces one in
-   *   v1: it has no live event source in this client yet (that needs the
-   *   tracker integration work, SPEC §7.10, v2). This is a forward-looking
-   *   extension point, not a fake stub — no item of this kind is ever
-   *   synthesized.
+   *   v1: it has no live event source in this client yet. This is a
+   *   forward-looking extension point, not a fake stub — no item of this
+   *   kind is ever synthesized.
    *
    * Every item has an Open action (`onOpenSession`) that jumps to its
    * originating session. A `'permission'` item is additionally actionable
@@ -195,6 +201,12 @@
         return item.failingRuns && item.failingRuns.length > 0
           ? `Local run failed: ${item.failingRuns.join(', ')}`
           : 'Local run failed';
+      case 'tracker_failure': {
+        const provider = item.trackerProvider === 'jira' ? 'Jira' : 'GitHub';
+        return item.trackerConnectivityState === 'authFailed'
+          ? `${provider} tracker credential expired or was revoked — reconnect the account`
+          : `${provider} tracker unreachable — retrying`;
+      }
       case 'review_request':
         return 'Review requested';
     }
@@ -208,6 +220,7 @@
    * agent message yet (a permission request on a session's very first
    * turn) or for a kind that never carries one (`session_outcome`/
    * `ci_failure`/`run_failure`/`review_request` keep their own short label).
+   * `ci_failure`/`tracker_failure`/`review_request` keep their own short label).
    */
   function messageSource(item: AttentionInboxItem): string {
     if ((item.kind === 'permission' || item.kind === 'awaiting_input') && item.agentMessage) {
@@ -226,6 +239,11 @@
    * CI state, a local run's own status, and a review request are all
    * properties independent of the session's own live status), so those
    * three keep a short label of their own rather than
+   * follow (redesign v3 design spec §3.6). `ci_failure`/`tracker_failure`/
+   * `review_request` have no `AcpSessionStatus` equivalent at all (a PR's
+   * CI state, a tracker's connectivity, and a review request are none of
+   * them the session's own live status), so those three keep a short
+   * label of their own rather than
    */
   function itemStatus(item: AttentionInboxItem): { tone: StatusTone; label: string } {
     switch (item.kind) {
@@ -247,6 +265,11 @@
         return { tone: 'danger', label: 'CI' };
       case 'run_failure':
         return { tone: 'danger', label: 'Run' };
+      case 'tracker_failure':
+        return {
+          tone: 'danger',
+          label: item.trackerConnectivityState === 'authFailed' ? 'Tracker auth' : 'Tracker',
+        };
       case 'review_request':
         return { tone: 'info', label: 'Review' };
     }

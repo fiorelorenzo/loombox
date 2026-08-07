@@ -1599,6 +1599,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // conclusion, or failure output.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'tracker_connectivity_status':
+        // The owning node's periodic live-tracker reachability reading for
+        // a session's project (SPEC §7.10; issue #219) — fanned out
+        // exactly like ci_check_status above; the relay never opens the
+        // envelope, so it never sees which provider or why a poll failed.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'ci_auto_iterate_status':
         // The owning node's current auto-iterate-until-green loop state
         // for a session (SPEC §7.14/§7.15; issue #246) — fanned out

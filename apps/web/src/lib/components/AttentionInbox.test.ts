@@ -77,6 +77,28 @@ const runFailureItem: AttentionInboxItem = {
   waitingSince: 4.5,
 };
 
+const trackerUnreachableItem: AttentionInboxItem = {
+  kind: 'tracker_failure',
+  sessionId: 'sess-h',
+  sessionTitle: 'Ship the tracker fix',
+  projectPath: '/proj-h',
+  nodeId: 'node-h',
+  waitingSince: 7,
+  trackerProvider: 'github',
+  trackerConnectivityState: 'unreachable',
+};
+
+const trackerAuthFailedItem: AttentionInboxItem = {
+  kind: 'tracker_failure',
+  sessionId: 'sess-i',
+  sessionTitle: 'Rotate the credential',
+  projectPath: '/proj-i',
+  nodeId: 'node-i',
+  waitingSince: 8,
+  trackerProvider: 'jira',
+  trackerConnectivityState: 'authFailed',
+};
+
 const reviewRequestItem: AttentionInboxItem = {
   kind: 'review_request',
   sessionId: 'sess-f',
@@ -278,6 +300,40 @@ describe('AttentionInbox: ci_failure is live (issue #243); review_request remain
 
     await fireEvent.click(within(rows[0]).getByTestId('attention-inbox-open'));
     expect(onOpenSession).toHaveBeenCalledWith('sess-e');
+  });
+});
+
+describe('AttentionInbox: tracker_failure is live (SPEC §7.10/§7.13; issue #219)', () => {
+  it('renders unreachable and authFailed with distinct wording and their own badge, and an Open action, with no permission card or reply composer', async () => {
+    const onOpenSession = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [trackerUnreachableItem, trackerAuthFailedItem],
+        onResolve: vi.fn(),
+        onOpenSession,
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(rows).toHaveLength(2);
+
+    expect(rows[0].dataset.kind).toBe('tracker_failure');
+    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Tracker');
+    expect(within(rows[0]).getByText(/GitHub tracker unreachable — retrying/)).toBeTruthy();
+
+    expect(rows[1].dataset.kind).toBe('tracker_failure');
+    expect(within(rows[1]).getByTestId('attention-inbox-kind-badge').textContent).toBe(
+      'Tracker auth',
+    );
+    expect(
+      within(rows[1]).getByText(/Jira tracker credential expired or was revoked/),
+    ).toBeTruthy();
+
+    expect(screen.queryAllByTestId('permission-card')).toHaveLength(0);
+    expect(screen.queryAllByTestId('attention-inbox-reply')).toHaveLength(0);
+
+    await fireEvent.click(within(rows[0]).getByTestId('attention-inbox-open'));
+    expect(onOpenSession).toHaveBeenCalledWith('sess-h');
   });
 });
 
