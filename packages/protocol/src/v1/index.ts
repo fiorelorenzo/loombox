@@ -413,6 +413,23 @@ export {
 } from './git-branch';
 
 export type {
+  GitPushRequest,
+  GitPushRequestPayloadV1,
+  GitPushResponse,
+  GitPushResponsePayloadV1,
+} from './git-push';
+export {
+  gitPushRequest,
+  gitPushRequestPayloadV1,
+  gitPushResponse,
+  gitPushResponsePayloadV1,
+  parseGitPushRequestPayloadV1,
+  parseGitPushResponsePayloadV1,
+  safeParseGitPushRequestPayloadV1,
+  safeParseGitPushResponsePayloadV1,
+} from './git-push';
+
+export type {
   GitStashDropRequest,
   GitStashDropRequestPayloadV1,
   GitStashDropResponse,
@@ -943,6 +960,18 @@ export {
   ciCheckStatus,
 } from './ci-check';
 export type {
+  TrackerConnectivityStateV1,
+  TrackerConnectivityStatusPayloadV1,
+  TrackerConnectivityStatus,
+} from './tracker-connectivity';
+export {
+  trackerConnectivityStateV1,
+  parseTrackerConnectivityStatusPayloadV1,
+  safeParseTrackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatus,
+} from './tracker-connectivity';
+export type {
   CiAutoIterateStopReasonV1,
   CiAutoIterateAttemptV1,
   CiAutoIterateStateV1,
@@ -960,6 +989,22 @@ export {
   ciAutoIterateStatus,
   ciAutoIterateStop,
 } from './ci-auto-iterate';
+export type {
+  RunStatusEntryV1,
+  RunStatusOverallStateV1,
+  RunStatusStateV1,
+  RunStatusPayloadV1,
+  RunStatus,
+} from './run-status';
+export {
+  runStatusEntryV1,
+  runStatusOverallStateV1,
+  runStatusStateV1,
+  parseRunStatusPayloadV1,
+  safeParseRunStatusPayloadV1,
+  runStatusPayloadV1,
+  runStatus,
+} from './run-status';
 export type { KeymapV1, KeymapGetRequest, KeymapSetRequest, KeymapResult } from './keymap';
 export { keymapV1, keymapGetRequest, keymapSetRequest, keymapResult } from './keymap';
 export type {
@@ -1344,6 +1389,11 @@ import {
   ciCheckStatus,
 } from './ci-check';
 import {
+  trackerConnectivityStateV1,
+  trackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatus,
+} from './tracker-connectivity';
+import {
   ciAutoIterateStopReasonV1,
   ciAutoIterateAttemptV1,
   ciAutoIterateStateV1,
@@ -1360,6 +1410,13 @@ import {
   gitGraphResponse,
   gitGraphResponsePayloadV1,
 } from './git-graph';
+import {
+  runStatusEntryV1,
+  runStatusOverallStateV1,
+  runStatusStateV1,
+  runStatusPayloadV1,
+  runStatus,
+} from './run-status';
 import {
   permissionPolicyGet,
   permissionPolicyResult,
@@ -1740,6 +1797,9 @@ export const schemasV1 = {
   ciCheckStateV1,
   ciCheckStatusPayloadV1,
   ciCheckStatus,
+  trackerConnectivityStateV1,
+  trackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatus,
   agentInstructionsFileNameV1,
   agentInstructionsFileStateV1,
   agentInstructionsGetResponsePayloadV1,
@@ -1762,4 +1822,9 @@ export const schemasV1 = {
   gitGraphResponsePayloadV1,
   gitGraphRequest,
   gitGraphResponse,
+  runStatusEntryV1,
+  runStatusOverallStateV1,
+  runStatusStateV1,
+  runStatusPayloadV1,
+  runStatus,
 } as const;

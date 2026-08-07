@@ -1468,6 +1468,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_stash_list_response':
       case 'git_stash_pop_response':
       case 'git_stash_drop_response':
+      case 'git_push_response':
         // The owning node's reply to a client's git_branch_list_request/
         // git_branch_create_request/git_branch_switch_request/
         // git_branch_merge_request/git_branch_merge_abort_request or
@@ -1599,12 +1600,26 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // conclusion, or failure output.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'tracker_connectivity_status':
+        // The owning node's periodic live-tracker reachability reading for
+        // a session's project (SPEC §7.10; issue #219) — fanned out
+        // exactly like ci_check_status above; the relay never opens the
+        // envelope, so it never sees which provider or why a poll failed.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'ci_auto_iterate_status':
         // The owning node's current auto-iterate-until-green loop state
         // for a session (SPEC §7.14/§7.15; issue #246) — fanned out
         // exactly like ci_check_status above; the relay never opens the
         // envelope, so it never sees an attempt's commit sha or why the
         // loop stopped.
+        fanOutDirect(message.sessionId, message);
+        return;
+      case 'run_status':
+        // The owning node's latest durable per-kind run status for a
+        // session (SPEC §7.14/§7.15; issue #247) — fanned out exactly
+        // like ci_check_status/run_exit above; the relay never opens the
+        // envelope, so it never sees which kind ran, its outcome, or why.
         fanOutDirect(message.sessionId, message);
         return;
       case 'lease_request':
@@ -1857,6 +1872,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               providers: target.providers,
               ...(health ? { health } : {}),
               ...(nodeConnection?.buildIdentity ? { build: nodeConnection.buildIdentity } : {}),
+              // Issue #255: forwarded verbatim from the node's own
+              // `target_announce`, exactly like `providers` above — absent
+              // for a node that predates it.
+              ...(target.maxConcurrentSessions !== undefined
+                ? {
+                    maxConcurrentSessions: target.maxConcurrentSessions,
+                    maxConcurrentSessionsSource: target.maxConcurrentSessionsSource,
+                  }
+                : {}),
             });
           }
         }
@@ -2318,6 +2342,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_stash_list_request':
       case 'git_stash_pop_request':
       case 'git_stash_drop_request':
+      case 'git_push_request':
         // A client listing branches/stashes, creating/switching/merging a
         // branch, aborting a conflicted merge, or saving/popping/dropping
         // a stash (SPEC §7.6; issue #234) — routed to the owning node

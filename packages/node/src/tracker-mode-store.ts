@@ -79,6 +79,12 @@ export interface TrackerModeStoreOptions {
   stateDir?: string;
 }
 
+/** One entry of {@link TrackerModeStore.list}. */
+export interface TrackerModeStoreEntry {
+  readonly projectPath: string;
+  readonly mode: TrackerMode;
+}
+
 /**
  * Persists this node's per-project `TrackerMode` (SPEC §7.10; issue #631)
  * across a node restart. See this module's doc comment for the storage
@@ -120,6 +126,25 @@ export class TrackerModeStore {
     const file = this.readFile();
     file.projects[projectPath] = mode;
     this.writeFile(file);
+  }
+
+  /**
+   * Every project this node has ever saved an explicit `TrackerMode` for,
+   * each paired with its currently-valid mode — the startup-registration
+   * source `TrackerConnectivityWatcher` needs (issue #219) to re-`watch`
+   * every live-mode project after a restart, the identical "reload then
+   * let the caller decide what's still current" role `CiWatchStore.list`
+   * plays for `CiCheckWatcher`. A project whose stored value no longer
+   * validates is silently omitted (same "degrade to never chosen"
+   * discipline as {@link get}), never surfaced as a corrupt entry.
+   */
+  list(): readonly TrackerModeStoreEntry[] {
+    const entries: TrackerModeStoreEntry[] = [];
+    for (const [projectPath, raw] of Object.entries(this.readFile().projects)) {
+      const result = safeParseTrackerMode(raw);
+      if (result.success) entries.push({ projectPath, mode: result.data });
+    }
+    return entries;
   }
 
   private readFile(): TrackerModeFileV1 {

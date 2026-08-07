@@ -857,14 +857,132 @@ export async function stashDrop(
 }
 
 /**
- * Commit graph / branch tree (SPEC §7.6; issue #231) — `git-diff.ts`'s
- * newest sibling family. Paging is decided and MEASURED against a real
- * repo; the full reasoning and numbers live on `@loombox/protocol`'s
- * `git-graph.ts` file doc comment (the wire pair this drives), not
- * repeated here.
+ * Pushes a session's own branch to `origin` (SPEC §7.6/§7.14; issue #235)
+ * — the last step of this file's own create/switch/merge/stash chain, and
+ * the FIRST one that talks to a remote at all. `NodeDaemon.pushBranchForBridge`
+ * resolves `branch` via `./session-branch.ts`'s `resolveSessionBranch`
+ * before calling this, exactly like `pr-open.ts`'s `openPr` resolves it
+ * for its own (unrelated) push — this function itself stays a plain
+ * `(target, worktreePath, branch)` triple, this file's own established
+ * shape, rather than importing `Session`/`resolveSessionBranch` here.
+ *
+ * Always passes `--set-upstream origin <branch>`: harmless and idempotent
+ * when an upstream already exists (git just re-confirms it — see
+ * `pr-open.ts`'s `openPr`, which already relies on the same idempotence),
+ * and exactly what a branch's first-ever push needs (issue #235's own
+ * acceptance bar: "Push sets upstream tracking on first push of a new
+ * branch") — so there is no separate "does it have an upstream yet"
+ * branch in this function at all, only in {@link PushBranchResult.setUpstream}'s
+ * own before/after probe, purely for a caller to report which happened.
+ *
+ * `options.force` is `--force-with-lease`, never plain `--force`: lease
+ * mode still refuses when this worktree's own knowledge of the remote
+ * ref is stale (someone else's commit landed there since this worktree
+ * last saw it — {@link GitPushStaleLeaseError}), so a force push here can
+ * never silently discard a commit this worktree never observed. Plain
+ * `--force` has no such check and is deliberately never offered — the
+ * one blunt tool this feature doesn't hand out.
+ *
+ * Throws {@link GitPushNonFastForwardError} for an ordinary (non-`force`)
+ * push the remote rejects because it has commits this branch doesn't yet
+ * have, {@link GitPushStaleLeaseError} for the `force`-with-stale-lease
+ * case above, {@link GitPushAuthenticationError} when the remote refuses
+ * the connection or the credentials themselves, {@link GitBranchActionError}
+ * for any other push failure (no `origin` remote configured, `git`
+ * missing from the target's `PATH`, ...) — never a bare, unclassified
+ * throw, matching every other action in this file.
  */
+export class GitPushNonFastForwardError extends GitBranchActionError {}
 
-/** Thrown only when a commit graph page genuinely could not be computed at all — `git` missing from the target, the worktree isn't a usable git repository, or `ref` names no real commit. Mirrors {@link GitBranchError}'s own "thrown only when genuinely unusable" contract; an unborn `HEAD` is NOT this — see {@link computeCommitGraph}'s own doc comment. */
+/** {@link pushBranch}'s own `force: true` path only — the exact scenario `--force-with-lease` exists to catch (see {@link pushBranch}'s doc comment): this worktree's remote-tracking ref is stale, so git refuses to blindly overwrite whatever is actually on the remote now. A caller resolves by fetching (which re-syncs the lease) and retrying. */
+export class GitPushStaleLeaseError extends GitBranchActionError {}
+
+/** {@link pushBranch} when the remote refuses the connection or the credentials themselves — SSH `Permission denied`, HTTPS `could not read Username`/`Authentication failed`, or GitHub's own indistinguishable-from-missing `Repository not found` for a private repo this credential can't see. */
+export class GitPushAuthenticationError extends GitBranchActionError {}
+
+export interface PushBranchOptions {
+  /** `--force-with-lease` when true — see {@link pushBranch}'s own doc comment for why this is never plain `--force`. Defaults to `false`. */
+  force?: boolean;
+}
+
+export interface PushBranchResult {
+  /** Whether `branch` had no upstream configured before this push — i.e. this was its first push. Informational only: {@link pushBranch} always passes `--set-upstream`, so the push itself behaves identically either way. */
+  setUpstream: boolean;
+  /** Whether this push used `--force-with-lease`, echoing {@link PushBranchOptions.force} back for a caller that only kept the result. */
+  forced: boolean;
+}
+
+/** Real `git push`'s own `[rejected] ... (fetch first)`/`(non-fast-forward)` line — the remote has commits this branch doesn't. */
+const NON_FAST_FORWARD_RE = /\[rejected\][^\n]*\((?:non-fast-forward|fetch first)\)/;
+
+/** Real `git push --force-with-lease`'s own `[rejected] ... (stale info)` line — this worktree's knowledge of the remote ref is out of date. */
+const STALE_LEASE_RE = /\[rejected\][^\n]*\(stale info\)/;
+
+/** Every real-git shape this module has observed for "the remote refused the credentials themselves" — SSH's own `Permission denied (publickey)`, HTTPS's own `could not read Username`/`Authentication failed`, and GitHub's deliberately-indistinguishable-from-missing `Repository not found` for a private repo this credential can't see. Deliberately excludes git's generic `Could not read from remote repository` wrapper line: that one also fires for a missing/misnamed remote (no credential problem at all), so it is too broad a signal on its own — this regex only matches lines that name a credential/access problem specifically. */
+const AUTH_FAILURE_RE =
+  /Permission denied \(publickey\)|fatal: [Aa]uthentication failed|fatal: could not read Username|remote: Invalid username or password|remote: Repository not found|fatal: repository .* not found/;
+
+export async function pushBranch(
+  target: ExecutionTarget,
+  worktreePath: string,
+  branch: string,
+  options: PushBranchOptions = {},
+): Promise<PushBranchResult> {
+  const forced = options.force ?? false;
+
+  const upstreamCheck = await target.exec('git', [
+    '-C',
+    worktreePath,
+    'rev-parse',
+    '--abbrev-ref',
+    `${branch}@{u}`,
+  ]);
+  const setUpstream = upstreamCheck.exitCode !== 0;
+
+  const args = ['-C', worktreePath, 'push', '--set-upstream'];
+  if (forced) args.push('--force-with-lease');
+  args.push('origin', branch);
+
+  const push = await target.exec('git', args);
+  if (push.exitCode === 0) {
+    return { setUpstream, forced };
+  }
+
+  const detail = `${push.stdout}\n${push.stderr}`;
+  const message = push.stderr.trim() || push.stdout.trim();
+  if (STALE_LEASE_RE.test(detail)) {
+    throw new GitPushStaleLeaseError(
+      `git push --force-with-lease refused: this worktree's own view of "origin/${branch}" is out of date — fetch and retry. (${message})`,
+    );
+  }
+  if (NON_FAST_FORWARD_RE.test(detail)) {
+    throw new GitPushNonFastForwardError(
+      `git push rejected: "origin/${branch}" has commits this branch doesn't have — fetch and merge or rebase, or push again with force. (${message})`,
+    );
+  }
+  if (AUTH_FAILURE_RE.test(detail)) {
+    throw new GitPushAuthenticationError(
+      `git push could not authenticate with the remote: ${message}`,
+    );
+  }
+  throw new GitBranchActionError(`git push failed: ${message}`);
+}
+
+export interface CommitGraphOptions {
+  /** Which ref's own history to walk — defaults to `'HEAD'` ("the session's own repo, right now", `WorktreeDiffViewer`'s same default scope). Resolved via `git rev-parse --verify` before it ever reaches `git log`, both so a bad/renamed ref reports a clean {@link GitGraphError} instead of git's own raw stderr, and so `git log` itself only ever receives a real 40-hex sha — never a caller-controlled string that could otherwise be mistaken for a `git log` option. */
+  ref?: string;
+  /** Page size — clamped to `[1, GIT_GRAPH_MAX_LIMIT]`, defaulting to `GIT_GRAPH_DEFAULT_LIMIT` (both from `@loombox/protocol`'s `git-graph.ts`, the same constants that schema-validate a client's own request). */
+  limit?: number;
+  /** How many commits (from `ref`'s own tip) this page starts after — `0`/omitted for page one, else the previous page's own `nextOffset`. */
+  offset?: number;
+}
+
+export interface CommitGraphPage {
+  commits: GitGraphCommitV1[];
+  /** The `offset` that continues where this page left off, or `null` once a page comes back shorter than the requested limit — the walk reached `ref`'s own root. */
+  nextOffset: number | null;
+}
+
 export class GitGraphError extends Error {}
 
 /** `git log`'s own field separator for this module's `--pretty=format:` (ASCII Unit Separator, `\x1f`) — chosen over a printable delimiter because an author name/email/subject can legally contain almost anything short of a literal newline; a control character no real commit metadata carries never collides. Same reasoning `parseStatusPorcelainZ` above already applies to `git status -z`'s NUL-separated output. */
@@ -902,7 +1020,6 @@ function parseGitLogDecoration(raw: string): { isHead: boolean; refs: GitGraphRe
   return { isHead, refs };
 }
 
-/** Splits `git log --pretty=format:${GIT_LOG_FORMAT}`'s raw stdout back into {@link GitGraphCommitV1}s. `format:` (never `tformat:`) inserts one real `\n` between records but not after the last one — every record already ends in {@link GIT_LOG_RECORD_SEP} regardless, so records are split on that and any single leading `\n` left over from the previous record's own separator is stripped, never trimmed further (a subject can legitimately start/end with a space). Exported so `git-diff.test.ts` can also prove this against captured `git log` output directly, alongside the real-repo integration coverage. */
 export function parseCommitGraphLog(stdout: string): GitGraphCommitV1[] {
   return stdout
     .split(GIT_LOG_RECORD_SEP)
@@ -927,21 +1044,6 @@ export function parseCommitGraphLog(stdout: string): GitGraphCommitV1[] {
         isHead,
       };
     });
-}
-
-export interface CommitGraphOptions {
-  /** Which ref's own history to walk — defaults to `'HEAD'` ("the session's own repo, right now", `WorktreeDiffViewer`'s same default scope). Resolved via `git rev-parse --verify` before it ever reaches `git log`, both so a bad/renamed ref reports a clean {@link GitGraphError} instead of git's own raw stderr, and so `git log` itself only ever receives a real 40-hex sha — never a caller-controlled string that could otherwise be mistaken for a `git log` option. */
-  ref?: string;
-  /** Page size — clamped to `[1, GIT_GRAPH_MAX_LIMIT]`, defaulting to `GIT_GRAPH_DEFAULT_LIMIT` (both from `@loombox/protocol`'s `git-graph.ts`, the same constants that schema-validate a client's own request). */
-  limit?: number;
-  /** How many commits (from `ref`'s own tip) this page starts after — `0`/omitted for page one, else the previous page's own `nextOffset`. */
-  offset?: number;
-}
-
-export interface CommitGraphPage {
-  commits: GitGraphCommitV1[];
-  /** The `offset` that continues where this page left off, or `null` once a page comes back shorter than the requested limit — the walk reached `ref`'s own root. */
-  nextOffset: number | null;
 }
 
 /**

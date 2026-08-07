@@ -72,6 +72,7 @@
     SESSION_STATUS_TONES,
     sessionStatusLabelWithReason,
   } from '$lib/session-status';
+  import { queuePositionReasons, summarizeTargetConcurrency } from '$lib/target-concurrency';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
   import {
     fileMention,
@@ -1060,8 +1061,11 @@
   /** Parallels {@link sessionStatuses}, one `RelayClient.statusReasonFor` subscription per listed session (issue #730) — why a `'error'` status happened, when the node said so (a spawn that failed or timed out); `undefined` for every other status. Kept as a separate map/subscription pair rather than widening `sessionStatuses`' value type, since every existing reader of that map (severity ranking, row/selvage labels) only ever needed the bare status. */
   const sessionStatusReasons = new SvelteMap<string, string | undefined>();
   const sessionStatusReasonUnsubscribers = new SvelteMap<string, () => void>();
+  /** Parallels {@link sessionStatuses}, one `RelayClient.statusUpdatedAtFor` subscription per listed session (issue #255's queued-session position) — when the current status last transitioned. Only ever read for a `'queued'` session (`queuePositionReasons` below), but kept for every listed session, same "one subscription pair per session, not gated per status" shape `sessionStatusReasons` already follows. */
+  const sessionStatusUpdatedAt = new SvelteMap<string, string | undefined>();
+  const sessionStatusUpdatedAtUnsubscribers = new SvelteMap<string, () => void>();
 
-  /** (Re)syncs `sessionStatuses`'/`sessionStatusReasons`' subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
+  /** (Re)syncs `sessionStatuses`'/`sessionStatusReasons`'/`sessionStatusUpdatedAt`'s subscriptions to exactly the currently-listed sessions — called every time `client.sessions` emits. */
   function syncSessionStatusSubscriptions(list: ClientSessionMeta[]): void {
     if (!client) return;
     const activeClient = client;
@@ -1078,6 +1082,12 @@
       sessionStatusReasonUnsubscribers.delete(id);
       sessionStatusReasons.delete(id);
     }
+    for (const [id, unsubscribe] of sessionStatusUpdatedAtUnsubscribers) {
+      if (currentIds.has(id)) continue;
+      unsubscribe();
+      sessionStatusUpdatedAtUnsubscribers.delete(id);
+      sessionStatusUpdatedAt.delete(id);
+    }
     for (const session of list) {
       if (!sessionStatusUnsubscribers.has(session.id)) {
         const unsubscribe = activeClient
@@ -1091,6 +1101,12 @@
           .subscribe((value) => sessionStatusReasons.set(session.id, value));
         sessionStatusReasonUnsubscribers.set(session.id, unsubscribe);
       }
+      if (!sessionStatusUpdatedAtUnsubscribers.has(session.id)) {
+        const unsubscribe = activeClient
+          .statusUpdatedAtFor(session.id)
+          .subscribe((value) => sessionStatusUpdatedAt.set(session.id, value));
+        sessionStatusUpdatedAtUnsubscribers.set(session.id, unsubscribe);
+      }
     }
   }
 
@@ -1101,6 +1117,9 @@
     for (const unsubscribe of sessionStatusReasonUnsubscribers.values()) unsubscribe();
     sessionStatusReasonUnsubscribers.clear();
     sessionStatusReasons.clear();
+    for (const unsubscribe of sessionStatusUpdatedAtUnsubscribers.values()) unsubscribe();
+    sessionStatusUpdatedAtUnsubscribers.clear();
+    sessionStatusUpdatedAt.clear();
   }
 
   // Persistence for the client-side UI preferences below (relay URL,
@@ -2653,6 +2672,30 @@
       (value) => value === 'queued',
     ).length,
   );
+  /**
+   * Every currently-`'queued'` session's own wait-position wording (issue
+   * #255), keyed by session id — `target-concurrency.ts#queuePositionReasons`
+   * fed the live `sessions`/`sessionStatuses`/`sessionStatusUpdatedAt`
+   * state every row already tracks, not a separate fetch. Merged in at
+   * each label call site behind `sessionStatusReasons.get(id) ??
+   * sessionQueueReasons.get(id)` — `sessionStatusReasons` only ever holds a
+   * node-sent `reason` (`'error'`/`'paused'`), never one for `'queued'`, so
+   * the two never actually collide for the same session.
+   */
+  const sessionQueueReasons = $derived(
+    queuePositionReasons(
+      sessions,
+      (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined,
+      (id) => sessionStatusUpdatedAt.get(id),
+    ),
+  );
+  /** Per-target best-effort running/queued snapshot (issue #255's "the wait ... explicable" — the limit means nothing on its own), keyed by `${nodeId}:${targetId}` exactly like `TargetStatusView.svelte`'s own `rowKey`. Passed straight through to `SettingsPage`/`TargetStatusView` alongside the wire-sent cap. */
+  const targetConcurrency = $derived(
+    summarizeTargetConcurrency(
+      sessions,
+      (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined,
+    ),
+  );
 
   /**
    * Sessions clustered under their target/node (redesign brief §1/§4, issue
@@ -3488,7 +3531,7 @@
       {@const needsAttention = sessionsNeedingAttention.has(session.id)}
       {@const statusLabel = sessionStatusLabelWithReason(
         sessionStatus,
-        sessionStatusReasons.get(session.id),
+        sessionStatusReasons.get(session.id) ?? sessionQueueReasons.get(session.id),
       )}
       {@const statusTone = sessionStatus ? SESSION_STATUS_TONES[sessionStatus] : 'neutral'}
       <li
@@ -3658,7 +3701,7 @@
       {@const sessionStatus = sessionStatuses.get(session.id)}
       {@const statusLabel = sessionStatusLabelWithReason(
         sessionStatus,
-        sessionStatusReasons.get(session.id),
+        sessionStatusReasons.get(session.id) ?? sessionQueueReasons.get(session.id),
       )}
       <li>
         <button
@@ -4330,6 +4373,7 @@
                   relayBaseUrl={relayHttpBaseUrl(relayUrl)}
                   authToken={authSession.token}
                   targets={targetStatusEntries}
+                  concurrency={targetConcurrency}
                   loading={targetStatusLoading}
                   error={targetStatusError}
                   focusTarget={targetStatusFocus}
@@ -4961,7 +5005,8 @@
       hasSelectedSession={selectedSessionId !== undefined}
       {selectedSessionStatus}
       selectedSessionStatusReason={selectedSessionId
-        ? sessionStatusReasons.get(selectedSessionId)
+        ? (sessionStatusReasons.get(selectedSessionId) ??
+          sessionQueueReasons.get(selectedSessionId))
         : undefined}
       {queuedSessionCount}
       usage={transcript?.usage}

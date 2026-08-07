@@ -147,6 +147,9 @@ import {
   type GitHunkActionResponsePayloadV1,
   type GitHunkDiffRequest,
   type GitHunkDiffResponsePayloadV1,
+  type GitPushRequest,
+  type GitPushRequestPayloadV1,
+  type GitPushResponsePayloadV1,
   type GitStashDropRequest,
   type GitStashDropRequestPayloadV1,
   type GitStashDropResponsePayloadV1,
@@ -190,6 +193,8 @@ import {
   type RunStart,
   type RunStartedResultPayloadV1,
   type RunStartPayloadV1,
+  type RunStatusPayloadV1,
+  type RunStatusStateV1,
   type SessionArchiveRequest,
   type SessionArchiveResult,
   type SessionCreate,
@@ -234,6 +239,9 @@ import {
   type TestRunnerConfigResultPayloadV1,
   type TestRunnerConfigSet,
   type TestRunnerConfigSetPayloadV1,
+  type TestRunnerKindV1,
+  type TrackerConnectivityStateV1,
+  type TrackerConnectivityStatusPayloadV1,
   type TrackerMode,
   type TrackerModeGetRequest,
   type TrackerModeSetRequest,
@@ -275,11 +283,15 @@ import {
   GitGraphError,
   GitHunkActionError,
   GitMergeConflictError,
+  GitPushAuthenticationError,
+  GitPushNonFastForwardError,
+  GitPushStaleLeaseError,
   GitStashNotFoundError,
   GitStashPopConflictError,
   listBranches,
   listStashes,
   mergeBranch,
+  pushBranch,
   stashDrop,
   stashPop,
   stashSave,
@@ -316,7 +328,6 @@ import {
 import { PermissionPolicyStore } from './permission-policy-store';
 import { SpendCapStore } from './spend-cap-store';
 import { SpendLedgerStore } from './spend-ledger-store';
-import { filterSpendLedgerRows } from '@loombox/shared';
 import {
   evaluateAgentProfile,
   filterMcpServersForProfile,
@@ -355,8 +366,15 @@ import {
   parseGithubPullRequestUrl,
   type CiWatchEntry,
 } from './ci-check-watcher';
+import {
+  TrackerConnectivityWatcher,
+  type TrackerConnectivityTarget,
+} from './tracker-connectivity-watcher';
 import { CiWatchStore } from './ci-watch-store';
 import { CiAutoIterateController } from './ci-auto-iterate';
+import { AutoIterateDriveGate } from './auto-iterate-drive-gate';
+import { RunStatusTracker } from './run-status-tracker';
+import { resolveWorkspaceHeadSha } from './workspace-head';
 import { SessionStore } from './session-store';
 import { SshExecutionTarget } from './ssh-execution-target';
 import { decommissionSshTarget } from './ssh/decommission';
@@ -376,6 +394,7 @@ import { TargetHealthSampler } from './target-health-sampler';
 import { TestRunnerConfigStore } from './test-runner-config-store';
 import { detectTestRunnerCommands } from './test-runner-detect';
 import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
+import { filterSpendLedgerRows, isFailingRunOutcome } from '@loombox/shared';
 import { TrackerModeStore } from './tracker-mode-store';
 import {
   resolveTrackerBackend,
@@ -825,6 +844,10 @@ export interface NodeDaemonOptions {
   ciCheckWatcher?: CiCheckWatcher;
   /** SPEC §7.14/§7.15, issue #246 — decides whether a new CI failure actually drives a new agent turn, and tracks the resulting auto-iterate loop's state; see `ci-auto-iterate.ts`'s own doc comment. Injectable wholesale, same convention as `ciCheckWatcher` above (a test can control `maxAttempts`/`now` directly, or inject a fully custom instance). Defaults to `new CiAutoIterateController()`. */
   ciAutoIterateController?: CiAutoIterateController;
+  /** SPEC §7.15, issue #247 — this node's own durable memory of each session's latest completed test/lint/build outcome per kind, the runner's sibling of `ciCheckWatcher` above; see `run-status-tracker.ts`'s own doc comment. Injectable for tests (control `now()`, or inject a fully custom instance), same convention as `ciCheckWatcher`/`ciAutoIterateController`. Defaults to `new RunStatusTracker()`. */
+  runStatusTracker?: RunStatusTracker;
+  /** SPEC §7.10, issue #219 — the live-tracker reachability polling engine, injectable wholesale, same convention as `ciCheckWatcher` above. Defaults to a real `TrackerConnectivityWatcher` wired to `resolveTrackerConnectivityTarget`/`pushTrackerConnectivityStatus`. */
+  trackerConnectivityWatcher?: TrackerConnectivityWatcher;
 }
 
 export interface CreateNodeSessionOptions {
@@ -1464,6 +1487,10 @@ export class NodeDaemon extends EventEmitter {
   >();
   /** Chains every `run_output` send per run (mirrors `terminalSendQueues` above) so concurrent `crypto.subtle.encrypt` calls can never resolve — and so get sent to the relay — out of the order their chunks actually arrived in. */
   private readonly runSendQueues = new Map<string, Promise<void>>();
+  /** This node's own durable per-session/per-kind local-run outcome memory (SPEC §7.15; issue #247) — the runner's sibling of `ciCheckWatcher`'s own latest-reading cache; see `run-status-tracker.ts`'s own doc comment. */
+  private readonly runStatusTracker: RunStatusTracker;
+  /** The shared "already drove this exact commit" memory `handleCiCheckFailure`/`driveAutoIterateFromRunFailure` both consult before calling `ciAutoIterateController.onFailure` — see `auto-iterate-drive-gate.ts`'s own doc comment (SPEC §7.15; issue #247). */
+  private readonly autoIterateDriveGate = new AutoIterateDriveGate();
   private readonly bridges = new Map<string, SessionBridge>();
   /** This session's actually-launched, effective MCP server set (issue #750's fallback loop already excludes any that failed to start) — kept for the lifetime of the bridge so a later `mcp_prompt_get_request` (Zed-parity D5-2, issue #754) can open a fresh connection to the named server without re-resolving secrets/config. Populated by {@link finishSessionCreation}, deleted alongside the bridge itself (see the `'exit'` handler in {@link wireAgentSession} — "the one place a bridge ever leaves the map"). A session reloaded after a node restart (no live bridge) has no entry here, so its `mcp_prompt_get_request`s fail cleanly (`outcome: 'error'`) rather than being served from stale config. */
   private readonly mcpServersBySession = new Map<string, AcpMcpServerConfig[]>();
@@ -1477,6 +1504,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly sshTargetConfigs = new Map<string, SshTargetConfig>();
   /** Per-target concurrency caps + overflow queue (SPEC §7.16, issue #252) — the one chokepoint every session's launch (`local` or `ssh:`) passes through; see `./session-concurrency-gate.ts`. */
   private readonly concurrencyGate: SessionConcurrencyGate;
+  /** Whether each target id in {@link concurrencyGate}'s limits came from an operator's own setting or the node's own computed default (issue #255's "the limit's source is honest") — built once alongside `concurrencyGate` itself in the constructor, since a target's cap source never changes after that (targets themselves are fixed at construction; see `this.targets`' own doc comment). A target id with no entry here (only possible for one `concurrencyGate.setMax` would add outside any real call site today) reads as `'default'` at the read site below. */
+  private readonly concurrencyLimitSources: ReadonlyMap<string, 'configured' | 'default'>;
   private readonly sshTransportFactory: (config: SshTargetConfig) => RemoteTransport;
   private readonly leaseManager: SessionLeaseManager;
   private readonly relayLeaseClient: RelayLeaseClient;
@@ -1597,6 +1626,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly ciCheckWatcher: CiCheckWatcher;
   /** SPEC §7.14/§7.15, issue #246's failure-decision-and-loop-state tracker — see `NodeDaemonOptions.ciAutoIterateController`'s doc comment. */
   private readonly ciAutoIterateController: CiAutoIterateController;
+  /** SPEC §7.10, issue #219's live-tracker reachability polling engine — see `NodeDaemonOptions.trackerConnectivityWatcher`'s doc comment. */
+  private readonly trackerConnectivityWatcher: TrackerConnectivityWatcher;
 
   constructor(options: NodeDaemonOptions) {
     super();
@@ -1643,16 +1674,22 @@ export class NodeDaemon extends EventEmitter {
       this.sshTargetConfigs.set(config.id, config);
     }
     const concurrencyLimits: Record<string, number> = {};
+    const concurrencyLimitSources = new Map<string, 'configured' | 'default'>();
     for (const target of this.targets) {
       if (target.kind === 'local') {
         concurrencyLimits[target.id] =
           options.localMaxConcurrentSessions ?? defaultLocalMaxConcurrentSessions();
+        concurrencyLimitSources.set(
+          target.id,
+          options.localMaxConcurrentSessions !== undefined ? 'configured' : 'default',
+        );
       } else {
-        concurrencyLimits[target.id] =
-          this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions ??
-          DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+        const sshMax = this.sshTargetConfigs.get(target.id)?.maxConcurrentSessions;
+        concurrencyLimits[target.id] = sshMax ?? DEFAULT_SSH_MAX_CONCURRENT_SESSIONS;
+        concurrencyLimitSources.set(target.id, sshMax !== undefined ? 'configured' : 'default');
       }
     }
+    this.concurrencyLimitSources = concurrencyLimitSources;
     this.concurrencyGate = new SessionConcurrencyGate({
       limits: concurrencyLimits,
       defaultMax: DEFAULT_SSH_MAX_CONCURRENT_SESSIONS,
@@ -1744,6 +1781,7 @@ export class NodeDaemon extends EventEmitter {
     this.ciCheckWatchStore =
       options.ciCheckWatchStore ?? new CiWatchStore({ stateDir: options.stateDir });
     this.ciAutoIterateController = options.ciAutoIterateController ?? new CiAutoIterateController();
+    this.runStatusTracker = options.runStatusTracker ?? new RunStatusTracker();
     this.ciCheckWatcher =
       options.ciCheckWatcher ??
       new CiCheckWatcher({
@@ -1755,6 +1793,13 @@ export class NodeDaemon extends EventEmitter {
             );
           });
           if (state.state === 'passing') {
+            // SPEC §7.15; issue #247: a genuinely green check is exactly
+            // when `ciAutoIterateController.onGreen` below resets the
+            // loop's own attempt count/history, so the cross-source
+            // drive gate resets in lockstep — otherwise a later failure
+            // on a sha this gate still remembered from BEFORE the green
+            // would stay wrongly suppressed forever.
+            this.autoIterateDriveGate.clear(sessionId);
             const next = this.ciAutoIterateController.onGreen(sessionId);
             if (next) {
               this.sendCiAutoIterateStatus(sessionId, next).catch((error: unknown) => {
@@ -1781,6 +1826,25 @@ export class NodeDaemon extends EventEmitter {
       }
     }
     this.ciCheckWatcher.start();
+
+    // SPEC §7.10, issue #219: re-`watch`es every project already saved as
+    // `'live'` mode before this node last restarted — mirrors the
+    // `ciCheckWatchStore` reload loop just above, minus the "prune a
+    // stale entry" half (a `TrackerModeStore` entry has no equivalent
+    // notion of going stale the way a session-keyed CI watch entry does;
+    // it stays valid for as long as the project itself does).
+    this.trackerConnectivityWatcher =
+      options.trackerConnectivityWatcher ??
+      new TrackerConnectivityWatcher({
+        resolveTarget: (projectPath) => this.resolveTrackerConnectivityTarget(projectPath),
+        onUpdate: (projectPath, state) => {
+          this.pushTrackerConnectivityStatus(projectPath, state);
+        },
+      });
+    for (const { projectPath, mode } of this.trackerModeStore.list()) {
+      if (mode.kind === 'live') this.trackerConnectivityWatcher.watch(projectPath);
+    }
+    this.trackerConnectivityWatcher.start();
 
     // The relay drops a node's targets/sessions from its registry the
     // moment that node's socket closes, so every fresh 'open' (including
@@ -1855,6 +1919,7 @@ export class NodeDaemon extends EventEmitter {
     this.bridges.clear();
     this.targetHealthSampler.stop();
     this.ciCheckWatcher.stop();
+    this.trackerConnectivityWatcher.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
     // exiting does not kill it" — a later reattach still works), a
@@ -3794,6 +3859,12 @@ export class NodeDaemon extends EventEmitter {
       targets: this.targets.map((target) => ({
         ...target,
         providers: this.providerAvailability.get(target.id) ?? [],
+        // Issue #255's load/concurrency-limits UI: `maxFor` always returns a
+        // real number (falls back to `concurrencyGate`'s own `defaultMax`
+        // even for a target id it has no explicit limit for), so this is
+        // never omitted the way `providers` above legitimately can be.
+        maxConcurrentSessions: this.concurrencyGate.maxFor(target.id),
+        maxConcurrentSessionsSource: this.concurrencyLimitSources.get(target.id) ?? 'default',
       })),
     });
   }
@@ -4060,9 +4131,6 @@ export class NodeDaemon extends EventEmitter {
       case 'git_diff_request':
         this.handleGitDiffRequest(message);
         return;
-      case 'git_graph_request':
-        this.handleGitGraphRequest(message);
-        return;
       case 'git_hunk_diff_request':
         this.handleGitHunkDiffRequest(message);
         return;
@@ -4096,11 +4164,17 @@ export class NodeDaemon extends EventEmitter {
       case 'git_stash_drop_request':
         this.handleGitStashDropRequest(message);
         return;
+      case 'git_push_request':
+        this.handleGitPushRequest(message);
+        return;
       case 'agent_instructions_get_request':
         this.handleAgentInstructionsGetRequest(message);
         return;
       case 'agent_instructions_set_request':
         this.handleAgentInstructionsSetRequest(message);
+        return;
+      case 'git_graph_request':
+        this.handleGitGraphRequest(message);
         return;
       case 'git_commit_draft_request':
         this.handleGitCommitDraftRequest(message);
@@ -4604,6 +4678,8 @@ export class NodeDaemon extends EventEmitter {
     this.ciCheckWatcher.unwatch(sessionId);
     this.ciCheckWatchStore.remove(sessionId);
     this.ciAutoIterateController.forget(sessionId);
+    this.autoIterateDriveGate.clear(sessionId);
+    this.runStatusTracker.forget(sessionId);
     // Clean up this session's hidden checkpoint refs (issue #603) before
     // the record disappears below — `GitCheckpointStore.deleteAllCheckpoints()`
     // needs `worktreePath`, still readable from `sessionManager` right up
@@ -6254,6 +6330,11 @@ export class NodeDaemon extends EventEmitter {
   /** `TrackerModeStore.set` (SPEC §7.10; issue #631) — saves `message.mode` for `message.projectPath`. There is deliberately no unset handler (mirrors `trackerModeSetRequest`'s own doc comment). Replies with the resulting mode re-read through the store, mirroring `handleAccountPinSetRequest`'s same re-read-after-write convention, so the client never needs a second round trip. */
   private handleTrackerModeSetRequest(message: TrackerModeSetRequest): void {
     this.trackerModeStore.set(message.projectPath, message.mode);
+    if (message.mode.kind === 'live') {
+      this.trackerConnectivityWatcher.watch(message.projectPath);
+    } else {
+      this.trackerConnectivityWatcher.unwatch(message.projectPath);
+    }
     this.sendTrackerModeResponse(
       message.requestId,
       message.projectPath,
@@ -8562,6 +8643,7 @@ export class NodeDaemon extends EventEmitter {
     this.ciCheckWatchStore.set(session.id, entry);
     this.ciCheckWatcher.watch(session.id, entry);
     this.ciAutoIterateController.reset(session.id);
+    this.autoIterateDriveGate.clear(session.id);
   }
 
   /**
@@ -8608,6 +8690,96 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'ci_check_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      envelope,
+    });
+  }
+
+  /**
+   * `TrackerConnectivityWatcher`'s only source of a `TrackerBackend` to
+   * probe (SPEC §7.10; issue #219) — the exact same composition
+   * `resolveTrackerDispatch`'s own 'live' branch uses, called fresh on
+   * every poll rather than cached, so a credential disconnected between
+   * polls takes effect on the very next one. A resolution failure (no
+   * connected account, no pinned credential, a dangling pin, ...) reports
+   * `ok: false`: there was no credential to even attempt a call with,
+   * which `TrackerConnectivityWatcher` folds into the same `'authFailed'`
+   * bucket a remote 401/403 gets (see that class's own doc comment for
+   * why). Defensive `mode.kind !== 'live'` fallback: this daemon only
+   * ever `watch()`es a project whose saved mode is `'live'`
+   * (`handleTrackerModeSetRequest`, and this daemon's own constructor for
+   * every one already saved before a restart) and `unwatch()`es it the
+   * moment that stops being true, so a poll landing here for a
+   * since-reverted-to-native project should never actually happen — the
+   * arbitrary 'github' fallback below is never rendered anywhere a user
+   * would see it.
+   */
+  private async resolveTrackerConnectivityTarget(
+    projectPath: string,
+  ): Promise<TrackerConnectivityTarget> {
+    const mode = this.trackerModeStore.get(projectPath);
+    if (!mode || mode.kind !== 'live') {
+      return { ok: false, provider: 'github' };
+    }
+    const resolution = await resolveTrackerBackend({
+      mode,
+      projectPath,
+      intent: 'read',
+      accounts: this.connectedAccounts,
+      pins: this.accountPinStore.get(projectPath),
+      githubConnectService: this.githubConnectService,
+      jiraConnectService: this.jiraConnectService,
+      fetchImpl: this.trackerBackendFetchImpl,
+    });
+    if (!resolution.ok) return { ok: false, provider: mode.provider };
+    return {
+      ok: true,
+      provider: mode.provider,
+      backend: resolution.backend,
+      binding: { connectionId: mode.connectionId, target: mode.target },
+    };
+  }
+
+  /**
+   * Fans `projectPath`'s latest `TrackerConnectivityWatcher` reading out
+   * to every session currently open on it (SPEC §7.10; issue #219) —
+   * polling is per-PROJECT (one API call per pass, not one per session),
+   * but delivery rides the relay's existing per-SESSION fan-out
+   * (`tracker_connectivity_status` mirrors `ci_check_status`'s wire shape
+   * exactly; see that module's own doc comment for why). A session
+   * created after this pass already started sees nothing until the next
+   * scheduled poll — the same latency `CiCheckWatcher.watch` already
+   * accepts (`registerCiCheckWatch`'s own doc comment).
+   */
+  private pushTrackerConnectivityStatus(
+    projectPath: string,
+    state: TrackerConnectivityStateV1,
+  ): void {
+    for (const session of this.sessionManager.listSessions()) {
+      if (session.projectPath !== projectPath) continue;
+      this.sendTrackerConnectivityStatus(session.id, state).catch((error: unknown) => {
+        console.warn(
+          `NodeDaemon: failed to send tracker_connectivity_status for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Pushes one session's copy of its project's latest live-tracker
+   * connectivity reading (SPEC §7.10; issue #219). Session-scoped and
+   * envelope-sealed exactly like `sendCiCheckStatus` above.
+   */
+  private async sendTrackerConnectivityStatus(
+    sessionId: string,
+    state: TrackerConnectivityStateV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: TrackerConnectivityStatusPayloadV1 = { status: state };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'tracker_connectivity_status',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       envelope,
@@ -8677,22 +8849,34 @@ export class NodeDaemon extends EventEmitter {
   /**
    * `CiCheckWatcher`'s `onFailure` hook (SPEC §7.14, issue #239) — fired
    * exactly once per NEW failing commit (see `ci-check-watcher.ts`'s own
-   * "exactly-once-per-failure dedup" doc comment; this method itself does
-   * no deduping of its own). This IS issue #246's loop: `isAutoIterateEligible`
-   * reads whether this session may currently iterate at all (not paused,
-   * not over its spend cap), `CiAutoIterateController.onFailure` weighs
-   * that alongside a prior user stop and the attempt cap, and only a real
-   * `proceed: true` decision feeds the failure back to the session's own
-   * agent via `promptSession` — the "surfaced ... which can auto-iterate
-   * a fix" half of SPEC §7.14's PR & CI lifecycle bullet. Every decision,
+   * "exactly-once-per-failure dedup" doc comment). This IS issue #246's
+   * loop: `isAutoIterateEligible` reads whether this session may
+   * currently iterate at all (not paused, not over its spend cap),
+   * `CiAutoIterateController.onFailure` weighs that alongside a prior
+   * user stop and the attempt cap, and only a real `proceed: true`
+   * decision feeds the failure back to the session's own agent via
+   * `promptSession` — the "surfaced ... which can auto-iterate a fix"
+   * half of SPEC §7.14's PR & CI lifecycle bullet. Every decision,
    * proceeding or not, pushes the resulting `ci_auto_iterate_status` so a
    * client always sees why. A session with no live agent
    * (`promptSession`'s own "no session with id" — archived, or
    * `'disconnected'` since a restart) rejects here and is caught by this
    * method's own caller (the `onFailure` wiring in this daemon's
    * constructor), exactly like every other best-effort hook in this file.
+   *
+   * SPEC §7.15/issue #247's own cross-source guard: before ever touching
+   * `ciAutoIterateController`, this consults `autoIterateDriveGate` —
+   * the ONE piece of dedup this method adds on top of `CiCheckWatcher`'s
+   * own per-poll dedup — so a local runner failure that already drove an
+   * attempt for this exact commit (`driveAutoIterateFromRunFailure`'s own
+   * doc comment) is never double-counted by CI observing the same commit
+   * moments later. Under normal CI-only operation this almost never
+   * triggers (`CiCheckWatcher` already guarantees a fresh sha here), so
+   * this changes nothing for a session the runner never touched.
    */
   private async handleCiCheckFailure(sessionId: string, state: CiCheckStateV1): Promise<void> {
+    if (!this.autoIterateDriveGate.shouldDrive(sessionId, state.headSha)) return;
+
     const eligible = this.isAutoIterateEligible(sessionId);
     const decision = this.ciAutoIterateController.onFailure(
       sessionId,
@@ -8752,7 +8936,7 @@ export class NodeDaemon extends EventEmitter {
         // through run_output/run_exit inside executeRun, never through
         // this promise chain — which only ever answers "is there
         // something to run at all".
-        this.executeRun(routing, message.runId, command).catch((error: unknown) => {
+        this.executeRun(routing, message.runId, payload.kind, command).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error);
           console.warn(
             `NodeDaemon: run ${message.runId} for session ${message.sessionId} failed unexpectedly: ${detail}`,
@@ -8793,24 +8977,41 @@ export class NodeDaemon extends EventEmitter {
    * of which {@link NodeDaemon.resolveSessionRouting} can supply for a
    * session with no live bridge — running a saved command never touches
    * the agent.
+   *
+   * Every exit path also calls {@link trackRunOutcome} right alongside
+   * its own `sendRunExit` (SPEC §7.15; issue #247) — `kind` is threaded
+   * through purely so that call knows which configured command this was,
+   * feeding `RunStatusTracker`/the shared auto-iterate loop the exact
+   * same way a CI failure already does. See {@link trackRunOutcome}'s own
+   * doc comment for why the two guard clauses above the permission-policy
+   * check pass `driveEligible: false`.
    */
-  private async executeRun(routing: SessionRouting, runId: string, command: string): Promise<void> {
+  private async executeRun(
+    routing: SessionRouting,
+    runId: string,
+    kind: TestRunnerKindV1,
+    command: string,
+  ): Promise<void> {
     if (!isSafeRunId(runId)) {
-      await this.sendRunExit(routing.session.id, runId, {
+      const result: RunExitResult = {
         outcome: 'could_not_start',
         exitCode: null,
         reason: 'invalid run id',
-      });
+      };
+      await this.sendRunExit(routing.session.id, runId, result);
+      this.trackRunOutcome(routing, kind, runId, result, false);
       return;
     }
 
     const target = this.targets.find((candidate) => candidate.id === routing.targetId);
     if (!target) {
-      await this.sendRunExit(routing.session.id, runId, {
+      const result: RunExitResult = {
         outcome: 'could_not_start',
         exitCode: null,
         reason: `no target with id "${routing.targetId}"`,
-      });
+      };
+      await this.sendRunExit(routing.session.id, runId, result);
+      this.trackRunOutcome(routing, kind, runId, result, false);
       return;
     }
 
@@ -8835,11 +9036,13 @@ export class NodeDaemon extends EventEmitter {
           `NodeDaemon: failed to send permission_policy_violation for session ${routing.session.id}: ${detail}`,
         );
       });
-      await this.sendRunExit(routing.session.id, runId, {
+      const result: RunExitResult = {
         outcome: 'could_not_start',
         exitCode: null,
         reason: `policy denied: ${violation.dimension} deny rule "${violation.rule}" matched "${violation.matched}"`,
-      });
+      };
+      await this.sendRunExit(routing.session.id, runId, result);
+      this.trackRunOutcome(routing, kind, runId, result, true);
       return;
     }
 
@@ -8854,6 +9057,7 @@ export class NodeDaemon extends EventEmitter {
           `NodeDaemon: failed to send run_exit for session ${routing.session.id} run ${runId}: ${detail}`,
         );
       });
+      this.trackRunOutcome(routing, kind, runId, result, true);
     };
 
     if (target.kind === 'local') {
@@ -9767,6 +9971,213 @@ export class NodeDaemon extends EventEmitter {
     });
   }
 
+  // -------------------------------------------------------------------
+  // Local runner <-> PR/CI loop/inbox unification (SPEC §7.14/§7.15;
+  // issue #247). `TestRunnerConfigStore`/`test-runner-process.ts` (issue
+  // #245) already run a project's configured commands and stream their
+  // output; `CiCheckWatcher`/`CiAutoIterateController` (issues #239/#246)
+  // already watch a session's open PR and auto-iterate on a red check.
+  // The three methods below are what makes a LOCAL run participate in
+  // that exact same loop and the exact same attention inbox as a REMOTE
+  // CI result, rather than a second, disconnected story: `trackRunOutcome`
+  // is called from every `executeRun` exit path (see that method) right
+  // alongside its existing `sendRunExit`, `sendRunStatus` pushes the
+  // resulting durable per-kind snapshot (the runner's own sibling of
+  // `sendCiCheckStatus` — what backs a freshly-connecting client's
+  // `'run_failure'` inbox item, the exact sibling `AttentionInboxItem`
+  // kind to `'ci_failure'`, `apps/web/src/lib/relay-client.ts`'s own doc
+  // comment), and `driveAutoIterateFromRunFailure` is the runner's own
+  // `handleCiCheckFailure` counterpart, sharing the SAME
+  // `CiAutoIterateController` instance/session record so a session's
+  // attempt count/bound is one number regardless of which source (CI or
+  // the runner) observed the latest failure.
+  // -------------------------------------------------------------------
+
+  /**
+   * Records `kind`'s terminal outcome for `sessionId` and pushes the
+   * resulting durable snapshot (SPEC §7.15; issue #247) — called from
+   * every `executeRun` exit path (that method's own guard-clause
+   * `could_not_start` replies AND the real `onExit` callback alike),
+   * right alongside each one's existing `sendRunExit`, so every way a run
+   * can end updates the SAME per-kind memory `RunStatusTracker` owns —
+   * this is what makes a `'run_failure'` attention-inbox item durable
+   * across a client reload, exactly like `'ci_failure'` already is.
+   *
+   * `driveEligible` is `false` only for the two guard clauses that fire
+   * before `executeRun` has even resolved a real target (an unsafe
+   * `runId`, or no target with the requested id) — neither is a real
+   * code failure a fix attempt could address, and neither has a target to
+   * resolve a head sha against, so those two still record/push the
+   * outcome for inbox visibility but never attempt to drive the
+   * auto-iterate loop for it.
+   */
+  private trackRunOutcome(
+    routing: SessionRouting,
+    kind: TestRunnerKindV1,
+    runId: string,
+    result: RunExitResult,
+    driveEligible: boolean,
+  ): void {
+    const status = this.runStatusTracker.record(routing.session.id, kind, runId, result);
+    this.sendRunStatus(routing.session.id, status).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to send run_status for session ${routing.session.id}: ${detail}`,
+      );
+    });
+    if (!driveEligible || result.cancelled || !isFailingRunOutcome(result.outcome)) return;
+    this.driveAutoIterateFromRunFailure(routing, kind, result).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `NodeDaemon: failed to drive the auto-iterate loop from a run failure for session ${routing.session.id}: ${detail}`,
+      );
+    });
+  }
+
+  /** Pushes `sessionId`'s latest durable per-kind run status to its subscribed clients (SPEC §7.15; issue #247) — session-scoped and envelope-sealed exactly like `sendCiCheckStatus`. */
+  private async sendRunStatus(sessionId: string, status: RunStatusStateV1): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const payload: RunStatusPayloadV1 = { status };
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({ type: 'run_status', protocolVersion: PROTOCOL_V1, sessionId, envelope });
+  }
+
+  /**
+   * The runner's own `handleCiCheckFailure` counterpart (SPEC §7.15;
+   * issue #247): a local `kind` run just failed, so this decides whether
+   * that failure ALSO drives a new agent turn through the exact same
+   * `CiAutoIterateController` a CI failure does — one shared attempt
+   * count/bound per session, never two separate loops for one project.
+   *
+   * `AutoIterateDriveGate` is what keeps a CI failure and a local runner
+   * failure for the SAME underlying commit from driving two turns for
+   * what is really one failing change (issue #247's own acceptance line):
+   * both this method and `handleCiCheckFailure` resolve the failing
+   * commit's own head sha and consult the SAME gate before ever calling
+   * `ciAutoIterateController.onFailure` — whichever source observes a
+   * given sha first is the one that actually drives; the other's own
+   * failure for that identical sha still updates ITS OWN status/inbox
+   * item (`RunStatusTracker`/`CiCheckWatcher` track those independently),
+   * it just never fires a second `promptSession` turn for it. A project
+   * with no git repo at all (SPEC §6) resolves no head sha at all
+   * (`resolveWorkspaceHeadSha`'s own "nothing to report" contract) — never
+   * deduped against anything, since such a project can never have an open
+   * PR/CI watch to collide with in the first place.
+   */
+  private async driveAutoIterateFromRunFailure(
+    routing: SessionRouting,
+    kind: TestRunnerKindV1,
+    result: RunExitResult,
+  ): Promise<void> {
+    const execTarget = await this.getExecutionTarget(routing.targetId);
+    const headSha = await resolveWorkspaceHeadSha(execTarget, routing.session.worktreePath);
+    if (!this.autoIterateDriveGate.shouldDrive(routing.session.id, headSha)) return;
+
+    const eligible = this.isAutoIterateEligible(routing.session.id);
+    const decision = this.ciAutoIterateController.onFailure(
+      routing.session.id,
+      headSha ?? 'unknown',
+      eligible,
+    );
+    await this.sendCiAutoIterateStatus(routing.session.id, decision.state);
+    if (!decision.proceed) return;
+
+    const detail = result.reason ? `: ${result.reason}` : '';
+    const text = [
+      `The local ${kind} run just failed on this session's own worktree${detail} (exit code ${result.exitCode ?? 'n/a'}).`,
+      '',
+      'Please look into the failure above and push a fix.',
+    ].join('\n');
+    await this.promptSession(routing.session.id, text);
+  }
+
+  /**
+   * A client asked (via the relay) this node to push this session's own
+   * branch to `origin` (SPEC §7.6/§7.14; issue #235) —
+   * `handleGitBranchSwitchRequest`'s sibling in shape: enveloped request
+   * (`payload.force`), always a reply, never a silent drop for a session
+   * this node actually owns.
+   */
+  private handleGitPushRequest(message: GitPushRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitPushRequest(message)
+      .then((payload) => this.pushBranchForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitPushResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_push_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitPushRequest(message: GitPushRequest): Promise<GitPushRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitPushRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Resolves this session's own branch (`./session-branch.ts`'s
+   * `resolveSessionBranch` — the exact same resolution `pr-open.ts`'s
+   * `previewPrOpen` already uses for its own, unrelated push) and pushes
+   * it via `./git-diff.ts`'s `pushBranch`. `'no_branch'` for a detached
+   * `HEAD` or a non-git worktree, mirroring `PrOpenError`'s identical
+   * `'no_branch'` category — nothing to push at all, refused before
+   * `pushBranch` (and thus real `git`) ever runs.
+   */
+  private async pushBranchForBridge(
+    routing: SessionRouting,
+    payload: GitPushRequestPayloadV1,
+  ): Promise<GitPushResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const branch = await resolveSessionBranch(target, routing.session);
+      if (!branch || branch.startsWith('detached@')) {
+        return {
+          outcome: 'no_branch',
+          message:
+            'This session has no named branch to push (detached HEAD, or not a git repository).',
+        };
+      }
+      const result = await pushBranch(target, routing.session.worktreePath, branch, {
+        force: payload.force,
+      });
+      return { outcome: 'ok', branch, setUpstream: result.setUpstream, forced: result.forced };
+    } catch (error) {
+      if (error instanceof GitPushStaleLeaseError) {
+        return { outcome: 'rejected_stale_lease', message: error.message };
+      }
+      if (error instanceof GitPushNonFastForwardError) {
+        return { outcome: 'rejected_non_fast_forward', message: error.message };
+      }
+      if (error instanceof GitPushAuthenticationError) {
+        return { outcome: 'auth_failed', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitPushResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitPushResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_push_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
   /**
    * Commit graph / branch tree (SPEC §7.6; issue #231) — kept as one
    * contiguous block appended here, deliberately never interleaved
@@ -9799,13 +10210,6 @@ export class NodeDaemon extends EventEmitter {
       });
   }
 
-  private async decryptGitGraphRequest(
-    message: GitGraphRequest,
-  ): Promise<GitGraphRequestPayloadV1> {
-    const key = await this.getSessionKey(message.sessionId);
-    return openJson<GitGraphRequestPayloadV1>(message.sessionId, message.envelope, key);
-  }
-
   /**
    * Runs `computeCommitGraph` (`./git-diff.ts`) against `routing`'s own
    * `ExecutionTarget`, project-policy-scoped exactly like {@link
@@ -9834,6 +10238,13 @@ export class NodeDaemon extends EventEmitter {
       const detail = error instanceof Error ? error.message : String(error);
       return { outcome: 'error', message: detail };
     }
+  }
+
+  private async decryptGitGraphRequest(
+    message: GitGraphRequest,
+  ): Promise<GitGraphRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitGraphRequestPayloadV1>(message.sessionId, message.envelope, key);
   }
 
   private async sendGitGraphResponse(
