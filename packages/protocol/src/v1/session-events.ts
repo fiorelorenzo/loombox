@@ -89,19 +89,21 @@ export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
  *   `@loombox/node`'s own `SessionLifecycleState` value of the same name
  *   (`session-manager.ts`'s doc comment): a session reloaded from a node's
  *   on-disk `sessions.json` after a restart, whose agent process died with
- *   the previous one. Deliberately NOT added to `AcpSessionStatus`
- *   (`@loombox/providers-core`'s five-value union) even though it is a
- *   session-status concept — that union is, by its own doc comment,
- *   "exactly what `AgentSession` already computes," and there is no
- *   `AgentSession` behind a disconnected session at all; `'queued'`/
- *   `'starting'` set the precedent that a node-lifecycle state with no
- *   agent behind it belongs here, protocol-side, not there. Pushed via
- *   `@loombox/node`'s `sendSessionStatus` (usable with no bridge, exactly
- *   like `'starting'`/an aborted-spawn `'error'` already are) on every
- *   reconnect, for every session this node's `SessionManager` reports as
- *   `'disconnected'` — so a client that was offline for the actual
- *   transition still learns the true state the moment it (or its node)
- *   reconnects, not just the client that happened to be subscribed live.
+ *   the previous one. There is no `AgentSession` behind a disconnected
+ *   session at all, same as `'queued'`/`'starting'` — a node-lifecycle
+ *   state with no live agent behind it, synthesized here rather than
+ *   read off `AttentionStatus` (`@loombox/supervisor`'s ACP-native,
+ *   live-agent-only vocabulary, which has no `'disconnected'` concept and
+ *   stays exactly five values). `@loombox/providers-core`'s
+ *   `AcpSessionStatus` (issue #636) is `SessionStatusV1` itself, so this
+ *   value reaches the client with no separate widening on that side.
+ *   Pushed via `@loombox/node`'s `sendSessionStatus` (usable with no
+ *   bridge, exactly like `'starting'`/an aborted-spawn `'error'` already
+ *   are) on every reconnect, for every session this node's
+ *   `SessionManager` reports as `'disconnected'` — so a client that was
+ *   offline for the actual transition still learns the true state the
+ *   moment it (or its node) reconnects, not just the client that
+ *   happened to be subscribed live.
  * - `'paused'` (SPEC §7.16's spend caps, issue #251) is the wire
  *   counterpart of `SessionLifecycleState`'s own `'paused'` value, same
  *   relationship `'disconnected'` already has to that type — but unlike

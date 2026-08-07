@@ -130,15 +130,37 @@ type JsonRpcInbound = JsonRpcSuccess | JsonRpcFailure | JsonRpcNotificationIn | 
  *    #623: no fixture or hand-written payload ever sent a real plan
  *    notification, so this silently dropped every plan report.
  *  - `used`/`size`/`cost`: correct (fixed by #248/PR #622).
- *  - `options` (`config_option_update`): ACP's real field is
- *    `configOptions: SessionConfigOption[]`, wire-shaped the same as
- *    `session/new`'s own `configOptions` (`id`/`name`/`category`/
- *    `type: 'select'|'boolean'`/`currentValue`/`options: [{value, name,
- *    description}]`), unrelated to this client's own `AcpConfigOption`
- *    (`category`/`current`/`choices`). `mapConfigOptions` below is the one
- *    place this translation happens for every source (`initialize`,
- *    `session/new`, and this notification) — issue #705, closing the
- *    follow-up this comment used to flag.
+ *  - `configOptions` (`config_option_update`'s own payload field — this
+ *    interface's `configOptions` below already carries the wire's own
+ *    name, so unlike `toolCallId`/`kind` above there is no separate
+ *    "was called X" name to flag): ACP's real `ConfigOptionUpdate` type is
+ *    `{configOptions: SessionConfigOption[]}`
+ *    (`@agentclientprotocol/sdk@1.3.0`'s generated schema, pinned as this
+ *    package's own devDependency for exactly this citation — the
+ *    `docs/research/codex-acp-completeness.md` convention —
+ *    `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts:
+ *    3909-3924`), discriminated onto `SessionUpdate` at `:3469-3470` as
+ *    `sessionUpdate: "config_option_update"` — the same `sessionUpdate`
+ *    field this interface already declares above, never a second `kind`.
+ *    Wire-shaped the same as `session/new`'s own `configOptions`
+ *    (`SessionConfigOption`, `:2653-2687`: `id`/`name`/`description?`/
+ *    `category?`/`type: 'select'|'boolean'`, intersected with either
+ *    `SessionConfigSelect` (`:2770-2782`: `currentValue: string`,
+ *    `options: SessionConfigSelectOption[] | SessionConfigSelectGroup[]`)
+ *    or `SessionConfigBoolean` (`:2783-2791`: `currentValue: boolean`, no
+ *    `options` at all)) — unrelated to this client's own internal
+ *    `AcpConfigOption` (`types.ts`: `category`/`current`/`choices`).
+ *    `mapConfigOptions` below is the one place this translation happens
+ *    for every source (`initialize`, `session/new`, and this
+ *    notification) — issue #705 did the actual fix; #633 (this audit's
+ *    own direct follow-up) re-verified every field here against the
+ *    pinned SDK schema file+line rather than just the docs site, found
+ *    the field names already correct, and filed the fields this client
+ *    still drops on the floor (`description`, the `'boolean'` variant,
+ *    grouped `options`) as their own follow-up rather than folding a
+ *    product decision into a shape-correctness pass — see
+ *    `RawConfigOptionChoice`/`RawConfigOption`'s own doc comment below
+ *    and issue #897.
  *  - `availableCommands` (`available_commands_update`): ACP's real field
  *    name, `[{name, description, input: {hint} | null}]` — see
  *    `mapAvailableCommands`'s own doc comment (issue #741).
@@ -329,13 +351,52 @@ function extractDiff(content: unknown): AcpDiff | undefined {
 }
 
 /**
- * ACP's real config-option wire shape (`SessionConfigOption` at
- * agentclientprotocol.com/protocol/v1/schema), carried by `initialize`'s
+ * ACP's real config-option wire shape, cited against
+ * `@agentclientprotocol/sdk@1.3.0` (this package's own pinned
+ * devDependency, added specifically so this citation is a real, installed,
+ * re-checkable file rather than a paraphrase of the docs site — same
+ * convention `docs/research/codex-acp-completeness.md` established):
+ * `SessionConfigOption`
+ * (`node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts:
+ * 2653-2687`) intersected with either `SessionConfigSelect` (`:2770-2782`)
+ * or `SessionConfigBoolean` (`:2783-2791`), carried by `initialize`'s
  * result, `session/new`'s result, and a `config_option_update`
- * notification alike: `{id, name, category, type, currentValue,
- * options: [{value, name, description}]}`. Materially different from this
- * client's own internal `AcpConfigOption` (`types.ts`: `{category,
- * current, choices: [{id, name}]}`) — issue #705.
+ * notification alike (all four confirmed against the same pinned schema:
+ * `NewSessionResponse.configOptions` `:2569-2596`,
+ * `ResumeSessionResponse.configOptions` `:2930-2954`,
+ * `ConfigOptionUpdate.configOptions` `:3906-3924`; `InitializeResponse`
+ * itself, `:1413-1452`, carries NO `configOptions` field at all — the
+ * fallback `AcpClient.initialize()` reads it through is schema-confirmed
+ * dead code for any real agent, not just empirically unobserved, per
+ * issue #705's own finding).
+ *
+ * Below is ACP's own, every field cited; not a rename of `id`/`name`/
+ * `category`/`type`/`currentValue`/`options` — those five (plus `value`/
+ * `name` on each choice) are exactly what the wire calls them too.
+ * Materially different in SHAPE from this client's own internal
+ * `AcpConfigOption` (`types.ts`: `category`/`current`/`choices`), which
+ * `mapConfigOptions` is the one place that translates — issue #705.
+ *
+ * Three real schema fields this shape does NOT carry through today, each
+ * confirmed present on the wire (not hypothetical) and filed as its own
+ * follow-up (issue #897) rather than folded into this shape-correctness
+ * pass, since each needs its own UI/product decision first (the same
+ * "flag, don't fold in" call issue #844 made for Gemini's `models`):
+ *  - `SessionConfigOption.description` (`:2669-2672`) and each choice's
+ *    own `SessionConfigSelectOption.description` (`:2715-2723`) — real,
+ *    present data (`test/fixtures/omp-acp-session-new-response.json`'s
+ *    recording carries one for nearly every model/mode choice), silently
+ *    dropped by `mapConfigOptions`'s choice-to-`{id, name}` mapping below.
+ *  - `SessionConfigBoolean`'s `currentValue: boolean` (`:2783-2791`, no
+ *    `options` field at all) — `currentValue` below is typed `string`
+ *    only, honest for the `'select'` variant this interface actually
+ *    handles, not for a real `type: 'boolean'` option (none of the three
+ *    currently-integrated agents send one).
+ *  - `SessionConfigSelectOptions`'s grouped-options variant,
+ *    `SessionConfigSelectGroup[]` (`:2739-2765`, `{group, name, options}`)
+ *    as an alternative to the flat `SessionConfigSelectOption[]` this
+ *    interface's `options` field assumes — `mapConfigOptions`'s choice
+ *    filter below silently drops every entry of a grouped response.
  */
 interface RawConfigOptionChoice {
   value?: string;

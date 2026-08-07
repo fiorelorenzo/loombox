@@ -379,6 +379,7 @@ import { PolicyEnforcedPty } from './policy-enforced-pty';
 import { RelayConnection, type WebSocketConstructor } from './relay-connection';
 import { sampleLocalResources, sampleRemoteResources } from './resource-sampler';
 import { SameFolderGuard } from './same-folder-guard';
+import { resolveNpmCacheDir } from './npm-cache';
 import { resolveSessionSandbox } from './session-sandbox';
 import { SessionConcurrencyGate } from './session-concurrency-gate';
 import {
@@ -641,7 +642,29 @@ export interface NodeDaemonOptions {
    * SPEC's documented weaker macOS fallback is a separate, not-yet-built
    * concern, not something this flag pretends to provide.
    */
-  sessionSandbox?: { enabled?: boolean };
+  sessionSandbox?: {
+    enabled?: boolean;
+    /**
+     * Whether `launchLocalSession` also resolves and mounts this account's
+     * npm/npx package cache read-write into the sandbox (issue #831 —
+     * see `./npm-cache.ts`'s `resolveNpmCacheDir()` doc comment for the
+     * sharing-scope decision: per-node, which for a `NodeCliConfig`
+     * scoped to exactly one `accountId` is the same thing as per-account).
+     * Defaults to `true` — this is the SAME "kill switch, not a normal
+     * opt-in" shape as `enabled` itself (see `NodeCliConfig.
+     * sandboxNpmCacheEnabled`'s own doc comment): the mount only ever
+     * targets the single, narrow, content-addressed cache leaf
+     * `resolveNpmCacheDir()` resolves (never a heuristically-widened
+     * root — see that module's `isDangerouslyBroadCacheDir` guard), so
+     * turning it off buys an operator nothing but the first-run network
+     * cost this issue exists to remove; it exists for the same reason
+     * `sandboxEnabled` does — an operator hitting an unexpected
+     * interaction on THEIR host gets an env-var escape hatch rather than
+     * needing a code change. Has no effect when `enabled` is `false` or
+     * unset.
+     */
+    npmCacheEnabled?: boolean;
+  };
   /**
    * Session ownership leasing across nodes (issue #82). Defaults to a fresh
    * in-memory manager, correct for a single-node deployment and for tests;
@@ -1684,6 +1707,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly resourceSamplingEnabled: boolean;
   /** See `NodeDaemonOptions.sessionSandbox`'s doc comment. */
   private readonly sessionSandboxEnabled: boolean;
+  /** See `NodeDaemonOptions.sessionSandbox.npmCacheEnabled`'s doc comment. */
+  private readonly sessionSandboxNpmCacheEnabled: boolean;
   /** Redesign v2 §3.2; issue #475 — see `NodeDaemonOptions.sshDiscoveryOptions`/`discoverSshTargetsImpl`'s doc comments. */
   private readonly sshDiscoveryOptions?: DiscoverSshTargetsOptions;
   private readonly discoverSshTargetsImpl: typeof discoverSshTargets;
@@ -1905,6 +1930,7 @@ export class NodeDaemon extends EventEmitter {
 
     this.resourceSamplingEnabled = options.resourceSampling?.enabled ?? false;
     this.sessionSandboxEnabled = options.sessionSandbox?.enabled ?? false;
+    this.sessionSandboxNpmCacheEnabled = options.sessionSandbox?.npmCacheEnabled ?? true;
     this.targetHealthSampler = new TargetHealthSampler({
       intervalMs: options.resourceSampling?.intervalMs,
       timeoutMs: options.resourceSampling?.timeoutMs,
@@ -2408,8 +2434,22 @@ export class NodeDaemon extends EventEmitter {
       // SPEC §7.17's fail-closed requirement) is caught by this method's
       // own `catch` below exactly like a spawn failure already is: the
       // session never reaches `startAgentWithTimeout` at all.
+      // Resolved (and, on the first call in this process, cached — see
+      // `resolveNpmCacheDir`'s own doc comment) alongside the sandbox
+      // resolution just above and for the identical reason: nothing about
+      // this account's npm cache location changes between retries either.
+      // `undefined` here (npm cache disabled, or unresolvable on this
+      // host) means `extraReadWriteMounts` stays empty — the exact
+      // pre-#831 behavior, never a reason to fail the session.
+      const npmCacheDir =
+        this.sessionSandboxEnabled && this.sessionSandboxNpmCacheEnabled
+          ? resolveNpmCacheDir()
+          : undefined;
       const wrapSpawnConfig = this.sessionSandboxEnabled
-        ? resolveSessionSandbox({ workspacePath: session.worktreePath }).wrapSpawnConfig
+        ? resolveSessionSandbox({
+            workspacePath: session.worktreePath,
+            extraReadWriteMounts: npmCacheDir ? [npmCacheDir] : [],
+          }).wrapSpawnConfig
         : undefined;
       const outcome = await this.startAgentWithMcpFallback(
         session.projectPath,
@@ -3583,19 +3623,15 @@ export class NodeDaemon extends EventEmitter {
     const reason = `Spend cap reached: $${spentUsd.toFixed(2)} of $${capUsd.toFixed(2)} — raise the cap or resume to continue.`;
     this.forwardSessionEvent(bridge.session.id, {
       kind: 'session_status',
-      // `AcpSessionWireEvent`'s `session_status` variant types `status` as
-      // the narrow, ACP-native `AttentionStatus` (5 values) — 'paused' is
-      // a `SessionStatusV1` (protocol-side) widening with no
-      // `AttentionStatus` counterpart, same category as 'queued'/
-      // 'starting'/'disconnected' (`session-events.ts`'s own doc comment:
-      // "deliberately NOT added to AcpSessionStatus... protocol-side, not
-      // there"). This is the one case among those four that DOES have a
-      // live bridge to push through, so it rides `forwardSessionEvent`
-      // rather than the bridge-less `sendSessionStatus` — the explicit
-      // widening cast here is the node-side mirror of `apps/web`'s
-      // `parseSessionWireEvent`, which documents the identical tolerance
-      // client-side.
-      status: 'paused' as unknown as AttentionStatus,
+      // Before issue #636, `AcpSessionWireEvent`'s `session_status`
+      // variant's `status` was typed with `@loombox/providers-core`'s
+      // then-five-value `AcpSessionStatus`, with no `'paused'` member —
+      // this line needed an explicit `'paused' as unknown as
+      // AttentionStatus` widening cast to get past that. `AcpSessionStatus`
+      // is now `@loombox/protocol`'s own nine-value `SessionStatusV1`
+      // (issue #636), which `'paused'` is a real member of, so the cast is
+      // gone: this is a plain, honestly-typed `'paused'` push.
+      status: 'paused',
       updatedAt: new Date().toISOString(),
       reason,
     });
