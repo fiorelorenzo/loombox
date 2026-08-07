@@ -37,6 +37,7 @@
     AccountPinResolveOutcome,
     ConnectedAccount,
   } from '@loombox/protocol';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
@@ -45,7 +46,7 @@
   import Input from './ui/Input.svelte';
   import RadioGroup, { type RadioOption } from './ui/RadioGroup.svelte';
   import Select from './ui/Select.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   export interface AccountPinClient {
     getAccountPins: (
@@ -130,12 +131,23 @@
     try {
       pins = await client.getAccountPins(nodeId, activeProjectPath);
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = loadErrorMessage('The pin list', error);
       pins = undefined;
     } finally {
       loadingPins = false;
     }
   }
+
+  /** One tagged value, not the three independent flags above — `loading`/`loadError`/`pins` are only ever read here, never separately from the template (issue #650). */
+  const pinsState = $derived<AsyncPanelState<AccountPinMapV1>>(
+    loadingPins
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : pins
+          ? { status: 'loaded', data: pins }
+          : { status: 'loading' },
+  );
 
   $effect(() => {
     // Re-fetch whenever the acting node or selected project changes —
@@ -250,151 +262,160 @@
 
     {#if !nodeId}
       <p class="pin-picker-empty">Select a node above to manage this project's pins.</p>
-    {:else if loadingPins}
-      <p class="pin-picker-loading"><WovenLoader label="Loading pins" />Loading pins…</p>
-    {:else if loadError}
-      <ErrorNotice message={loadError} retryable onRetry={loadPins} />
-    {:else if pins}
-      {#each CAPABILITIES as capability (capability)}
-        <Card elevation="raised" padding="md" class="pin-capability-card">
-          <h3>{providerLabel(capability)} pin</h3>
-          <RadioGroup
-            value={currentRadioValue(capability)}
-            options={radioOptions(capability)}
-            onChange={(value) => updatePin(capability, value)}
-            label={`${providerLabel(capability)} pin`}
-            disabled={pinBusy[capability]}
-            dataTestId={`account-pin-radio-${capability}`}
-          />
-          {#if pinError[capability]}
-            <ErrorNotice message={pinError[capability]!} />
-          {/if}
-
-          <div class="pin-preview" data-testid={`account-pin-preview-${capability}`}>
-            <div class="pin-preview-controls">
-              <Select
-                value={previewMode[capability] ?? 'read'}
-                options={[
-                  { id: 'read', label: 'Read' },
-                  { id: 'write', label: 'Write' },
-                ]}
-                onChange={(id) =>
-                  (previewMode = { ...previewMode, [capability]: id as 'read' | 'write' })}
-                label="Resolution mode"
-                size="sm"
-                dataTestId={`account-pin-preview-mode-${capability}`}
+    {:else if loadingPins || loadError || pins}
+      <AsyncPanel
+        state={pinsState}
+        loadingLabel="Loading pins"
+        loadingTestId="account-pin-picker-loading"
+        loadingText="Loading pins…"
+        onRetry={loadPins}
+      >
+        {#snippet content()}
+          {#each CAPABILITIES as capability (capability)}
+            <Card elevation="raised" padding="md" class="pin-capability-card">
+              <h3>{providerLabel(capability)} pin</h3>
+              <RadioGroup
+                value={currentRadioValue(capability)}
+                options={radioOptions(capability)}
+                onChange={(value) => updatePin(capability, value)}
+                label={`${providerLabel(capability)} pin`}
+                disabled={pinBusy[capability]}
+                dataTestId={`account-pin-radio-${capability}`}
               />
-              <Field label="Check host" grouped class="pin-preview-host-field">
-                {#snippet children({ id, describedBy, errorId, invalid, required })}
-                  <Input
-                    {id}
-                    {describedBy}
-                    {errorId}
-                    {invalid}
-                    {required}
-                    monospace
-                    value={previewHost[capability] ?? defaultHost(capability)}
-                    oninput={(event) =>
-                      (previewHost = { ...previewHost, [capability]: event.currentTarget.value })}
-                    dataTestId={`account-pin-preview-host-${capability}`}
-                  />
-                {/snippet}
-              </Field>
-              <Button
-                size="sm"
-                variant="secondary"
-                loading={previewLoading[capability]}
-                onclick={() => preview(capability)}
-                dataTestId={`account-pin-preview-run-${capability}`}
-              >
-                Preview
-              </Button>
-            </div>
+              {#if pinError[capability]}
+                <ErrorNotice message={pinError[capability]!} />
+              {/if}
 
-            {#if previewError[capability]}
-              <ErrorNotice message={previewError[capability]!} />
-            {:else if previewOutcome[capability]}
-              {@const outcome = previewOutcome[capability]!}
-              {#if outcome.outcome === 'resolved'}
-                <p
-                  class="pin-preview-result"
-                  data-testid={`account-pin-preview-resolved-${capability}`}
-                >
-                  <Badge tone="success">Resolves</Badge>
-                  {outcome.account.label} ({outcome.account.host})
-                </p>
-              {:else if outcome.outcome === 'none'}
-                <p
-                  class="pin-preview-result"
-                  data-testid={`account-pin-preview-none-${capability}`}
-                >
-                  <Badge tone="neutral">Nothing to use</Badge>
-                  No account will be used for this capability.
-                </p>
-              {:else if outcome.outcome === 'error'}
-                <div
-                  class="pin-preview-error"
-                  data-testid={`account-pin-preview-error-${capability}`}
-                  data-error-type={outcome.errorType}
-                >
-                  {#if outcome.errorType === 'AccountPinRequiredError'}
-                    <Badge tone="danger">Pin required</Badge>
-                    <p>
-                      Write actions never guess an account. Pick one above instead of
-                      "Unconfigured".
-                    </p>
-                  {:else if outcome.errorType === 'AccountPinMalformedError'}
-                    <Badge tone="danger">Malformed pin</Badge>
-                    <p>
-                      The saved pin ("{outcome.pinnedAccountId}") isn't a valid account id.
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onclick={() => updatePin(capability, '__unset__')}
+              <div class="pin-preview" data-testid={`account-pin-preview-${capability}`}>
+                <div class="pin-preview-controls">
+                  <Select
+                    value={previewMode[capability] ?? 'read'}
+                    options={[
+                      { id: 'read', label: 'Read' },
+                      { id: 'write', label: 'Write' },
+                    ]}
+                    onChange={(id) =>
+                      (previewMode = { ...previewMode, [capability]: id as 'read' | 'write' })}
+                    label="Resolution mode"
+                    size="sm"
+                    dataTestId={`account-pin-preview-mode-${capability}`}
+                  />
+                  <Field label="Check host" grouped class="pin-preview-host-field">
+                    {#snippet children({ id, describedBy, errorId, invalid, required })}
+                      <Input
+                        {id}
+                        {describedBy}
+                        {errorId}
+                        {invalid}
+                        {required}
+                        monospace
+                        value={previewHost[capability] ?? defaultHost(capability)}
+                        oninput={(event) =>
+                          (previewHost = {
+                            ...previewHost,
+                            [capability]: event.currentTarget.value,
+                          })}
+                        dataTestId={`account-pin-preview-host-${capability}`}
+                      />
+                    {/snippet}
+                  </Field>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={previewLoading[capability]}
+                    onclick={() => preview(capability)}
+                    dataTestId={`account-pin-preview-run-${capability}`}
+                  >
+                    Preview
+                  </Button>
+                </div>
+
+                {#if previewError[capability]}
+                  <ErrorNotice message={previewError[capability]!} />
+                {:else if previewOutcome[capability]}
+                  {@const outcome = previewOutcome[capability]!}
+                  {#if outcome.outcome === 'resolved'}
+                    <p
+                      class="pin-preview-result"
+                      data-testid={`account-pin-preview-resolved-${capability}`}
                     >
-                      Clear this pin
-                    </Button>
-                  {:else if outcome.errorType === 'AccountHostMismatchError'}
-                    <Badge tone="danger">Host mismatch</Badge>
-                    <p>
-                      The pinned account is on {outcome.actualHost}, but this check is for {outcome.expectedHost}.
-                      Update the check host above, or pin a matching account.
+                      <Badge tone="success">Resolves</Badge>
+                      {outcome.account.label} ({outcome.account.host})
                     </p>
-                  {:else if outcome.errorType === 'AccountPinDanglingError'}
-                    <Badge tone="danger">Dangling pin</Badge>
-                    <p>
-                      The pinned account ("{outcome.pinnedAccountId}") no longer exists — it was
-                      probably disconnected.
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onclick={() => updatePin(capability, '__unset__')}
+                  {:else if outcome.outcome === 'none'}
+                    <p
+                      class="pin-preview-result"
+                      data-testid={`account-pin-preview-none-${capability}`}
                     >
-                      Clear this pin
-                    </Button>
-                  {:else if outcome.errorType === 'AmbiguousAccountError'}
-                    <Badge tone="danger">Ambiguous</Badge>
-                    <p>Multiple connected accounts could apply and none is pinned. Pick one:</p>
-                    <div class="pin-ambiguous-candidates">
-                      {#each outcome.candidateAccountIds ?? [] as candidateId (candidateId)}
+                      <Badge tone="neutral">Nothing to use</Badge>
+                      No account will be used for this capability.
+                    </p>
+                  {:else if outcome.outcome === 'error'}
+                    <div
+                      class="pin-preview-error"
+                      data-testid={`account-pin-preview-error-${capability}`}
+                      data-error-type={outcome.errorType}
+                    >
+                      {#if outcome.errorType === 'AccountPinRequiredError'}
+                        <Badge tone="danger">Pin required</Badge>
+                        <p>
+                          Write actions never guess an account. Pick one above instead of
+                          "Unconfigured".
+                        </p>
+                      {:else if outcome.errorType === 'AccountPinMalformedError'}
+                        <Badge tone="danger">Malformed pin</Badge>
+                        <p>
+                          The saved pin ("{outcome.pinnedAccountId}") isn't a valid account id.
+                        </p>
                         <Button
                           size="sm"
                           variant="secondary"
-                          onclick={() => updatePin(capability, candidateId)}
+                          onclick={() => updatePin(capability, '__unset__')}
                         >
-                          Pin {accountLabel(candidateId)}
+                          Clear this pin
                         </Button>
-                      {/each}
+                      {:else if outcome.errorType === 'AccountHostMismatchError'}
+                        <Badge tone="danger">Host mismatch</Badge>
+                        <p>
+                          The pinned account is on {outcome.actualHost}, but this check is for {outcome.expectedHost}.
+                          Update the check host above, or pin a matching account.
+                        </p>
+                      {:else if outcome.errorType === 'AccountPinDanglingError'}
+                        <Badge tone="danger">Dangling pin</Badge>
+                        <p>
+                          The pinned account ("{outcome.pinnedAccountId}") no longer exists — it was
+                          probably disconnected.
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onclick={() => updatePin(capability, '__unset__')}
+                        >
+                          Clear this pin
+                        </Button>
+                      {:else if outcome.errorType === 'AmbiguousAccountError'}
+                        <Badge tone="danger">Ambiguous</Badge>
+                        <p>Multiple connected accounts could apply and none is pinned. Pick one:</p>
+                        <div class="pin-ambiguous-candidates">
+                          {#each outcome.candidateAccountIds ?? [] as candidateId (candidateId)}
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onclick={() => updatePin(capability, candidateId)}
+                            >
+                              Pin {accountLabel(candidateId)}
+                            </Button>
+                          {/each}
+                        </div>
+                      {/if}
                     </div>
                   {/if}
-                </div>
-              {/if}
-            {/if}
-          </div>
-        </Card>
-      {/each}
+                {/if}
+              </div>
+            </Card>
+          {/each}
+        {/snippet}
+      </AsyncPanel>
     {/if}
   </div>
 {/if}
@@ -406,8 +427,7 @@
     gap: var(--space-md);
   }
 
-  .pin-picker-empty,
-  .pin-picker-loading {
+  .pin-picker-empty {
     display: flex;
     align-items: center;
     gap: var(--space-xs);

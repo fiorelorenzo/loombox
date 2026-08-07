@@ -43,6 +43,29 @@ function makeClient(overrides: Partial<AccountPinClient> = {}): AccountPinClient
 }
 
 describe('AccountPinPicker tri-state (SPEC §7.26/#227, issue #230)', () => {
+  it('a node that never answers reads as "The pin list didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = makeClient({
+      getAccountPins: vi.fn(async () => {
+        throw new Error(
+          'RelayClient: timed out waiting for account_pin_get_response (account_pin_get_request)',
+        );
+      }),
+    });
+    render(AccountPinPicker, {
+      props: { client, accounts: [GITHUB_ACCOUNT], projectPaths: ['/tmp/proj'], nodeId: 'node_1' },
+    });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('account_pin_get_request');
+    expect(notice.textContent).not.toContain('RelayClient');
+    expect(notice.textContent).toContain("The pin list didn't answer in time.");
+    expect(notice.textContent).toContain('may be asleep, offline, or on an older relay');
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    await fireEvent.click(retry);
+    expect(client.getAccountPins).toHaveBeenCalledTimes(2);
+  });
+
   it('an absent key renders as Unconfigured — distinct from opted-out or pinned', async () => {
     const client = makeClient({ getAccountPins: vi.fn(async () => ({})) });
     render(AccountPinPicker, {
