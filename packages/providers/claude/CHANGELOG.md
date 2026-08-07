@@ -1,5 +1,45 @@
 # @loombox/providers-claude
 
+## 0.1.0
+
+### Minor Changes
+
+- 4e090fc: Codex inline base64 image hand-off (SPEC §7.25 "Hand off to the agent"; issue #158)
+
+  An image attached in the composer now reaches a live agent turn as a real ACP `ContentBlock::Image`, not just as `blob_ref` metadata:
+
+  - `@loombox/providers-core` gains `buildInlineImageContentBlock`, the one capability-gated inline base64 builder both `@loombox/providers-claude`'s `buildClaudeImageContentBlock` and `@loombox/providers-codex`'s `buildCodexImageContentBlock` now re-export under their own adapter-named symbol — SPEC.md §7.25 confirms both adapters' real ACP bridges build the identical `data:`-style block, so unifying the two previously-duplicated implementations follows the spec's own "unified, not special-cased" language rather than inventing a new shape. The builder checks capability, then a 10 MB size cap (`MAX_INLINE_IMAGE_BYTES`, overridable per call), then re-sniffs the bytes against the four supported formats, returning a typed `{ ok: true, block }` / `{ ok: false, reason }` result instead of `undefined` — a caller can now tell "capability not negotiated" apart from "oversize" apart from "unsupported format."
+  - `AcpClient.prompt()` and `AgentSession.prompt()` both grew an `extraContent: AcpPromptContentBlock[]` parameter (default `[]`, every existing plain-text caller unaffected) appended after the required text block. `AgentSession.getFeatureFlags()` exposes the session's negotiated `AcpFeatureFlags` (including `supportsImages`) the same way `configOptions`/`availableCommands` already do.
+  - `@loombox/node`'s `NodeDaemon.deliverPrompt` runs each resolved attachment through `buildInlineImageContentBlock`, gated on `agentSession.getFeatureFlags().supportsImages`, and appends a successful build to the turn's content blocks. A declined hand-off (capability not negotiated, oversize, or unsupported format) never blocks the turn — it emits a new `'attachment_handoff_declined'` event for observability and the prompt still reaches the agent as text, exactly as before this issue.
+
+  Verified: `pnpm --filter @loombox/providers-core --filter @loombox/providers-claude --filter @loombox/providers-codex --filter @loombox/node --filter @loombox/supervisor test -- --run` (all green; one unrelated pre-existing timing-sensitive test in `attachments-e2e.test.ts`'s bounded-queue describe block flaked once under full-suite parallel load with its default 5s timeout and passed cleanly on every isolated/solo run), `pnpm --filter @loombox/providers-core --filter @loombox/providers-claude --filter @loombox/providers-codex --filter @loombox/node --filter @loombox/supervisor typecheck`, `pnpm exec eslint` on every changed file, and the full `pnpm format:check`.
+
+  No real `codex` binary is installed on this box (`which codex` fails), so the exact payload shape Codex expects is proven against `codex-like-acp-agent.mjs`, a hermetic fixture agent driven over a real JSON-RPC/stdio child process (`packages/providers/codex/src/conformance.test.ts` and the two new `packages/node/src/attachments-e2e.test.ts` cases) — not against a real Codex install. The real `codex-acp` bridge's `promptCapabilities.image` advertisement itself is still unconfirmed against a live binary (tracked separately, issue #54).
+
+### Patch Changes
+
+- fc4f4e3: Fix `AcpAgentCapabilities` to read real ACP v1 fields, not invented ones (issue #821)
+
+  The #182 build-time verification spike (`docs/research/codex-acp-completeness.md`, cross-checked against `@agentclientprotocol/codex-acp@1.1.10`'s bundled `@agentclientprotocol/sdk` zod schema and a real `omp acp` binary recording) found `AcpAgentCapabilities` declared five top-level fields real ACP v1 doesn't have. Each phantom field is fixed or removed:
+
+  - `additionalDirectories` / `sessionDelete` were real capabilities, just flattened wrong. They now live where the wire actually puts them: a new `AcpSessionCapabilities` type on `AcpAgentCapabilities.sessionCapabilities`, read as `.additionalDirectories` / `.delete`. Presence (even an empty `{}`) means supported, absence means not — matching the real `zSessionCapabilities` schema.
+  - `mcpServerPicker`, `requestPermission`, `plans` don't exist anywhere in the real schema, in any nesting (grepped the full bundled source: zero hits as capability fields). Nothing downstream ever read the flags `deriveFeatureFlags` derived from them, so there was no honest value to keep deriving — removed outright, along with `AcpFeatureFlags.supportsMcpServerPicker` / `.supportsPermissions` / `.supportsPlans`. `session/request_permission` in particular isn't gated by any capability at all: `AcpClient` answers it unconditionally regardless of what `initialize` advertises, so a flag that never varies with the session wasn't real capability negotiation.
+  - `supportsResume` read the wrong field entirely: `agentCapabilities.loadSession` gates the older `session/load` method, not `session/resume`, which is what `AcpClient.resumeSession()` actually calls and which is gated by the separate `sessionCapabilities.resume`. Fixed to read the field that gates the method this client calls. The two happen to agree for Codex today (it sets both), which is exactly how this sat unnoticed.
+
+  `AcpFeatureFlags` is now: `supportsImages`, `supportsAudio`, `supportsEmbeddedContext`, `supportsResume`, `supportsAdditionalDirectories`, `supportsSessionDelete`. No caller outside `packages/providers/core`'s own tests reads any of the removed flags today (checked: `packages/node`, `packages/supervisor`, `apps/web` only ever read `supportsImages`), so this is a type/behavior fix with no live UI impact.
+
+  New coverage: `client.test.ts` gained a `deriveFeatureFlags` suite driven directly off `test/fixtures/omp-acp-session-new-response.json`, a response recorded from spawning the real `omp acp` binary (v17.2.9) over stdio — not a hand-built fixture. `codex-acp-capabilities.test.ts`'s `[known gap, issue #821]` test is flipped to prove the fix against Codex's real, source-verified `agentCapabilities` shape. Every fixture agent's `agentCapabilities` (`claude-like`/`codex-like`/`config`/`permission-acp-agent.mjs`) now sends the real nested shape instead of the invented flat one; `codex-like-acp-agent.mjs`'s is the literal shape verified against the pinned `codex-acp` source.
+
+  Verified: `pnpm --filter @loombox/providers-core --filter @loombox/providers-claude --filter @loombox/providers-codex --filter @loombox/providers-generic --filter @loombox/providers-ohmypi test -- --run` (25+6+7+7+6 = 51 files, 312+30+41+7+23 = 413 tests, all green), the same five packages' `typecheck` (all green), `pnpm exec eslint` on every changed file (clean), and the full `pnpm format:check` (clean, after one `prettier --write` on a test file's reformatted object literal).
+
+  While in this file, this branch independently hit and fixed the same pre-existing type error #834 fixed on `main` the same night: `codex-acp-capabilities.test.ts` asserted `block?.mimeType` on `buildCodexImageContentBlock`'s result, but #158 had already changed that return type to a discriminated `{ok: true, block} | {ok: false, reason}` union. My fix landed while this branch was in flight; once I saw #834 had already fixed the exact same lines on `main`, I aligned this branch's version to match #834's wording exactly so the hunk merges cleanly rather than as a redundant divergent diff.
+
+- Updated dependencies [fc4f4e3]
+- Updated dependencies [4e090fc]
+- Updated dependencies [5f500de]
+- Updated dependencies [05f8339]
+  - @loombox/providers-core@0.5.0
+
 ## 0.0.5
 
 ### Patch Changes

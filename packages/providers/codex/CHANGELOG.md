@@ -1,5 +1,70 @@
 # @loombox/providers-codex
 
+## 0.1.0
+
+### Minor Changes
+
+- 4e090fc: Codex inline base64 image hand-off (SPEC §7.25 "Hand off to the agent"; issue #158)
+
+  An image attached in the composer now reaches a live agent turn as a real ACP `ContentBlock::Image`, not just as `blob_ref` metadata:
+
+  - `@loombox/providers-core` gains `buildInlineImageContentBlock`, the one capability-gated inline base64 builder both `@loombox/providers-claude`'s `buildClaudeImageContentBlock` and `@loombox/providers-codex`'s `buildCodexImageContentBlock` now re-export under their own adapter-named symbol — SPEC.md §7.25 confirms both adapters' real ACP bridges build the identical `data:`-style block, so unifying the two previously-duplicated implementations follows the spec's own "unified, not special-cased" language rather than inventing a new shape. The builder checks capability, then a 10 MB size cap (`MAX_INLINE_IMAGE_BYTES`, overridable per call), then re-sniffs the bytes against the four supported formats, returning a typed `{ ok: true, block }` / `{ ok: false, reason }` result instead of `undefined` — a caller can now tell "capability not negotiated" apart from "oversize" apart from "unsupported format."
+  - `AcpClient.prompt()` and `AgentSession.prompt()` both grew an `extraContent: AcpPromptContentBlock[]` parameter (default `[]`, every existing plain-text caller unaffected) appended after the required text block. `AgentSession.getFeatureFlags()` exposes the session's negotiated `AcpFeatureFlags` (including `supportsImages`) the same way `configOptions`/`availableCommands` already do.
+  - `@loombox/node`'s `NodeDaemon.deliverPrompt` runs each resolved attachment through `buildInlineImageContentBlock`, gated on `agentSession.getFeatureFlags().supportsImages`, and appends a successful build to the turn's content blocks. A declined hand-off (capability not negotiated, oversize, or unsupported format) never blocks the turn — it emits a new `'attachment_handoff_declined'` event for observability and the prompt still reaches the agent as text, exactly as before this issue.
+
+  Verified: `pnpm --filter @loombox/providers-core --filter @loombox/providers-claude --filter @loombox/providers-codex --filter @loombox/node --filter @loombox/supervisor test -- --run` (all green; one unrelated pre-existing timing-sensitive test in `attachments-e2e.test.ts`'s bounded-queue describe block flaked once under full-suite parallel load with its default 5s timeout and passed cleanly on every isolated/solo run), `pnpm --filter @loombox/providers-core --filter @loombox/providers-claude --filter @loombox/providers-codex --filter @loombox/node --filter @loombox/supervisor typecheck`, `pnpm exec eslint` on every changed file, and the full `pnpm format:check`.
+
+  No real `codex` binary is installed on this box (`which codex` fails), so the exact payload shape Codex expects is proven against `codex-like-acp-agent.mjs`, a hermetic fixture agent driven over a real JSON-RPC/stdio child process (`packages/providers/codex/src/conformance.test.ts` and the two new `packages/node/src/attachments-e2e.test.ts` cases) — not against a real Codex install. The real `codex-acp` bridge's `promptCapabilities.image` advertisement itself is still unconfirmed against a live binary (tracked separately, issue #54).
+
+### Patch Changes
+
+- fc4f4e3: Fix `AcpAgentCapabilities` to read real ACP v1 fields, not invented ones (issue #821)
+
+  The #182 build-time verification spike (`docs/research/codex-acp-completeness.md`, cross-checked against `@agentclientprotocol/codex-acp@1.1.10`'s bundled `@agentclientprotocol/sdk` zod schema and a real `omp acp` binary recording) found `AcpAgentCapabilities` declared five top-level fields real ACP v1 doesn't have. Each phantom field is fixed or removed:
+
+  - `additionalDirectories` / `sessionDelete` were real capabilities, just flattened wrong. They now live where the wire actually puts them: a new `AcpSessionCapabilities` type on `AcpAgentCapabilities.sessionCapabilities`, read as `.additionalDirectories` / `.delete`. Presence (even an empty `{}`) means supported, absence means not — matching the real `zSessionCapabilities` schema.
+  - `mcpServerPicker`, `requestPermission`, `plans` don't exist anywhere in the real schema, in any nesting (grepped the full bundled source: zero hits as capability fields). Nothing downstream ever read the flags `deriveFeatureFlags` derived from them, so there was no honest value to keep deriving — removed outright, along with `AcpFeatureFlags.supportsMcpServerPicker` / `.supportsPermissions` / `.supportsPlans`. `session/request_permission` in particular isn't gated by any capability at all: `AcpClient` answers it unconditionally regardless of what `initialize` advertises, so a flag that never varies with the session wasn't real capability negotiation.
+  - `supportsResume` read the wrong field entirely: `agentCapabilities.loadSession` gates the older `session/load` method, not `session/resume`, which is what `AcpClient.resumeSession()` actually calls and which is gated by the separate `sessionCapabilities.resume`. Fixed to read the field that gates the method this client calls. The two happen to agree for Codex today (it sets both), which is exactly how this sat unnoticed.
+
+  `AcpFeatureFlags` is now: `supportsImages`, `supportsAudio`, `supportsEmbeddedContext`, `supportsResume`, `supportsAdditionalDirectories`, `supportsSessionDelete`. No caller outside `packages/providers/core`'s own tests reads any of the removed flags today (checked: `packages/node`, `packages/supervisor`, `apps/web` only ever read `supportsImages`), so this is a type/behavior fix with no live UI impact.
+
+  New coverage: `client.test.ts` gained a `deriveFeatureFlags` suite driven directly off `test/fixtures/omp-acp-session-new-response.json`, a response recorded from spawning the real `omp acp` binary (v17.2.9) over stdio — not a hand-built fixture. `codex-acp-capabilities.test.ts`'s `[known gap, issue #821]` test is flipped to prove the fix against Codex's real, source-verified `agentCapabilities` shape. Every fixture agent's `agentCapabilities` (`claude-like`/`codex-like`/`config`/`permission-acp-agent.mjs`) now sends the real nested shape instead of the invented flat one; `codex-like-acp-agent.mjs`'s is the literal shape verified against the pinned `codex-acp` source.
+
+  Verified: `pnpm --filter @loombox/providers-core --filter @loombox/providers-claude --filter @loombox/providers-codex --filter @loombox/providers-generic --filter @loombox/providers-ohmypi test -- --run` (25+6+7+7+6 = 51 files, 312+30+41+7+23 = 413 tests, all green), the same five packages' `typecheck` (all green), `pnpm exec eslint` on every changed file (clean), and the full `pnpm format:check` (clean, after one `prettier --write` on a test file's reformatted object literal).
+
+  While in this file, this branch independently hit and fixed the same pre-existing type error #834 fixed on `main` the same night: `codex-acp-capabilities.test.ts` asserted `block?.mimeType` on `buildCodexImageContentBlock`'s result, but #158 had already changed that return type to a discriminated `{ok: true, block} | {ok: false, reason}` union. My fix landed while this branch was in flight; once I saw #834 had already fixed the exact same lines on `main`, I aligned this branch's version to match #834's wording exactly so the hunk merges cleanly rather than as a redundant divergent diff.
+
+- 5f500de: Fix Codex's permission-option verb classification against real button text, and correct SPEC.md's guessed labels (issue #820, spike #182)
+
+  `@agentclientprotocol/codex-acp@1.1.10`'s real `CodexApprovalHandler` labels its permission buttons "Allow Once" / "Allow for Session" (or "Allow Host/Root for Session") / "Reject" — never the "Yes" / "Yes, for this session" / "Stop, and explain what to do differently" text SPEC.md §7.24 and `packages/providers/codex/src/permissions.ts` assumed (`docs/research/codex-acp-completeness.md` §4). The rendered permission card was never actually wrong — `PermissionCard.svelte` always renders the agent's own `option.name` verbatim, never a per-provider label table — but `mapCodexPermissionOptions`'s text-matching classifier never fired against real Codex text (it only ever hit its own kind-based fallback), and nothing in the real source supports the "abort, not a deny" distinction SPEC.md drew for Codex's reject option, which is exactly as ordinary as Claude's or the generic tier's.
+
+  - `@loombox/providers-codex`'s `CodexPermissionVerb` is renamed from `'yes' | 'yes_for_session' | 'stop_and_explain'` to `'allow_once' | 'allow_for_session' | 'reject'`, matching Claude's own verb-naming convention. `classify()`'s text patterns now match the real label vocabulary (`reject`, `session`, `allow once`) as the primary path, narrowly enough that an execpolicy/network-policy amendment option's "Allow Commands Starting With ..."/"Allow <host> in the Future" text still falls through to the kind-based fallback instead of misclassifying a persistent grant as one-time.
+  - SPEC.md §7.24 corrected to cite the real labels and the verifying research doc, dropping the unevidenced "abort, not a deny" claim.
+  - `packages/providers/core/test/fixtures/codex-like-acp-agent.mjs`'s `session/request_permission` fixture now sends the real option shapes, so every conformance suite drives real data instead of the fictional text.
+
+  Verified: `pnpm --filter @loombox/providers-codex --filter @loombox/providers-core --filter @loombox/web --filter @loombox/node exec vitest run` (all green, including two new `PermissionCard.test.ts` cases proving the UI names real Codex option shapes correctly and that Claude's own five-verb labels keep working unaffected), `pnpm --filter @loombox/providers-codex --filter @loombox/providers-core --filter @loombox/web typecheck`, `pnpm exec eslint` on every changed file, and the full `pnpm format:check`.
+
+- 97472a2: Fix Codex bespoke tool-widget matching against real tool-call titles (issue #819)
+
+  `codexBespokeToolName`/`hasCodexBespokeWidget` (`packages/providers/codex/src/tool-widgets.ts`) matched a tool call's `title` against a case-insensitive `'patch'`/`'diff'`/`'bash'` prefix — an assumption issue #182's build-time verification spike (`docs/research/codex-acp-completeness.md` §3) proved no real Codex tool call ever satisfies, so these functions never fired for a real Codex session and every Codex tool call fell through to the generic row.
+
+  Matched structurally against the real wire shape instead:
+
+  - A file-change tool call is always titled literally `"Editing files"` with `toolKind: 'edit'` — never `"Patch(...)"`/`"Diff(...)"`. Codex has no separate patch vs. diff tool call, so both collapse into one `'edit'` bespoke name (`CodexBespokeToolName` is now `'edit' | 'bash'`, was `'patch' | 'diff' | 'bash'`).
+  - A shell-command tool call's title is the arbitrary command text itself, its `bash`/`zsh`/`sh` prefix already stripped before the title is built — title text can never identify it. Matched by `toolKind: 'execute'` alone, mirroring `apps/web`'s already-fixed `resolveToolWidgetKind` (issue #623), which routes the same way for the same reason.
+
+  Both functions now read `toolKind` in addition to `title` (their `Pick<AcpToolCallUpdate, ...>` parameter grew accordingly).
+
+  The same class of bug (an unconfirmed title-prefix guess) still exists in `@loombox/providers-claude`'s `claudeBespokeToolName`/`hasClaudeBespokeWidget` — its own doc comment already tracks this as issue #54; deliberately left untouched here, a Codex-only fix.
+
+  Verified: `pnpm --filter @loombox/providers-codex exec vitest run` (42 passed; 1 pre-existing failure in `codex-acp-capabilities.test.ts`'s `buildCodexImageContentBlock`/`InlineImageHandoffResult` mimeType assertion, unrelated to this change and reproduced identically on a clean `origin/main` checkout before any of this PR's edits), `pnpm --filter @loombox/providers-codex typecheck` (same single pre-existing failure, same line, reproduced pre-existing), `pnpm exec eslint` on every changed file (clean), and the full `pnpm format:check` (clean).
+
+- Updated dependencies [fc4f4e3]
+- Updated dependencies [4e090fc]
+- Updated dependencies [5f500de]
+- Updated dependencies [05f8339]
+  - @loombox/providers-core@0.5.0
+
 ## 0.0.5
 
 ### Patch Changes
