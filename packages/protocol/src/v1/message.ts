@@ -4,6 +4,12 @@ import { blobDownload, blobDownloadResponse, blobRef, blobUpload } from './attac
 import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
 import {
+  gitCommitDraftRequest,
+  gitCommitDraftResponse,
+  gitCommitRequest,
+  gitCommitResponse,
+} from './git-commit';
+import {
   gitHunkActionRequest,
   gitHunkActionResponse,
   gitHunkDiffRequest,
@@ -286,6 +292,10 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitHunkDiffResponse,
   gitHunkActionRequest,
   gitHunkActionResponse,
+  gitCommitDraftRequest,
+  gitCommitDraftResponse,
+  gitCommitRequest,
+  gitCommitResponse,
   ciCheckStatus,
   ciAutoIterateStatus,
   ciAutoIterateStop,

@@ -74,6 +74,8 @@
     onUnstageHunk: (path: string, hunkIndex: number) => void;
     /** Opens `DiscardHunkDialog` for `unstaged[hunkIndex]` of the file at `path` — discard is destructive, so unlike stage/unstage this view never applies it directly; the caller owns the confirmation dialog (`+page.svelte`'s own "the dialog that triggers a real relay call owns that call" convention, `DiscardHunkDialog`'s file doc comment). */
     onDiscardHunk: (path: string, hunkIndex: number, hunk: GitHunkV1) => void;
+    /** Opens `CommitDialog` for the session's currently staged changes (SPEC §7.6; issue #233) — the staging surface's own "commit what's staged" entry point, `onDiscardHunk`'s sibling in shape (this view only ever reports the click; the caller owns the dialog and its real `git_commit_draft_request`/`git_commit_request` calls, same "the dialog that triggers a real relay call owns that call" convention `DiscardHunkDialog`'s file doc comment already documents). */
+    onOpenCommit: () => void;
     /** Opens `path` in the canvas tab strip's read-only file viewer (issue #737) — forwarded to each file's `DiffViewer`, exactly like `ReviewChangesDialog`'s own `onOpenFile` wiring. Omitted renders no "Open" affordance anywhere in this view. */
     onOpenFile?: (path: string) => void;
   }
@@ -86,6 +88,7 @@
     onStageHunk,
     onUnstageHunk,
     onDiscardHunk,
+    onOpenCommit,
     onOpenFile,
   }: Props = $props();
 
@@ -98,6 +101,11 @@
 
   const narrowForSplit = isNarrowViewport(TABLET_VIEWPORT_BREAKPOINT_PX);
   const mode = $derived<DiffDisplayMode>($narrowForSplit ? 'inline' : requestedMode);
+
+  /** At least one hunk is currently staged (SPEC §7.6; issue #233) — gates the staging surface's own "Commit" button: committing an empty index is refused node-side anyway, but there is nothing useful for this button to open when nothing is staged. */
+  const hasStagedChanges = $derived(
+    hunkViewer.status === 'loaded' && hunkViewer.files.some((file) => file.staged.length > 0),
+  );
 
   function renameNote(file: {
     status: GitDiffFileStatusV1;
@@ -400,6 +408,22 @@
   {:else if hunkViewer.files.length === 0}
     <EmptyState message="No uncommitted changes in this project's worktree." />
   {:else}
+    <div class="worktree-diff-toolbar">
+      <span class="worktree-diff-count">
+        {hunkViewer.files.length}
+        {hunkViewer.files.length === 1 ? 'file' : 'files'} changed
+      </span>
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={!hasStagedChanges}
+        title={hasStagedChanges ? undefined : 'Stage at least one hunk first'}
+        onclick={onOpenCommit}
+        dataTestId="worktree-diff-commit-button"
+      >
+        Commit staged changes
+      </Button>
+    </div>
     <div class="worktree-diff-files" data-testid="worktree-hunk-files">
       {#each hunkViewer.files as file (file.path)}
         {@render stagingFile(file)}
