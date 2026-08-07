@@ -40,6 +40,7 @@
   import type { NewProject } from '$lib/projects';
   import { projectNameFromPath } from '$lib/projects';
   import type { TargetListEntry } from '$lib/relay-client';
+  import type { ProvisionLocalNodeOutcome } from '$lib/local-node-provision';
   import DirectoryPicker, { type DirectoryPickerClient } from './DirectoryPicker.svelte';
   import TargetPicker from './TargetPicker.svelte';
   import Button from './ui/Button.svelte';
@@ -49,6 +50,7 @@
   import Field from './ui/Field.svelte';
   import FormActions from './ui/FormActions.svelte';
   import Input from './ui/Input.svelte';
+  import WovenLoader from './WovenLoader.svelte';
 
   interface Props {
     open: boolean;
@@ -56,10 +58,20 @@
     client: DirectoryPickerClient | undefined;
     onClose: () => void;
     onCreated: (project: NewProject) => void;
+    /**
+     * Runs `@loombox/node`'s `provisionLocalNode()` end to end via the
+     * desktop app's IPC bridge (issue #654, `$lib/local-node-provision`'s
+     * `provisionMacLocalNode`) and resolves once it's done. Supplied by
+     * `+page.svelte` only inside the macOS desktop shell with an unlocked
+     * account session — everywhere else (a PWA tab, another platform, not
+     * yet signed in) this stays `undefined` and the zero-target empty
+     * state falls back to its plain no-nodes message instead of offering
+     * a control that would only fail.
+     */
+    onProvisionLocalNode?: () => Promise<ProvisionLocalNodeOutcome>;
   }
 
-  const { open, targets, client, onClose, onCreated }: Props = $props();
-
+  const { open, targets, client, onClose, onCreated, onProvisionLocalNode }: Props = $props();
   let selectedTargetId = $state<string | undefined>(undefined);
   let path = $state('');
   let isGitRepo = $state<boolean | undefined>(undefined);
@@ -69,6 +81,12 @@
   let submitting = $state(false);
   /** A submit-time failure from that probe (unreadable path, unreachable target); cleared on every fresh attempt. */
   let submitError = $state<string | undefined>(undefined);
+  /** True while `onProvisionLocalNode` is in flight (issue #654's "set up a node on this Mac" empty-state CTA). */
+  let provisioningLocalNode = $state(false);
+  /** Set once that call reports success, until the newly-installed node actually announces itself and shows up in `targets` (the effect below clears it) — a distinct state from `provisioningLocalNode` because the IPC call itself finishes well before the resident node has connected to the relay. */
+  let localNodeProvisioned = $state(false);
+  /** A failure from that call — surfaced next to the CTA, cleared on every fresh attempt. */
+  let localNodeProvisionError = $state<string | undefined>(undefined);
 
   /** The selected target's own `nodeId`: `DirectoryPicker`'s other routing half alongside `selectedTargetId` (`RelayClient.browseDirectory`'s `nodeId`+`targetId` pair). */
   const selectedNodeId = $derived(
@@ -101,6 +119,14 @@
     selectedTargetId = firstReachable?.targetId ?? targets[0]?.targetId;
   });
 
+  // Drops the "waiting for it to come online" state once the newly
+  // provisioned node actually announces and the shell's own continuous
+  // `targets` poll picks it up — the target picker below takes over from
+  // there, same as any other target appearing.
+  $effect(() => {
+    if (targets.length > 0) localNodeProvisioned = false;
+  });
+
   function resetForm(): void {
     selectedTargetId = undefined;
     path = '';
@@ -109,6 +135,34 @@
     nameEdited = false;
     submitting = false;
     submitError = undefined;
+    provisioningLocalNode = false;
+    localNodeProvisioned = false;
+    localNodeProvisionError = undefined;
+  }
+
+  async function handleProvisionLocalNode(): Promise<void> {
+    if (!onProvisionLocalNode || provisioningLocalNode) return;
+    provisioningLocalNode = true;
+    localNodeProvisionError = undefined;
+    try {
+      const result = await onProvisionLocalNode();
+      if (!result.ok) {
+        const lastMessage = result.progress.at(-1)?.message;
+        localNodeProvisionError = [
+          `Could not set up a node on this Mac${result.failedStep ? ` (${result.failedStep})` : ''}.`,
+          lastMessage,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return;
+      }
+      localNodeProvisioned = true;
+    } catch (error) {
+      localNodeProvisionError =
+        error instanceof Error ? error.message : 'Could not set up a node on this Mac.';
+    } finally {
+      provisioningLocalNode = false;
+    }
   }
 
   function handleTargetChange(targetId: string): void {
@@ -206,7 +260,36 @@
   <form class="project-form" onsubmit={handleSubmit}>
     {#if targets.length === 0}
       <div class="empty-state-slot" data-testid="add-project-no-targets">
-        <EmptyState message="No nodes connected yet: start a loombox node pointed at this relay." />
+        {#if provisioningLocalNode}
+          <p class="status-line" data-testid="add-project-provisioning-local-node">
+            <WovenLoader label="Setting up a node on this Mac" variant="working" />
+            Setting up a node on this Mac…
+          </p>
+        {:else if localNodeProvisioned}
+          <p class="status-line" data-testid="add-project-local-node-provisioned">
+            <WovenLoader label="Waiting for the new node to come online" variant="working" />
+            Node installed — waiting for it to come online…
+          </p>
+        {:else if onProvisionLocalNode}
+          <EmptyState message="No nodes connected yet.">
+            {#snippet cta()}
+              <Button
+                variant="primary"
+                onclick={handleProvisionLocalNode}
+                dataTestId="add-project-provision-local-node"
+              >
+                Set up a node on this Mac
+              </Button>
+            {/snippet}
+          </EmptyState>
+          {#if localNodeProvisionError}
+            <ErrorNotice message={localNodeProvisionError} />
+          {/if}
+        {:else}
+          <EmptyState
+            message="No nodes connected yet: start a loombox node pointed at this relay."
+          />
+        {/if}
       </div>
     {:else}
       <Field label="Target" grouped>
@@ -274,6 +357,17 @@
   .empty-state-slot {
     border-radius: var(--radius-lg);
     background: var(--color-fill-subtle);
+  }
+
+  .status-line {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xs);
+    margin: 0;
+    padding: var(--space-2xl);
+    color: var(--color-text-secondary);
+    font-size: var(--text-small-size);
   }
 
   .project-form {

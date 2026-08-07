@@ -3,7 +3,11 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { LocalProvisionOptions, LocalProvisionProgress, SupervisorBackend } from '@loombox/node';
+import type {
+  LocalProvisionOptions,
+  LocalProvisionProgress,
+  SupervisorBackend,
+} from '@loombox/node';
 
 import type {
   LocalProvisionProgressStep,
@@ -36,9 +40,7 @@ async function resolveNodeTargetVersion(): Promise<string> {
   const raw = await readFile(packageJsonPath, 'utf8');
   const parsed = JSON.parse(raw) as { version?: unknown };
   if (typeof parsed.version !== 'string' || parsed.version.length === 0) {
-    throw new Error(
-      `provision-local-node-bridge: ${packageJsonPath} has no valid "version" field`,
-    );
+    throw new Error(`provision-local-node-bridge: ${packageJsonPath} has no valid "version" field`);
   }
   return parsed.version;
 }
@@ -52,7 +54,8 @@ interface HostOsArch {
 
 /** This host's `RemoteOsArch`-shaped os/arch (`@loombox/node`'s own vocabulary, `scripts/package-node-release.mjs`'s `hostOsArch()` mirrored here) — an `'unknown'` os/arch never blocks resolving these deps; it surfaces as `SupervisorBackend.install`'s own `unsupported` action once actually attempted. */
 function hostOsArch(): HostOsArch {
-  const os = process.platform === 'darwin' ? 'darwin' : process.platform === 'linux' ? 'linux' : 'unknown';
+  const os =
+    process.platform === 'darwin' ? 'darwin' : process.platform === 'linux' ? 'linux' : 'unknown';
   const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : 'unknown';
   return { os, arch, rawOs: process.platform, rawArch: process.arch };
 }
@@ -72,7 +75,13 @@ function hostOsArch(): HostOsArch {
  */
 export type ProvisionLocalNodeDeps = Pick<
   LocalProvisionOptions,
-  'version' | 'fetchArchive' | 'backend' | 'transport' | 'identityStore' | 'mintNodeToken' | 'stateDir'
+  | 'version'
+  | 'fetchArchive'
+  | 'backend'
+  | 'transport'
+  | 'identityStore'
+  | 'mintNodeToken'
+  | 'stateDir'
 >;
 
 export async function resolveProvisionLocalNodeDeps(

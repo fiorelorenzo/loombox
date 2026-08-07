@@ -114,6 +114,11 @@
     type NewProject,
     type Project,
   } from '$lib/projects';
+  import {
+    isMacLocalNodeProvisioningAvailable,
+    provisionMacLocalNode,
+    type ProvisionLocalNodeOutcome,
+  } from '$lib/local-node-provision';
   import AddProjectDialog from '$lib/components/AddProjectDialog.svelte';
   import ArchiveSessionDialog from '$lib/components/ArchiveSessionDialog.svelte';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
@@ -1846,6 +1851,30 @@
     addProjectOpen = false;
   }
 
+  /**
+   * `AddProjectDialog`'s "Set up a node on this Mac" empty-state CTA
+   * (issue #654): runs the real `provisionLocalNode()` IPC round trip via
+   * `$lib/local-node-provision`, using this device's own already-unlocked
+   * account session — the dialog never touches `authSession`/`amkStorage`
+   * itself (stays pure, same as every other prop it receives). Only
+   * handed to the dialog at all when {@link canProvisionMacLocalNode} is
+   * true, so `authSession`/`amkStorage.get(...)` being missing here would
+   * mean that gate is wrong, not a normal runtime outcome — surfaced as a
+   * thrown error either way, exactly like `provisionMacLocalNode` itself
+   * throwing for "no desktop bridge".
+   */
+  async function handleProvisionMacLocalNode(): Promise<ProvisionLocalNodeOutcome> {
+    if (!authSession) throw new Error('Sign in first.');
+    const amk = amkStorage?.get(authSession.accountId);
+    if (!amk) throw new Error('Unlock this account first.');
+    return provisionMacLocalNode({
+      relayUrl,
+      accountId: authSession.accountId,
+      actingAuthToken: authSession.token,
+      amk,
+    });
+  }
+
   /** The "Add target" zero-touch provision-and-pair wizard's entry point (SPEC §7.23; issue #408), wired to the Nodes page's own two setup actions (design spec v4 §3.1: "Add target" / "Connect a node" both move here from the old sidebar split menu). This codebase has exactly one such flow today: `AddTargetWizard` already covers both "pair a new node" and "provision its first target" in one guided run (SPEC §7.23's steps 1-3), so both actions open the same wizard rather than a second, not-yet-built one. */
   function openAddTargetWizard(): void {
     addTargetOpen = true;
@@ -2580,6 +2609,10 @@
   /** Computed once per component instance rather than reactively (issue #759) — see `keyboard.ts`'s `isDesktopShell`/`isMacPlatform` doc comments for why each is a plain function call, not a `$derived`: neither environment fact changes after the page loads, and a `$derived` would imply a live dependency neither function actually reads. */
   const desktopShellActive = isDesktopShell();
   const macPlatformActive = isMacPlatform();
+
+  /** Whether `AddProjectDialog`'s zero-target empty state should offer "Set up a node on this Mac" (issue #654) — the macOS-local backend is the only one wired today (#658/#659, Linux/Windows local, are separate not-yet-started issues), so this gates on {@link macPlatformActive} too, not just the desktop shell's IPC bridge being present. Same "computed once, never reactive" reasoning as `desktopShellActive`/`macPlatformActive` above. */
+  const macLocalNodeProvisioningAvailable =
+    macPlatformActive && isMacLocalNodeProvisioningAvailable();
 
   /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate (and, since #759, `shortcutFor`) reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
   const actionContext = $derived<ActionContext>({
@@ -5201,6 +5234,7 @@
   {client}
   onClose={() => (addProjectOpen = false)}
   onCreated={handleProjectCreated}
+  onProvisionLocalNode={macLocalNodeProvisioningAvailable ? handleProvisionMacLocalNode : undefined}
 />
 
 <AddTargetWizard open={addTargetOpen} {client} onClose={() => (addTargetOpen = false)} />

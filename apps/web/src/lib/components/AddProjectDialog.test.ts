@@ -4,8 +4,24 @@ import { fireEvent } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TargetFsListResponsePayloadV1 } from '@loombox/protocol';
 import type { TargetListEntry } from '$lib/relay-client';
+import type { ProvisionLocalNodeOutcome } from '$lib/local-node-provision';
 import AddProjectDialog from './AddProjectDialog.svelte';
 import type { DirectoryPickerClient } from './DirectoryPicker.svelte';
+
+// jsdom has no Web Animations API; `Dialog`'s panel-lift transition calls
+// `element.animate()` once opened/closed reactively (see
+// `TargetStatusView.test.ts`'s identical stub for why) — only exercised in
+// this file by the open/close/reopen round trip in the local-node
+// provisioning suite below.
+if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
+  Element.prototype.animate = () =>
+    ({
+      finished: Promise.resolve(),
+      cancel: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as Animation;
+}
 
 afterEach(() => cleanup());
 
@@ -492,5 +508,207 @@ describe('AddProjectDialog (design spec §3.4, §4.2; issue #507)', () => {
     expect(nameInput.placeholder).toBe('');
     expect(screen.getByText('Defaults to the folder name')).toBeTruthy();
     expect(nameInput.getAttribute('aria-describedby')).toBeTruthy();
+  });
+
+  // Issue #654: the macOS-local resident node provisioning trigger. `onProvisionLocalNode`
+  // is only ever supplied by `+page.svelte` inside the desktop shell, on macOS, with an
+  // unlocked account session — every other test in this file omits it, which is what
+  // exercises the plain "no nodes connected yet" fallback message the tests above assert on.
+  describe('the "set up a node on this Mac" CTA (issue #654)', () => {
+    function provisionOutcome(
+      overrides: Partial<ProvisionLocalNodeOutcome> = {},
+    ): ProvisionLocalNodeOutcome {
+      return {
+        ok: true,
+        progress: [
+          { step: 'runtime_bootstrap', status: 'ok', message: 'system Node runtime resolved' },
+          { step: 'target_identity', status: 'ok', message: 'device identity ready' },
+          { step: 'mint_node_token', status: 'ok', message: 'node token minted' },
+          { step: 'amk_handoff', status: 'ok', message: 'account key handed off' },
+          { step: 'resident_node_install', status: 'ok', message: 'loombox-node is now running' },
+        ],
+        deviceId: 'mac_device',
+        nodeId: 'mac_node',
+        ...overrides,
+      };
+    }
+
+    it('offers the CTA instead of the plain no-nodes message when onProvisionLocalNode is supplied and there are no targets', () => {
+      render(AddProjectDialog, {
+        props: {
+          open: true,
+          targets: [],
+          client: fakeClient({}),
+          onClose: vi.fn(),
+          onCreated: vi.fn(),
+          onProvisionLocalNode: vi.fn(),
+        },
+      });
+
+      expect(screen.getByTestId('add-project-no-targets').textContent).not.toMatch(
+        /start a loombox node pointed at this relay/i,
+      );
+      expect(screen.getByTestId('add-project-provision-local-node').textContent).toMatch(
+        /set up a node on this mac/i,
+      );
+    });
+
+    it('never shows the CTA once targets exist, even with onProvisionLocalNode supplied', () => {
+      render(AddProjectDialog, {
+        props: {
+          open: true,
+          targets: TARGETS,
+          client: fakeClient({}),
+          onClose: vi.fn(),
+          onCreated: vi.fn(),
+          onProvisionLocalNode: vi.fn(),
+        },
+      });
+
+      expect(screen.queryByTestId('add-project-provision-local-node')).toBeNull();
+    });
+
+    it('running it shows a working state, then a waiting-to-come-online state, which clears once the new node appears in targets', async () => {
+      let resolveProvision: (outcome: ProvisionLocalNodeOutcome) => void = () => {};
+      const onProvisionLocalNode = vi.fn(
+        () =>
+          new Promise<ProvisionLocalNodeOutcome>((resolve) => {
+            resolveProvision = resolve;
+          }),
+      );
+      const { rerender } = render(AddProjectDialog, {
+        props: {
+          open: true,
+          targets: [],
+          client: fakeClient({}),
+          onClose: vi.fn(),
+          onCreated: vi.fn(),
+          onProvisionLocalNode,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('add-project-provision-local-node'));
+      expect(onProvisionLocalNode).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('add-project-provisioning-local-node')).toBeTruthy();
+      expect(screen.queryByTestId('add-project-provision-local-node')).toBeNull();
+
+      resolveProvision(provisionOutcome());
+      await waitFor(() =>
+        expect(screen.getByTestId('add-project-local-node-provisioned')).toBeTruthy(),
+      );
+      expect(screen.queryByTestId('add-project-provisioning-local-node')).toBeNull();
+
+      // The shell's own continuous `targets` poll (not this dialog) is what
+      // eventually reports the new node — simulated here as a prop update.
+      await rerender({
+        open: true,
+        targets: TARGETS,
+        client: fakeClient({}),
+        onClose: vi.fn(),
+        onCreated: vi.fn(),
+        onProvisionLocalNode,
+      });
+
+      expect(screen.queryByTestId('add-project-local-node-provisioned')).toBeNull();
+      expect(screen.getByTestId('target-picker')).toBeTruthy();
+      expect(screen.getByText('This machine')).toBeTruthy();
+    });
+
+    it('surfaces a failed provisionLocalNode outcome, naming the step it stopped at, and leaves the CTA available to retry', async () => {
+      const onProvisionLocalNode = vi.fn().mockResolvedValue(
+        provisionOutcome({
+          ok: false,
+          failedStep: 'mint_node_token',
+          progress: [
+            { step: 'runtime_bootstrap', status: 'ok', message: 'system Node runtime resolved' },
+            { step: 'target_identity', status: 'ok', message: 'device identity ready' },
+            {
+              step: 'mint_node_token',
+              status: 'failed',
+              message: 'the relay rejected the request',
+            },
+          ],
+        }),
+      );
+      render(AddProjectDialog, {
+        props: {
+          open: true,
+          targets: [],
+          client: fakeClient({}),
+          onClose: vi.fn(),
+          onCreated: vi.fn(),
+          onProvisionLocalNode,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('add-project-provision-local-node'));
+      await waitFor(() =>
+        expect(screen.getByTestId('add-project-provision-local-node')).toBeTruthy(),
+      );
+      const errorText = screen.getByText(/could not set up a node on this mac/i).textContent ?? '';
+      expect(errorText).toMatch(/mint_node_token/);
+      expect(errorText).toMatch(/the relay rejected the request/);
+      expect(screen.queryByTestId('add-project-local-node-provisioned')).toBeNull();
+    });
+
+    it('surfaces a rejected provisionLocalNode call (e.g. the desktop bridge throwing) as the same error state', async () => {
+      const onProvisionLocalNode = vi
+        .fn()
+        .mockRejectedValue(new Error('Setting up a node on this Mac requires the desktop app.'));
+      render(AddProjectDialog, {
+        props: {
+          open: true,
+          targets: [],
+          client: fakeClient({}),
+          onClose: vi.fn(),
+          onCreated: vi.fn(),
+          onProvisionLocalNode,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('add-project-provision-local-node'));
+      await waitFor(() =>
+        expect(
+          screen.getByText('Setting up a node on this Mac requires the desktop app.'),
+        ).toBeTruthy(),
+      );
+    });
+
+    it('resets the provisioning state on close/reopen, same as every other field this dialog carries', async () => {
+      const onProvisionLocalNode = vi.fn().mockResolvedValue(provisionOutcome({ ok: false }));
+      const { rerender } = render(AddProjectDialog, {
+        props: {
+          open: true,
+          targets: [],
+          client: fakeClient({}),
+          onClose: vi.fn(),
+          onCreated: vi.fn(),
+          onProvisionLocalNode,
+        },
+      });
+
+      await fireEvent.click(screen.getByTestId('add-project-provision-local-node'));
+      await waitFor(() => expect(screen.getByText(/could not set up a node/i)).toBeTruthy());
+
+      await rerender({
+        open: false,
+        targets: [],
+        client: fakeClient({}),
+        onClose: vi.fn(),
+        onCreated: vi.fn(),
+        onProvisionLocalNode,
+      });
+      await rerender({
+        open: true,
+        targets: [],
+        client: fakeClient({}),
+        onClose: vi.fn(),
+        onCreated: vi.fn(),
+        onProvisionLocalNode,
+      });
+
+      expect(screen.queryByText(/could not set up a node/i)).toBeNull();
+      expect(screen.getByTestId('add-project-provision-local-node')).toBeTruthy();
+    });
   });
 });

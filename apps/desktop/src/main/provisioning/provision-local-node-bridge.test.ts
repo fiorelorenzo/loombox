@@ -7,7 +7,10 @@ import { FakeTransport, NodeIdentityStore } from '@loombox/node';
 import { describe, expect, it } from 'vitest';
 
 import type { ProvisionLocalNodeRequest } from '../../shared/bridge';
-import { resolveProvisionLocalNodeDeps, runProvisionLocalNode } from './provision-local-node-bridge';
+import {
+  resolveProvisionLocalNodeDeps,
+  runProvisionLocalNode,
+} from './provision-local-node-bridge';
 
 const BASE_REQUEST: ProvisionLocalNodeRequest = {
   relayUrl: 'wss://relay.loombox.dev',
@@ -60,7 +63,10 @@ describe('runProvisionLocalNode (issue #654)', () => {
         },
         transport: new FakeTransport({ connectError }),
         stateDir,
-        identityStore: new NodeIdentityStore({ stateDir, osKeyringBackendFactory: async () => undefined }),
+        identityStore: new NodeIdentityStore({
+          stateDir,
+          osKeyringBackendFactory: async () => undefined,
+        }),
       });
 
       expect(result.ok).toBe(false);

@@ -141,7 +141,11 @@ export interface ProvisionLocalNodeRequest {
 }
 
 export type LocalProvisionStepId =
-  'runtime_bootstrap' | 'target_identity' | 'mint_node_token' | 'amk_handoff' | 'resident_node_install';
+  | 'runtime_bootstrap'
+  | 'target_identity'
+  | 'mint_node_token'
+  | 'amk_handoff'
+  | 'resident_node_install';
 
 /** A flattened, renderer-friendly projection of `@loombox/node`'s per-step progress union — mirrors `ProvisionProgressStep` above, but with `status` (`'started' | 'ok' | 'failed'`) instead of a plain `ok` boolean, matching `provisionLocalNode`'s own richer progress shape (it streams a `'started'` event too, not just the terminal outcome). */
 export interface LocalProvisionProgressStep {
