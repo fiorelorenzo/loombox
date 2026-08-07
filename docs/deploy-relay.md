@@ -214,3 +214,121 @@ docker compose logs relay --since 10m | grep invalid_union_discriminator
 The relay's Postgres database is the only copy of everything it holds - set up
 the nightly encrypted backup and read the restore runbook before this goes
 live with real users. See `docs/relay-backup.md`.
+
+## Preview environment (#864, epic #863)
+
+A second, fully isolated relay deployment for testing changes before they
+reach production - same shape as everything above, run from
+`deploy/relay-preview/` instead of `deploy/relay/`, under its own directory
+on prodbox (`/opt/apps/loombox-preview`) rather than inside production's.
+Nothing is shared with production: not the Postgres container, not the
+named volume, not the port, not `BETTER_AUTH_SECRET`, not the GitHub OAuth
+App. See `deploy/relay-preview/docker-compose.yml`'s header comment for the
+isolation reasoning behind each of those.
+
+### Prodbox loopback port map
+
+Every app on this box publishes to a loopback port that Caddy fronts.
+Picking a preview-relay port meant checking this whole table, not just
+production's own two:
+
+| Port | What |
+| ---- | ------------------------------------------------------- |
+| 5181 | pitchbox prod web |
+| 5185 | loombox prod relay |
+| 5186 | loombox prod web |
+| 5187 | **loombox preview relay (#864, this section)** |
+| 5190 | loombox-landing web |
+| 5191 | pitchbox preview web |
+| 5281 | embertold prod web |
+| 5291 | embertold preview web |
+| 5434 | pitchbox prod postgres |
+
+(Confirmed free via `ss -tlnp` on prodbox at the time #864 was written; a
+future preview-web deploy, #863's sub-issue 2, should recheck this table
+before claiming a port for itself the same way.) loombox preview's Postgres
+publishes no host port at all, same as production's - only the `relay`
+service needs one, reached over the compose-internal network.
+
+### Bring up
+
+```bash
+cd /opt/apps/loombox-preview/deploy/relay-preview
+docker compose up -d --build
+curl -fsS http://127.0.0.1:5187/health   # -> {"status":"ok"}
+```
+
+`docker compose up` interpolates the entire compose file before starting
+anything, so this refuses to start - cleanly, before creating a single
+container, Postgres included - until `.env` defines all four of
+`POSTGRES_PASSWORD`, `BETTER_AUTH_SECRET`, `GITHUB_CLIENT_ID` and
+`GITHUB_CLIENT_SECRET`; see `deploy/relay-preview/.env.example`. Verified
+empirically against a scratch compose file with the identical
+`${VAR:?message}` pattern: an unset required var anywhere in the file fails
+the whole command with `required variable ... is missing a value`, not
+just the service that references it.
+
+Add the Caddy site block (`deploy/relay-preview/Caddyfile.snippet`) to
+`/etc/caddy/Caddyfile`, then `sudo systemctl reload caddy` (`caddy reload`
+validates the new config before applying it and leaves the previous config
+running on any error, so a mistake here can't take the other vhosts -
+including production's - down with it). Once the DNS record below exists,
+Caddy provisions the TLS cert on first request:
+
+```bash
+curl -fsS https://preview-relay.loombox.dev/health   # -> {"status":"ok"}
+```
+
+### DNS record
+
+Same shape as `relay.loombox.dev`'s own record - DNS-only (grey cloud), so
+Caddy rather than Cloudflare terminates TLS:
+
+| Type | Name                       | Content         | Proxied | TTL  |
+| ---- | --------------------------- | --------------- | ------- | ---- |
+| A    | `preview-relay.loombox.dev` | `152.53.44.195` | false   | auto |
+
+### The one step that can't be scripted: the GitHub OAuth App
+
+Better Auth's OAuth callback is registered per GitHub OAuth App, and
+production's App is registered for `relay.loombox.dev` only - reusing it
+for preview would mean either the callback fails outright (host mismatch)
+or, if it were ever pointed at both, a preview sign-in could mint a
+cookie/session shape indistinguishable from production's. GitHub has no API
+to create an OAuth App - this is a five-field web form, once:
+
+1. github.com > Settings > Developer settings > OAuth Apps > New OAuth App.
+2. Application name: something that says "preview" (e.g. `loombox preview`)
+   so it's never confused with production's App in the list.
+3. Homepage URL: `https://preview.loombox.dev`.
+4. Authorization callback URL, exactly:
+   `https://preview-relay.loombox.dev/api/auth/callback/github`.
+5. Generate a client secret, then put both values in
+   `/opt/apps/loombox-preview/deploy/relay-preview/.env`:
+   `GITHUB_CLIENT_ID=...` / `GITHUB_CLIENT_SECRET=...`.
+
+That's the only human-only step in the whole environment: everything else
+in this section is scripted or already applied. After it, `docker compose
+up -d --build` (above) brings the rest up.
+
+### Verifying isolation once it's live
+
+Confirm a GitHub sign-in on preview creates an account in preview's
+database only, not production's:
+
+```bash
+# preview - should show the freshly-created account
+docker compose -p loombox-relay-preview exec postgres \
+  psql -U loombox_preview -d loombox_preview -c 'select id, email from "user";'
+
+# production - should NOT show it
+cd /opt/apps/loombox/deploy/relay
+docker compose exec postgres psql -U loombox -d loombox -c 'select id, email from "user";'
+```
+
+And confirm production's own containers never moved, before and after any
+preview deploy: `docker ps -q | sort | md5sum` (or just diff the id list)
+run on prodbox before touching preview and again after - the production
+`relay-relay-1` / `relay-postgres-1` / `web-web-1` container IDs must be
+byte-identical, since preview never runs a command inside
+`/opt/apps/loombox`.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { resolveDesktopEnvironmentConfig } from './environment';
 import { DEFAULT_PWA_URL, PWA_URL_FLAG, resolvePwaUrl } from './config';
 
 describe('resolvePwaUrl', () => {
@@ -52,6 +53,33 @@ describe('resolvePwaUrl', () => {
         argv: ['--remote-debugging-port=9222', '--inspect=9229', `${PWA_URL_FLAG}http://x:1`],
       }),
     ).toBe('http://x:1');
+  });
+
+  it('defaults to the preview PWA origin when LOOMBOX_DESKTOP_ENV=preview and no explicit override is set — issue #866: preview points at preview.loombox.dev, not production', () => {
+    expect(resolvePwaUrl({ env: { LOOMBOX_DESKTOP_ENV: 'preview' }, argv: [] })).toBe(
+      'https://preview.loombox.dev',
+    );
+    expect(resolvePwaUrl({ env: { LOOMBOX_DESKTOP_ENV: 'preview' }, argv: [] })).toBe(
+      resolveDesktopEnvironmentConfig({ env: { LOOMBOX_DESKTOP_ENV: 'preview' } }).defaultPwaUrl,
+    );
+  });
+
+  it('still lets LOOMBOX_DESKTOP_PWA_URL override the preview default, e.g. for local dev against the PWA dev server while packaged as a preview build', () => {
+    expect(
+      resolvePwaUrl({
+        env: { LOOMBOX_DESKTOP_ENV: 'preview', LOOMBOX_DESKTOP_PWA_URL: 'http://localhost:5173' },
+        argv: [],
+      }),
+    ).toBe('http://localhost:5173');
+  });
+
+  it('still lets the argv flag override the preview default', () => {
+    expect(
+      resolvePwaUrl({
+        env: { LOOMBOX_DESKTOP_ENV: 'preview' },
+        argv: [`${PWA_URL_FLAG}http://100.64.0.1:5173`],
+      }),
+    ).toBe('http://100.64.0.1:5173');
   });
 
   it('falls back to process.env/process.argv when neither is passed', () => {

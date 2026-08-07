@@ -1,0 +1,12 @@
+# loombox relay PREVIEW - Caddy site block for prodbox's /etc/caddy/Caddyfile.
+# Same shape as ../relay/Caddyfile.snippet (production), a different host
+# and a different loopback port so the two can never cross.
+#
+# Requires: DNS A record preview-relay.loombox.dev -> prodbox public IP
+# (152.53.44.195, same as its siblings), DNS-only / grey cloud so Caddy,
+# not Cloudflare, manages the cert, and 80/443 already open (UFW) - both
+# already true on this box for the other *.loombox.dev records.
+
+preview-relay.loombox.dev {
+	reverse_proxy 127.0.0.1:5187
+}

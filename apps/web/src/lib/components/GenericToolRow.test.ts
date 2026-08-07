@@ -102,6 +102,7 @@ describe('GenericToolRow', () => {
       ['execute', 'tool-bash'],
       ['think', 'tool-think'],
       ['fetch', 'tool-fetch'],
+      ['switch_mode', 'tool-switch-mode'],
       ['other', 'tool-generic'],
       [undefined, 'tool-generic'],
       // A future ACP tool kind this build doesn't know about yet — must
@@ -118,6 +119,27 @@ describe('GenericToolRow', () => {
       ).toBeTruthy();
       unmount();
     }
+  });
+
+  it('renders a real-shaped switch_mode tool call as itself, not a generic/unknown fallthrough (issue #822)', () => {
+    // Real shape a genuinely ACP-compliant agent sends (Gemini CLI's
+    // `toAcpToolKind` passes `Kind.SwitchMode` straight through as the
+    // literal wire value `'switch_mode'`, corroborating #822): a title,
+    // `toolKind: 'switch_mode'`, and a rawInput describing the target mode.
+    const switchModeCall: TranscriptToolCallItem = {
+      ...item,
+      title: 'Switch to plan mode',
+      toolKind: 'switch_mode',
+      status: 'completed',
+      rawInput: { modeId: 'plan' },
+    };
+    render(GenericToolRow, { props: { item: switchModeCall } });
+    // Its own glyph, not the 'tool-generic' wrench a falling-through kind
+    // would draw.
+    expect(screen.queryByTestId('generic-tool-row')).toBeTruthy();
+    expect(document.querySelector('[data-icon-name="tool-switch-mode"]')).toBeTruthy();
+    expect(document.querySelector('[data-icon-name="tool-generic"]')).toBeNull();
+    expect(screen.getByText('Switch to plan mode')).toBeTruthy();
   });
 });
 

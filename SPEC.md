@@ -163,13 +163,17 @@ adapter:
 
 - **Generic ACP core** (`packages/providers/core`) owns everything ACP itself
   standardizes, for every provider alike: `initialize`/capability negotiation,
-  `session/new`/`session/resume` + replay, the append-by-`messageId` message/
-  thought reducer, `tool_call`/`tool_call_update` (diffs, display-only
-  terminals), `plan_update`, `usage_update`, `session/request_permission`,
-  config-option-driven model/mode/reasoning selection, `session/list`, and
-  cancellation (§7.24 renders all of it). A provider that implements nothing
-  beyond the ACP spec still gets a fully working cockpit through this core
-  alone.
+  `session/new`/`session/resume` + replay (falling back to the older
+  `session/load` for an agent that advertises `loadSession` but not
+  `sessionCapabilities.resume` — Gemini CLI's real shape, issue #843; core
+  degrades to whichever lifecycle subset the connected agent actually
+  implements rather than assuming the full one), the append-by-`messageId`
+  message/thought reducer, `tool_call`/`tool_call_update` (diffs, display-
+  only terminals), `plan_update`, `usage_update`,
+  `session/request_permission`, config-option-driven model/mode/reasoning
+  selection, `session/list`, and cancellation (§7.24 renders all of it). A
+  provider that implements nothing beyond the ACP spec still gets a fully
+  working cockpit through this core alone.
 - **Capability negotiation gates the UI, not provider branding.** Every
   optional affordance — image/audio attach, an MCP-server picker, additional-
   directories, session delete — lights up or greys out per session based on
@@ -197,17 +201,23 @@ adapter:
   future `gemini-cli` release), not a shipped adapter; Gemini is registered
   through `AGENT_CATALOGUE`'s custom-agent quick-add, the same generic path
   any other ACP agent takes. Issue #273 (the reserved bespoke-module slot)
-  is closed on that basis. The spike filed the two real gaps a future
-  bespoke module would exist to close, each its own issue: #843 (Gemini
-  implements no ACP v1 session-lifecycle method except the deprecated
-  `session/load` — `session/resume`/`list`/`close`/`delete` are
-  unimplemented on the real binary, not just unadvertised; the fix, if
-  taken, is a `packages/providers/core`-level `session/load` fallback, not
-  a provider-level one) and #844 (Gemini's `session/new` carries a
+  is closed on that basis. The spike filed two real gaps, each its own
+  issue, and both are now closed in core rather than by a bespoke module.
+  #843: Gemini implements no ACP v1 session-lifecycle method except the
+  deprecated `session/load` — `session/resume`/`list`/`close`/`delete` are
+  unimplemented on the real binary, not merely unadvertised — so
+  `resumeSession` falls back to `session/load` (the bullet above) and
+  `getFeatureFlags().supportsResume` honestly reports the result. A Gemini
+  `session/list`/`close`/`delete` still isn't possible, since no client-side
+  fallback exists for those. #844: Gemini's `session/new` carries a
   non-standard `models` axis, paired with `unstable_setSessionModel`, that
-  `mapConfigOptions` never reads — no model-switcher UI is possible for
-  Gemini today). A bespoke Gemini module is worth building again only once
-  one of those two is picked up.
+  `mapConfigOptions` never read — now folded into a `'model'` category the
+  exact same way ACP-baseline `modes` already folds into `'mode'`, so
+  `ConfigBar`'s existing popover picks it up with no new UI, and
+  `AcpClient.setConfigOption` routes that one category through the real
+  `session/set_model` request instead of `session/set_config_option`. With
+  both closed generically, every provider benefits and there is still no
+  bespoke Gemini module to maintain.
 - **Generic ACP adapter** (`packages/providers/generic`) is what any other
   ACP-speaking agent gets automatically — flat tool-call list, `ToolKind`-
   generic rows, plain permission buttons, `ResourceLink` for file/image
@@ -217,9 +227,9 @@ adapter:
   warrant one.
 - v1 ships **Claude Code + Codex** adapter modules (Codex's ACP completeness
   verified at build time, §10/§12). **Gemini** is registered generic-tier
-  only (§16, issue #272) — no bespoke module is planned unless #843 or #844
-  gets picked up (bullet above). loombox deliberately does not chase
-  provider breadth for its own sake (§11).
+  only (§16, issue #272; both real gaps it found, #843 and #844, were
+  fixed in core instead) — no bespoke module is planned. loombox
+  deliberately does not chase provider breadth for its own sake (§11).
 
 ### 5.6 Agent-supervisor
 
@@ -731,7 +741,7 @@ across providers rather than needing a bespoke per-provider transcript format.
   Edit/Write/Bash/TodoWrite; Codex's patch/diff/bash), each wrapped in its own
   error boundary so one bad widget can't take down the transcript. (2) A
   generic `ToolKind`-driven fallback row (`read`/`edit`/`delete`/`move`/
-  `search`/`execute`/`think`/`fetch`/`other`) for anything without a bespoke
+  `search`/`execute`/`think`/`fetch`/`switch_mode`/`other`) for anything without a bespoke
   widget — the guaranteed baseline for the generic ACP adapter tier (§5.5).
   Suppress the generic row for a tool call already covered by a bespoke diff/
   edit widget so streaming never briefly shows a duplicate placeholder. *A

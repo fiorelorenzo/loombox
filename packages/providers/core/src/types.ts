@@ -310,9 +310,18 @@ export interface AcpDiff {
   newText: string;
 }
 
-/** The generic-fallback tool-call category (SPEC.md §7.24's tier-2 `ToolKind`-driven row). */
+/** The generic-fallback tool-call category (SPEC.md §7.24's tier-2 `ToolKind`-driven row; the real ACP v1 `zToolKind` enum has ten members — issues #822/#272). */
 export type AcpToolKind =
-  'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'other';
+  | 'read'
+  | 'edit'
+  | 'delete'
+  | 'move'
+  | 'search'
+  | 'execute'
+  | 'think'
+  | 'fetch'
+  | 'switch_mode'
+  | 'other';
 
 export type AcpToolCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 

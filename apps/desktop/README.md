@@ -17,6 +17,67 @@ single in-app confirmation that's supposed to sit in front of all of it — is t
 stubbed with `TODO`s pointing at the follow-up issues; see `src/shared/bridge.ts`'s
 doc comments for exactly what's real today versus stubbed.
 
+## Two environments, one build configuration (issue #866)
+
+This package builds two distinct artifacts from one parameterised
+`electron-builder.ts` — a production install and a preview install (epic
+#863's preview environment) — meant to sit on the same Mac at the same time,
+usable independently, neither aware of the other. `src/main/environment.ts`
+is the single table every value that has to differ is read from, at both
+build time (`electron-builder.ts`) and run time (`src/main/index.ts`):
+
+|                                                    | production (default)      | preview                                                                                                                        |
+| -------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `appId`                                            | `com.loombox.desktop`     | `com.loombox.desktop.preview`                                                                                                  |
+| `productName` (dock, menu bar, window title, tray) | `loombox`                 | `loombox Preview`                                                                                                              |
+| `userData` directory name                          | `loombox`                 | `loombox-preview`                                                                                                              |
+| deep-link scheme                                   | `loombox`                 | `loombox-preview`                                                                                                              |
+| in-app chrome marker                               | none                      | a ribbon stamped onto the loaded page from the main process (`src/main/chrome-badge.ts`), independent of the PWA's own content |
+| default PWA origin                                 | `https://app.loombox.dev` | `https://preview.loombox.dev`                                                                                                  |
+
+`LOOMBOX_DESKTOP_ENV=preview` selects the preview side (unset, or explicitly
+`production`, builds/runs production — every existing invocation is
+unchanged); `dev:preview` and the `package:*:preview` scripts below set it.
+**`preview.loombox.dev` does not resolve yet** — #865 stands up the preview
+web deployment. Pointing a preview build's default at it now is still
+correct; it just isn't reachable until that issue lands (use
+`LOOMBOX_DESKTOP_PWA_URL` to point a preview build at a local dev server or
+anywhere else reachable today).
+
+The `userData` directory is the one that actually matters and the reason
+this is a dedicated issue rather than a two-line diff: Electron persists
+`localStorage` (so the bearer token, the AMK, the session list) under
+`userData`, and a shared directory between a production and a preview
+install is silent cross-contamination — signing into one would leave the
+other signed in too. `src/main/index.ts` sets it explicitly via
+`app.setPath('userData', …)` before `app.whenReady()`, rather than relying on
+Electron's own `productName`-derived default, which only actually differs
+once a _packaged_ build carries a distinct `productName` — dev (`electron
+.`) reads `package.json` directly, which has no per-environment field to
+derive from at all.
+
+**Verified from this devbox** (`src/main/environment.test.ts`, over the
+resolved config, not eyeballed): every field above differs between the two
+resolved `DesktopEnvironmentConfig`s. A real `electron-builder --linux --dir`
+dry run for both `LOOMBOX_DESKTOP_ENV` values also ran here — `electron-builder.ts`
+loads and resolves correctly through electron-builder's own config loader
+(not just my own test harness), producing `release/production/linux-unpacked/loombox`
+and `release/preview/linux-unpacked/loombox-preview` as two independently
+populated trees (electron-builder's own default Linux executable name comes
+from `package.json`'s `name` field, not `productName`, so `executableName` is
+now set explicitly too — otherwise both builds would have produced the same
+`@loomboxdesktop` binary name regardless of environment).
+
+**What still needs the real Mac** (cannot be verified from this headless
+devbox — see "Building for macOS, Linux, and Windows" below): both `.app`s
+actually installed and launched side by side, each with its own Dock entry
+reading the right name; signing into one and confirming the other is still
+signed out by looking at its own `localStorage`/AMK; a `loombox://…` link
+opening the production app and a `loombox-preview://…` link opening the
+preview one. `pnpm run package:mac` / `pnpm run package:mac:preview` produce
+the two `.dmg`/`.zip`s to install; `scripts/mac-desktop.sh` is the existing
+one-command launch path for exercising either.
+
 ## Building for macOS, Linux, and Windows
 
 - **macOS** needs a Mac. Signing and notarization need Lorenzo's Apple Developer
@@ -63,8 +124,9 @@ transitive dependency of this monorepo's tooling, see `pnpm-workspace.yaml`'s
 `src/shared/bridge.ts` doesn't change either way.
 
 By default the window loads `https://app.loombox.dev` (the production PWA — see
-`deploy/web/README.md`). To point it at a local `pnpm --filter @loombox/web dev`
-server instead:
+`deploy/web/README.md`; a preview build loads `https://preview.loombox.dev` instead —
+see "Two environments, one build configuration" above). To point it at a local
+`pnpm --filter @loombox/web dev` server instead, regardless of environment:
 
 ```bash
 LOOMBOX_DESKTOP_PWA_URL=http://localhost:5173 pnpm --filter @loombox/desktop dev
@@ -97,18 +159,24 @@ it isn't part of this package's dependency tree at all.)
 ## Building & distributing
 
 ```bash
-pnpm --filter @loombox/desktop run package:mac     # electron-builder --mac
-pnpm --filter @loombox/desktop run package:linux   # electron-builder --linux
-pnpm --filter @loombox/desktop run package:win     # electron-builder --win
+pnpm --filter @loombox/desktop run package:mac              # electron-builder --mac
+pnpm --filter @loombox/desktop run package:linux             # electron-builder --linux
+pnpm --filter @loombox/desktop run package:win                # electron-builder --win
+pnpm --filter @loombox/desktop run package:mac:preview      # same, LOOMBOX_DESKTOP_ENV=preview
+pnpm --filter @loombox/desktop run package:linux:preview     # same, LOOMBOX_DESKTOP_ENV=preview
+pnpm --filter @loombox/desktop run package:win:preview        # same, LOOMBOX_DESKTOP_ENV=preview
 ```
 
-`electron-builder.yml` packages `src/**` + `node_modules/**` + `package.json` as-is (no
+`electron-builder.ts` packages `src/**` + `node_modules/**` + `package.json` as-is (no
 separate compile step — see "Running it" above for why) into, per platform: a `.dmg` and
 a `.zip` (universal) for mac, an AppImage and a `.deb` for Linux, and an NSIS installer
-plus a portable `.exe` for Windows — all under `apps/desktop/release/`. `pnpm run build`
-/ `pnpm run typecheck` are both just `tsc --noEmit` (this repo's convention for
-TS-source-shipped packages — see e.g. `packages/node`'s own `"build"` script), run before
-packaging to catch a type error, not to produce output packaging depends on.
+plus a portable `.exe` for Windows — under `apps/desktop/release/production/` or
+`apps/desktop/release/preview/` depending on `LOOMBOX_DESKTOP_ENV` (issue #866: kept
+apart so packaging both from the same checkout never has the second run's staging
+directory clobber the first's). `pnpm run build` / `pnpm run typecheck` are both just
+`tsc --noEmit` (this repo's convention for TS-source-shipped packages — see e.g.
+`packages/node`'s own `"build"` script), run before packaging to catch a type error,
+not to produce output packaging depends on.
 
 **Code signing and notarization need Lorenzo's Apple Developer ID certificate** —
 electron-builder auto-discovers a keychain identity by default; set `APPLE_ID` /
@@ -118,11 +186,15 @@ produces an unsigned app (fine for local testing, not for distribution — Gatek
 will refuse to open it on another Mac). Windows and Linux builds ship unsigned; nothing
 here configures a certificate for either.
 
-The bundle id is `com.loombox.desktop`. Every icon under `apps/desktop/assets/`
-(`icon.png`, `icon.ico`, the `icons/*.png` Linux set, and the `tray-*{,@2x}.png` tray
-glyphs) is generated by `apps/web/scripts/gen-brand-assets.mjs` from the single locked
-"Warp & Weft" mark (issue #194) — none of it is hand-drawn, and none of it should be
-edited directly; re-run the generator instead.
+The bundle id is `com.loombox.desktop` (production) or `com.loombox.desktop.preview`
+(preview — see "Two environments, one build configuration" above). Icons are shared
+between the two: every icon under `apps/desktop/assets/` (`icon.png`, `icon.ico`, the
+`icons/*.png` Linux set, and the `tray-*{,@2x}.png` tray glyphs) is generated by
+`apps/web/scripts/gen-brand-assets.mjs` from the single locked "Warp & Weft" mark
+(issue #194) — none of it is hand-drawn, and none of it should be edited directly;
+re-run the generator instead. Issue #866's acceptance is met without a
+visually-distinct icon: the product name, the in-app chrome marker, and (on macOS) two
+separate Dock entries are what make the two installs distinguishable at a glance.
 
 ## The bridge
 
@@ -154,12 +226,15 @@ provision-target-bridge.ts` calls `@loombox/node`'s real `provision()`
 ## Architecture
 
 ```
+electron-builder.ts        # per-environment build config (issue #866) — see above
 src/
   shared/bridge.ts        # the IPC contract both processes share
   main/
     bootstrap.cjs          # package.json#main; registers tsx, then requires index.ts
     index.ts              # app entry: tray + window + IPC handlers (needs a real Electron runtime)
+    environment.ts          # DesktopEnvironmentConfig — appId/productName/userData/scheme/URL per environment (issue #866)
     window.ts              # the BrowserWindow that loads the PWA
+    chrome-badge.ts          # the injected preview-only in-window marker (issue #866)
     tray.ts                 # menubar/tray presence
     login-item.ts            # launch-at-login (app.setLoginItemSettings), testable via a fake `app`
     config.ts                 # resolvePwaUrl()

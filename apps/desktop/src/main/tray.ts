@@ -5,12 +5,15 @@ export interface CreateTrayOptions {
   iconPath: string;
   window: BrowserWindow;
   onQuit: () => void;
+  /** Shown in the tooltip and the menu items below — defaults to `'loombox'`. `./index.ts` passes `./environment.ts`'s resolved `productName` so a preview install's tray reads "loombox Preview" throughout, not the same "loombox" production's tray shows (issue #866). */
+  productName?: string;
 }
 
 /** Creates the menubar/tray presence (issue #403): click toggles the main window, right-click (or the same click on Linux/Windows) shows a small menu. */
 export function createTray(options: CreateTrayOptions): Tray {
+  const productName = options.productName ?? 'loombox';
   const tray = new Tray(options.iconPath);
-  tray.setToolTip('loombox');
+  tray.setToolTip(productName);
 
   const toggleWindow = (): void => {
     if (options.window.isVisible()) {
@@ -23,9 +26,9 @@ export function createTray(options: CreateTrayOptions): Tray {
 
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Show loombox', click: toggleWindow },
+      { label: `Show ${productName}`, click: toggleWindow },
       { type: 'separator' },
-      { label: 'Quit loombox', click: options.onQuit },
+      { label: `Quit ${productName}`, click: options.onQuit },
     ]),
   );
 

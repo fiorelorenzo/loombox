@@ -18,11 +18,14 @@ describe('deriveFeatureFlags', () => {
   it('treats a missing optional field as off, not as an error', () => {
     const partial: AcpAgentCapabilities = { loadSession: true };
     const flags = deriveFeatureFlags(partial);
-    // `loadSession` gates the older session/load method, not session/resume
-    // (issue #821) -- with no sessionCapabilities.resume at all, resume is
-    // correctly off despite loadSession being set.
-    expect(flags.supportsResume).toBe(false);
+    // A missing `promptCapabilities` is off, not an error (issue #180).
     expect(flags.supportsImages).toBe(false);
+    // `loadSession: true` alone now genuinely means resume works (issue
+    // #843): AcpClient.resumeSession() falls back to `session/load`
+    // whenever `sessionCapabilities.resume` is absent, so this reports the
+    // resume path this client can actually take, not just the wire's
+    // newest field.
+    expect(flags.supportsResume).toBe(true);
   });
 
   it('produces identical flags for a plain generic-ACP session and a Claude Code session sharing the same negotiated capability', () => {
@@ -65,19 +68,28 @@ describe('deriveFeatureFlags', () => {
     });
   });
 
-  it('reads sessionCapabilities.resume for supportsResume, not the older top-level loadSession flag (issue #821)', () => {
-    // loadSession gates session/load; AcpClient.resumeSession calls
-    // session/resume, gated separately by sessionCapabilities.resume.
-    const loadSessionOnly: AcpAgentCapabilities = {
-      loadSession: true,
-      sessionCapabilities: {},
-    };
-    expect(deriveFeatureFlags(loadSessionOnly).supportsResume).toBe(false);
-
+  it('reports supportsResume true via either the real sessionCapabilities.resume field or the session/load fallback through loadSession (issue #821, extended by #843)', () => {
+    // Real `session/resume` support, no loadSession at all.
     const resumeOnly: AcpAgentCapabilities = {
       loadSession: false,
       sessionCapabilities: { resume: {} },
     };
     expect(deriveFeatureFlags(resumeOnly).supportsResume).toBe(true);
+
+    // No real session/resume, but loadSession is set -- Gemini CLI's real
+    // shape (docs/research/gemini-acp-completeness.md). AcpClient.
+    // resumeSession() falls back to session/load in exactly this case
+    // (issue #843), so resume genuinely works and must report true, not
+    // the wire's-newest-field-only reading issue #821 established before
+    // the fallback existed.
+    const loadSessionOnly: AcpAgentCapabilities = {
+      loadSession: true,
+      sessionCapabilities: {},
+    };
+    expect(deriveFeatureFlags(loadSessionOnly).supportsResume).toBe(true);
+
+    // Neither: no fallback exists, so resume is genuinely unavailable.
+    const neither: AcpAgentCapabilities = { loadSession: false, sessionCapabilities: {} };
+    expect(deriveFeatureFlags(neither).supportsResume).toBe(false);
   });
 });
