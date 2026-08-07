@@ -126,6 +126,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   git_commit_draft_response: { routed: 'node' },
   git_commit_request: { routed: 'client' },
   git_commit_response: { routed: 'node' },
+  git_diff_explain_request: { routed: 'client' },
+  git_diff_explain_response: { routed: 'node' },
   target_fs_list_request: { routed: 'client' },
   target_fs_list_response: { routed: 'node' },
   custom_agent_probe_request: { routed: 'client' },

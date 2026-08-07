@@ -139,6 +139,9 @@ import {
   type GitCommitRequest,
   type GitCommitRequestPayloadV1,
   type GitCommitResponsePayloadV1,
+  type GitDiffExplainRequest,
+  type GitDiffExplainRequestPayloadV1,
+  type GitDiffExplainResponsePayloadV1,
   type GitDiffRequest,
   type GitDiffResponsePayloadV1,
   type GitGraphRequest,
@@ -321,6 +324,11 @@ import {
   computeStagedDiffText,
   GitCommitError,
 } from './git-commit';
+import {
+  buildDiffExplainPrompt,
+  computeExplainDiffText,
+  GitDiffExplainError,
+} from './git-diff-explain';
 import {
   assertCustomAgentAllowed,
   createCustomAgentProvider,
@@ -2723,6 +2731,7 @@ export class NodeDaemon extends EventEmitter {
       nodeId: this.nodeId,
       targetId,
       spendCapUsd: undefined,
+      acpSessionId: undefined,
     };
     await this.announce(provisional, targetId, opts.title);
 
@@ -2906,6 +2915,7 @@ export class NodeDaemon extends EventEmitter {
         nodeId: this.nodeId,
         targetId,
         spendCapUsd: undefined,
+        acpSessionId: undefined,
       };
 
       await this.sendMcpServerStatus(sessionId, failedMcpServers);
@@ -3136,6 +3146,14 @@ export class NodeDaemon extends EventEmitter {
       remoteChild,
     };
     this.bridges.set(session.id, bridge);
+    if (session.target === 'local') {
+      // issue #264: durably links this loombox session to its ACP-level
+      // agent session id, the key its transcript lives under in
+      // `AgentSupervisor`'s `TranscriptStore` — see `Session.acpSessionId`'s
+      // own doc comment for why a LATER fork (once this agent is long
+      // gone) needs this recorded now, not derived after the fact.
+      this.sessionManager.setAcpSessionId(session.id, agentSession.id);
+    }
     this.wireAgentSession(bridge);
     // The relay drops a session_update for a session it hasn't seen a
     // session_announce for yet (`relay.ts`'s "unknown session" guard) — so
@@ -4349,6 +4367,9 @@ export class NodeDaemon extends EventEmitter {
       case 'git_commit_request':
         this.handleGitCommitRequest(message);
         return;
+      case 'git_diff_explain_request':
+        this.handleGitDiffExplainRequest(message);
+        return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
         return;
@@ -4592,9 +4613,12 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * A client asked (via the relay) to fork one of this node's sessions
-   * from a turn into a brand-new one (design spec
-   * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746). Always
-   * replies — `outcome: 'error'` with a human-readable reason for every
+   * from a turn into a brand-new one — a still-running source (design
+   * spec `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) or a
+   * past one with no live agent behind it anymore (issue #264); see
+   * {@link forkSessionInternal}'s own doc comment for how the two share
+   * this one wire path and handler.
+   * Always replies — `outcome: 'error'` with a human-readable reason for every
    * refusal case, `outcome: 'ok'` only once the fork's worktree is copied,
    * its transcript seeded, and its own agent spawn kicked off (whose
    * success/failure rides the new session's ordinary `session_status`
@@ -4662,12 +4686,31 @@ export class NodeDaemon extends EventEmitter {
    * and launches the new session exactly like `createSessionInternal`
    * does for an ordinary creation — same concurrency-gate queueing, same
    * `launchLocalSession` — with `seedTranscriptUpdates` threaded through
-   * so `finishSessionCreation` replays the copied history onto it. Throws
-   * (never half-creates) for: an unrecognized target, a non-`local`
+   * so `finishSessionCreation` replays the copied history onto it.
+   *
+   * One mechanism, two sources for `seedTranscriptUpdates` (issue #264,
+   * the archive-facing sibling of #746's live-turn fork): a still-running
+   * source reads its transcript from the live `AgentSession` via its
+   * bridge, exactly as before; a PAST source — ended, exited, or simply
+   * reconnected after a node restart, so `this.bridges` has nothing for
+   * it — reads the identical `AcpTranscriptUpdate[]` shape straight off
+   * disk instead, via `AgentSupervisor.readPersistedTranscriptUpdates()`
+   * keyed by the source's own persisted `Session.acpSessionId`. From that
+   * point on (`cutTranscriptAtTurn` through `launchLocalSession`) the two
+   * cases are indistinguishable — there is no second fork implementation,
+   * only a second way to arrive at the same `AcpTranscriptUpdate[]` input.
+   *
+   * Throws (never half-creates) for: an unrecognized target; a non-`local`
    * target (this wave's scope — an `ssh:` fork would need a remote
-   * worktree copy this doesn't build), a source with no active bridge (no
-   * live agent, or disconnected — there is nothing to read its transcript
-   * from), or a `forkFromTurnId` this source's transcript never produced.
+   * worktree copy this doesn't build); a source this node has no record
+   * of at all — live or past — (unknown id, archived, or it belongs to a
+   * different node); a past source that never reached a live agent (no
+   * `acpSessionId` was ever recorded, so there is nothing on disk to
+   * read); a `forkFromTurnId` this source's transcript never produced;
+   * or, from `SessionManager.forkSession` itself, a source whose project
+   * folder, worktree, or branch no longer exists on disk (issue #264 —
+   * see that method's own doc comment for why those are checked up front
+   * rather than surfacing as a raw git/fs error).
    */
   private async forkSessionInternal(opts: {
     sessionId: string;
@@ -4687,19 +4730,34 @@ export class NodeDaemon extends EventEmitter {
     }
 
     const sourceBridge = this.bridges.get(opts.sourceSessionId);
-    if (!sourceBridge) {
-      throw new Error(
-        `session ${opts.sourceSessionId} has no active agent to fork from (no live agent, or disconnected)`,
+    let sourceTranscriptUpdates: readonly AcpTranscriptUpdate[];
+    if (sourceBridge) {
+      if (sourceBridge.session.target !== 'local') {
+        throw new Error(`cannot fork a '${sourceBridge.session.target}' session`);
+      }
+      sourceTranscriptUpdates = sourceBridge.agentSession.getTranscriptUpdates();
+    } else {
+      // No live agent: either a past session (issue #264 — ended, exited,
+      // or reconnected after a restart) or one this node never held at
+      // all. Only `SessionManager`'s own still-tracked record (never
+      // touched by a fork, only read) tells the two apart honestly.
+      const sourceRecord = this.sessionManager.getSession(opts.sourceSessionId);
+      if (!sourceRecord) {
+        throw new Error(
+          `session ${opts.sourceSessionId} is not known to this node (it may have been archived, or it ran on a different node)`,
+        );
+      }
+      if (!sourceRecord.acpSessionId) {
+        throw new Error(
+          `session ${opts.sourceSessionId} never reached a live agent, so it has no transcript to fork from`,
+        );
+      }
+      sourceTranscriptUpdates = this.supervisor.readPersistedTranscriptUpdates(
+        sourceRecord.acpSessionId,
       );
     }
-    if (sourceBridge.session.target !== 'local') {
-      throw new Error(`cannot fork a '${sourceBridge.session.target}' session`);
-    }
 
-    const seedTranscriptUpdates = cutTranscriptAtTurn(
-      sourceBridge.agentSession.getTranscriptUpdates(),
-      opts.forkFromTurnId,
-    );
+    const seedTranscriptUpdates = cutTranscriptAtTurn(sourceTranscriptUpdates, opts.forkFromTurnId);
     if (!seedTranscriptUpdates) {
       throw new Error(
         `turn "${opts.forkFromTurnId}" was not found in session ${opts.sourceSessionId}'s transcript`,
@@ -11021,6 +11079,164 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'pr_merge_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to explain a diff or a
+   * single hunk in plain language (SPEC §7.6; issue #236) — the
+   * working-tree diff viewer's (#206) and hunk-level staging surface's
+   * (#232) own "explain" action, `handleGitCommitDraftRequest`'s (#233)
+   * sibling for UNDERSTANDING a diff rather than drafting text FROM one:
+   * generated by prompting the SESSION'S OWN live agent (never a
+   * separate, hardcoded provider call — the same constraint #233's own
+   * doc comment already quotes from its issue), the exact same
+   * `bridge.agentSession.prompt()` this daemon already drives for
+   * `promptSession`/`draftGitCommitMessageForBridge` above. Unlike
+   * `handleGitDiffRequest`'s "no live bridge needed" contract, explaining
+   * genuinely needs one, same as drafting — a session with no live agent
+   * reports that plainly (an `outcome: 'error'` payload) rather than
+   * hanging or silently falling back to some other text source. Never
+   * itself mutates anything: purely advisory, unlike
+   * `handleGitHunkActionRequest`'s stage/unstage/discard.
+   *
+   * Enveloped on the request (unlike `git_diff_request`/
+   * `git_hunk_diff_request`'s own envelope-less "asking carries no
+   * content" shape): `scope` names a real path, so it travels sealed
+   * exactly like `git_hunk_action_request`'s own
+   * `path`/`hunkIndex`/`action`.
+   *
+   * Kept as this class's own trailing block (this file's own "near-
+   * identical handleX/decryptX/sendX families interleave into
+   * non-compiling hybrids on merge" hazard, per this wave's own brief)
+   * rather than interleaved next to `handleGitCommitDraftRequest` above
+   * despite the two being close siblings — see {@link explainDiffViaAgent}'s
+   * own doc comment for why it is a deliberate copy of
+   * `draftCommitMessageViaAgent` rather than a shared extraction.
+   */
+  private handleGitDiffExplainRequest(message: GitDiffExplainRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitDiffExplainRequest(message)
+      .then((payload) => this.explainGitDiffForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitDiffExplainResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_diff_explain_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitDiffExplainRequest(
+    message: GitDiffExplainRequest,
+  ): Promise<GitDiffExplainRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitDiffExplainRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Computes `payload.scope`'s own real diff/hunk text
+   * (`./git-diff-explain.ts`'s `computeExplainDiffText`,
+   * project-policy-scoped exactly like `computeGitHunkDiffForBridge`
+   * above), refuses up front when this session has no live agent
+   * (explaining, like drafting, genuinely needs one — see
+   * {@link handleGitDiffExplainRequest}'s own doc comment), then hands
+   * the bounded text to {@link explainDiffViaAgent}. Never throws: a
+   * target that can't be resolved, a `GitDiffExplainError` (the addressed
+   * path/hunk no longer exists in the current diff), a `GitDiffError`
+   * bubbling straight through from `computeExplainDiffText`'s own
+   * `computeHunkDiff` call, or any other error all become an
+   * `outcome: 'error'` payload instead, so `handleGitDiffExplainRequest`
+   * always has a response to seal and send back.
+   */
+  private async explainGitDiffForBridge(
+    routing: SessionRouting,
+    payload: GitDiffExplainRequestPayloadV1,
+  ): Promise<GitDiffExplainResponsePayloadV1> {
+    const bridge = this.bridges.get(routing.session.id);
+    if (!bridge) {
+      return {
+        outcome: 'error',
+        message: 'This session has no live agent to explain a diff with.',
+      };
+    }
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const diffText = await computeExplainDiffText(
+        target,
+        routing.session.worktreePath,
+        payload.scope,
+      );
+      const explanation = await this.explainDiffViaAgent(
+        bridge,
+        buildDiffExplainPrompt(payload.scope, diffText),
+      );
+      if (!explanation) {
+        return { outcome: 'error', message: "The agent's explanation came back empty." };
+      }
+      return { outcome: 'ok', explanation };
+    } catch (error) {
+      if (error instanceof GitDiffExplainError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  /**
+   * Prompts `bridge`'s own live agent and captures its whole reply as one
+   * string — `draftCommitMessageViaAgent`'s (issue #233) own twin for
+   * explaining rather than drafting: a real turn (`agentSession.prompt()`),
+   * not a hidden side channel, so this session's subscribed clients see
+   * the usual `turn_started`/`agent_message_chunk`/`turn_ended` sequence
+   * exactly like any other prompt. Kept as its own copy rather than a
+   * shared extraction — `git-diff.ts`'s `determineHunkFileStatus` doc
+   * comment already documents this codebase's tolerance for that
+   * trade-off — specifically so this method's own edits, and
+   * `draftCommitMessageViaAgent`'s, never land on the same lines: this
+   * wave lands several git/AI-assist issues concurrently, exactly the
+   * "near-identical handleX/decryptX/sendX families interleave into
+   * non-compiling hybrids on merge" hazard this file's own brief warns
+   * about.
+   */
+  private async explainDiffViaAgent(bridge: SessionBridge, promptText: string): Promise<string> {
+    const messageTextById = new Map<string, string>();
+    let lastMessageId: string | undefined;
+    const onTranscriptUpdate = (update: AcpTranscriptUpdate): void => {
+      if (update.kind !== 'agent_message_chunk') return;
+      messageTextById.set(
+        update.messageId,
+        (messageTextById.get(update.messageId) ?? '') + update.text,
+      );
+      lastMessageId = update.messageId;
+    };
+    bridge.agentSession.on('transcript_update', onTranscriptUpdate);
+    try {
+      await bridge.agentSession.prompt(promptText);
+    } finally {
+      bridge.agentSession.off('transcript_update', onTranscriptUpdate);
+    }
+    return (lastMessageId ? messageTextById.get(lastMessageId) : undefined)?.trim() ?? '';
+  }
+
+  private async sendGitDiffExplainResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitDiffExplainResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_diff_explain_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
