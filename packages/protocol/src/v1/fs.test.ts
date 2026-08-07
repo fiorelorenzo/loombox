@@ -275,9 +275,9 @@ describe('fsWriteRequestPayloadV1', () => {
 
   it('safeParse never throws on garbage input', () => {
     expect(safeParseFsWriteRequestPayloadV1(null).success).toBe(false);
-    expect(
-      safeParseFsWriteRequestPayloadV1({ path: 'src/foo.ts', content: 'x' }).success,
-    ).toBe(false);
+    expect(safeParseFsWriteRequestPayloadV1({ path: 'src/foo.ts', content: 'x' }).success).toBe(
+      false,
+    );
     expect(
       safeParseFsWriteRequestPayloadV1({ path: 'src/foo.ts', content: 'x', baseHash: '' }).success,
     ).toBe(false);
@@ -326,9 +326,7 @@ describe('fsWriteResponsePayloadV1', () => {
   });
 
   it('rejects an outcome outside the three known variants', () => {
-    expect(safeParseFsWriteResponsePayloadV1({ outcome: 'pending', path: '' }).success).toBe(
-      false,
-    );
+    expect(safeParseFsWriteResponsePayloadV1({ outcome: 'pending', path: '' }).success).toBe(false);
   });
 });
 

@@ -2414,7 +2414,7 @@ describe('NodeDaemon fs-write (integrated editor, issue #205)', () => {
     expect(onDisk).toBe('export const x = 1;\n');
   });
 
-  it('never overwrites blindly: refuses with a conflict outcome when the file changed underneath the edit (e.g. the session\'s own agent editing it mid-turn), leaving the on-disk change untouched', async () => {
+  it("never overwrites blindly: refuses with a conflict outcome when the file changed underneath the edit (e.g. the session's own agent editing it mid-turn), leaving the on-disk change untouched", async () => {
     const amk = generateAmk();
     const accountId = 'acct-fs-write-conflict';
 
@@ -2530,8 +2530,7 @@ describe('NodeDaemon fs-write (integrated editor, issue #205)', () => {
 
     const response = (await phone.waitFor(
       (m) =>
-        m.type === 'fs_write_response' &&
-        (m as { requestId?: string }).requestId === 'req-deleted',
+        m.type === 'fs_write_response' && (m as { requestId?: string }).requestId === 'req-deleted',
     )) as { type: 'fs_write_response'; envelope: EncryptedEnvelope };
     const payload = await phoneOpen<{ outcome: string; current?: unknown }>(
       session.id,
