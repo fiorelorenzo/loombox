@@ -29,6 +29,7 @@ import {
   type ConfigOption,
   type ConnectedAccount,
   type KeymapV1,
+  type CiCheckStateV1,
   type EncryptedEnvelope,
   type PermissionResponse,
   type PermissionPolicyV1,
@@ -8553,6 +8554,231 @@ describe('RelayClient: attention inbox session-outcome class (SPEC §7.13; issue
 
     const afterResume = await waitForStore(inbox, (value) => value.length === 1);
     expect(afterResume[0].sessionId).toBe(sessionB.id);
+  });
+});
+
+describe('RelayClient: attention inbox ci_failure class (SPEC §7.13/§7.14; issue #243)', () => {
+  it('raises exactly one ci_failure item for a failing check, clears it when the check goes green, and never duplicates across a flapping check', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-ci';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-ci',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    const fakeNode = node;
+
+    const session = makeSessionMeta({ id: 'sess_ci_a', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Ship the feature', projectPath: '/proj-ci' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-ci' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const sendCiCheckStatus = async (status: CiCheckStateV1) => {
+      const envelope = await nodeSeal(session.id, { status }, key);
+      fakeNode.send({
+        type: 'ci_check_status',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        envelope,
+      });
+    };
+
+    // First poll: one check run is failing, one is green.
+    await sendCiCheckStatus({
+      state: 'failing',
+      headSha: 'sha-1',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      checkRuns: [
+        { id: 1, name: 'unit tests', status: 'completed', conclusion: 'failure' },
+        { id: 2, name: 'lint', status: 'completed', conclusion: 'success' },
+      ],
+      updatedAt: 1000,
+    });
+
+    const afterFailure = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterFailure[0]).toMatchObject({
+      kind: 'ci_failure',
+      sessionId: session.id,
+      sessionTitle: 'Ship the feature',
+      projectPath: '/proj-ci',
+      nodeId: session.nodeId,
+      waitingSince: 1000,
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      failingChecks: ['unit tests'],
+    });
+
+    // Second poll: still failing on the SAME headSha (the ordinary "still
+    // red" repoll) — must update the existing item in place, never add a
+    // second one.
+    await sendCiCheckStatus({
+      state: 'failing',
+      headSha: 'sha-1',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      checkRuns: [
+        { id: 1, name: 'unit tests', status: 'completed', conclusion: 'failure' },
+        { id: 2, name: 'lint', status: 'completed', conclusion: 'success' },
+      ],
+      updatedAt: 2000,
+    });
+    const stillFailing = await waitForStore(inbox, (value) => value[0]?.waitingSince === 2000);
+    expect(stillFailing).toHaveLength(1);
+
+    // The check goes green on a new commit — the item must clear, not
+    // linger stale.
+    await sendCiCheckStatus({
+      state: 'passing',
+      headSha: 'sha-2',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      checkRuns: [
+        { id: 1, name: 'unit tests', status: 'completed', conclusion: 'success' },
+        { id: 2, name: 'lint', status: 'completed', conclusion: 'success' },
+      ],
+      updatedAt: 3000,
+    });
+    await waitForStore(inbox, (value) => value.length === 0);
+
+    // Flapping: fails again on a new commit, flips back to green, then
+    // fails a third time on yet another commit — at no point does more
+    // than one ci_failure item exist for this session.
+    await sendCiCheckStatus({
+      state: 'failing',
+      headSha: 'sha-3',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      checkRuns: [{ id: 3, name: 'unit tests', status: 'completed', conclusion: 'failure' }],
+      updatedAt: 4000,
+    });
+    const secondFailure = await waitForStore(
+      inbox,
+      (value) => value.length === 1 && value[0].waitingSince === 4000,
+    );
+    expect(secondFailure[0].failingChecks).toEqual(['unit tests']);
+
+    await sendCiCheckStatus({
+      state: 'passing',
+      headSha: 'sha-3',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      checkRuns: [{ id: 3, name: 'unit tests', status: 'completed', conclusion: 'success' }],
+      updatedAt: 5000,
+    });
+    await waitForStore(inbox, (value) => value.length === 0);
+
+    await sendCiCheckStatus({
+      state: 'failing',
+      headSha: 'sha-4',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      checkRuns: [{ id: 4, name: 'e2e', status: 'completed', conclusion: 'timed_out' }],
+      updatedAt: 6000,
+    });
+    const thirdFailure = await waitForStore(
+      inbox,
+      (value) => value.length === 1 && value[0].waitingSince === 6000,
+    );
+    expect(thirdFailure).toHaveLength(1);
+    expect(thirdFailure[0].failingChecks).toEqual(['e2e']);
+  });
+
+  it('is independent of the session live-status item: a session can carry both an awaiting_input item and a ci_failure item at once', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-ci-independent';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-ci-independent',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_ci_b', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Fix flaky test', projectPath: '/proj-ci-b' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-ci-independent',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const statusEnvelope = await nodeSeal(
+      session.id,
+      { kind: 'session_status', status: 'awaiting_input', updatedAt: new Date(500).toISOString() },
+      key,
+    );
+    node.send({
+      type: 'session_update',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      seq: 1,
+      envelope: statusEnvelope,
+    });
+    await waitForStore(inbox, (value) => value.length === 1);
+
+    const ciEnvelope = await nodeSeal(
+      session.id,
+      {
+        status: {
+          state: 'failing',
+          headSha: 'sha-1',
+          prUrl: 'https://github.com/fiorelorenzo/loombox/pull/9',
+          prNumber: 9,
+          checkRuns: [{ id: 1, name: 'build', status: 'completed', conclusion: 'failure' }],
+          updatedAt: 700,
+        },
+      },
+      key,
+    );
+    node.send({
+      type: 'ci_check_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: ciEnvelope,
+    });
+
+    const both = await waitForStore(inbox, (value) => value.length === 2);
+    expect(both.map((item) => item.kind).sort()).toEqual(['awaiting_input', 'ci_failure']);
+    expect(both.every((item) => item.sessionId === session.id)).toBe(true);
   });
 });
 

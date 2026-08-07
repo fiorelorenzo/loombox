@@ -1426,20 +1426,23 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_diff_response':
       case 'git_hunk_diff_response':
       case 'git_hunk_action_response':
+      case 'git_commit_draft_response':
+      case 'git_commit_response':
         // The owning node's reply to a client's mcp_prompt_get_request
         // (Zed-parity D5-2; issue #754), fs_read_request (issue #737's
         // read-only file viewer), git_diff_request (issue #206's
-        // working-tree diff viewer), or git_hunk_diff_request/
+        // working-tree diff viewer), git_hunk_diff_request/
         // git_hunk_action_request (issue #232's hunk-level stage/
-        // unstage/discard) — fanned out to this session's subscribed
-        // clients exactly like fs_list_response above; the
+        // unstage/discard), or git_commit_draft_request/git_commit_request
+        // (issue #233's commit workflow) — fanned out to this session's
+        // subscribed clients exactly like fs_list_response above; the
         // relay never opens the envelope, so it never learns which
         // server/prompt/rendered text, file content, changed-file diff,
-        // hunk breakdown, or stage/unstage/discard outcome, only that
-        // something was read or applied (SPEC §8's metadata boundary). A requesting
-        // client matches its own pending request by `requestId`; any
-        // other subscribed client simply has no pending request with
-        // that id.
+        // hunk breakdown, drafted commit message, or commit outcome, only
+        // that something was read or applied (SPEC §8's metadata
+        // boundary). A requesting client matches its own pending request
+        // by `requestId`; any other subscribed client simply has no
+        // pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
       case 'git_branch_list_response':
@@ -1580,6 +1583,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // out exactly like run_output/pr_open_result above; the relay
         // never opens the envelope, so it never sees a check's name,
         // conclusion, or failure output.
+        fanOutDirect(message.sessionId, message);
+        return;
+      case 'ci_auto_iterate_status':
+        // The owning node's current auto-iterate-until-green loop state
+        // for a session (SPEC §7.14/§7.15; issue #246) — fanned out
+        // exactly like ci_check_status above; the relay never opens the
+        // envelope, so it never sees an attempt's commit sha or why the
+        // loop stopped.
         fanOutDirect(message.sessionId, message);
         return;
       case 'lease_request':
@@ -2253,19 +2264,22 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'mcp_prompt_get_request':
       case 'fs_read_request':
       case 'git_hunk_action_request':
+      case 'git_commit_request':
         // fs_list_request (SPEC §7.4; issue #171/#160), its D5-2 sibling
         // mcp_prompt_get_request (Zed-parity D5-2; issue #754), its
-        // #737 sibling fs_read_request (read-only file viewer), and its
+        // #737 sibling fs_read_request (read-only file viewer), its
         // #232 sibling git_hunk_action_request (hunk-level stage/
-        // unstage/discard): a client asking the owning node to list a
-        // directory, render an MCP prompt, read a file, or apply one
-        // hunk's stage/unstage/discard inside one of its sessions'
+        // unstage/discard), and its #233 sibling git_commit_request (commit
+        // what's staged with the operator's own final message): a client
+        // asking the owning node to list a directory, render an MCP
+        // prompt, read a file, apply one hunk's stage/unstage/discard, or
+        // commit the currently staged index inside one of its sessions'
         // projects — routed exactly like prompt_inject/config_option
         // above. The relay only ever sees `sessionId`/`targetId`/
         // `requestId` and an opaque `EncryptedEnvelope`; the requested
-        // path, which server/prompt was asked for, or which hunk was
-        // touched and how, never reaches the relay in the clear (SPEC
-        // §8's metadata boundary).
+        // path, which server/prompt was asked for, which hunk was touched
+        // and how, or the commit message itself, never reaches the relay
+        // in the clear (SPEC §8's metadata boundary).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'git_branch_list_request':
@@ -2346,23 +2360,26 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'checkpoint_restore':
       case 'git_diff_request':
       case 'git_hunk_diff_request':
+      case 'git_commit_draft_request':
       case 'pr_open_preview_request':
       case 'pr_open_request':
         // A client taking/listing/previewing/rolling back a session's
         // checkpoints (SPEC §7.20; issue #603), the session's own current
         // working-tree diff (SPEC §7.4; issue #206's diff viewer), the
         // same session's staged/unstaged hunk breakdown (issue #232's
-        // hunk-level stage/unstage/discard), or previewing/confirming
-        // opening a pull request from a session's own branch (SPEC
-        // §7.14; issue #238) — routed to the owning node exactly like
-        // permission_policy_get/_set above. The relay only ever sees
-        // sessionId/requestId plus, for checkpoint_create/
+        // hunk-level stage/unstage/discard), a drafted commit message for
+        // the currently staged diff (issue #233's commit workflow), or
+        // previewing/confirming opening a pull request from a session's
+        // own branch (SPEC §7.14; issue #238) — routed to the owning node
+        // exactly like permission_policy_get/_set above. The relay only
+        // ever sees sessionId/requestId plus, for checkpoint_create/
         // pr_open_request, an opaque `EncryptedEnvelope`; checkpoint_
         // restore_preview/_restore carry only an opaque checkpointId and
-        // (for _restore) a plain confirm boolean; git_diff_request and
-        // git_hunk_diff_request carry no envelope at all (asking carries
-        // no content) — no checkpoint label, commit, diff content, hunk
-        // breakdown, PR title, body, branch name, or PR URL ever reaches
+        // (for _restore) a plain confirm boolean; git_diff_request,
+        // git_hunk_diff_request, and git_commit_draft_request carry no
+        // envelope at all (asking carries no content) — no checkpoint
+        // label, commit, diff content, hunk breakdown, drafted commit
+        // message, PR title, body, branch name, or PR URL ever reaches
         // the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
@@ -2398,6 +2415,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // sees sessionId/targetId/runId (and, for run_start, requestId)
         // plus an opaque `EncryptedEnvelope`; which command kind ran never
         // reaches the relay in the clear.
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'ci_auto_iterate_stop':
+        // A client stopping a session's auto-iterate-until-green loop
+        // right now (SPEC §7.14/§7.15; issue #246) — routed to the
+        // owning node exactly like run_cancel above. Envelope-less: the
+        // relay only ever sees sessionId, never why the loop was
+        // stopped (that's the resulting ci_auto_iterate_status push's
+        // own sealed envelope).
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'blob_upload': {
