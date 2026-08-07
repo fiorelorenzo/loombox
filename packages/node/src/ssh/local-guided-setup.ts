@@ -2,6 +2,7 @@ import { createNode, type NodeDaemon, type NodeDaemonOptions } from '../node-dae
 import { NodeIdentityStore } from '../identity';
 import type { WebSocketConstructor } from '../relay-connection';
 import { resolveAccountIdViaRelay, type AccountIdResolver } from '../resolve-account-id';
+import { allowLiveNodeStateDir } from './verify-and-persist';
 
 /**
  * The common **local-only** first-run flow (issue #91; SPEC §7.23's "First
@@ -131,6 +132,10 @@ export async function runLocalGuidedSetup(
 
   let node: NodeDaemon | undefined;
   try {
+    // Issue #876: this flow starts a real local node in-process, so the
+    // live default state dir (when `options.stateDir` isn't overridden)
+    // is exactly the intended target, not an accident.
+    allowLiveNodeStateDir();
     const identityStore =
       options.identityStore ?? new NodeIdentityStore({ stateDir: options.stateDir });
     const identity = await identityStore.loadOrCreate();
