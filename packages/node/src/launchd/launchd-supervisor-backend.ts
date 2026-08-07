@@ -2,6 +2,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createLocalInstallLayoutDriver, type InstallLayoutDriver } from '../install-layout';
+import { defaultBaseDirName, defaultLaunchdLabel, type NodeEnvironment } from '../node-environment';
 import { NODE_BUNDLE_ENTRY_FILE } from '../node-release';
 import type {
   SupervisorBackend,
@@ -13,7 +14,6 @@ import type {
   SupervisorBackendUninstallOptions,
 } from '../supervisor-backend';
 import {
-  DEFAULT_LAUNCHD_LABEL,
   executeLaunchdProvisioning,
   planLaunchdProvisioning,
   type LaunchdAgentConfig,
@@ -35,12 +35,23 @@ import {
  * running — matches `../supervisor-backend.ts`'s own `install()` contract.
  */
 export interface LaunchdSupervisorBackendOptions {
+  /**
+   * Which environment this resident node targets (issue #867; default
+   * `'production'`) — the input `label`/`baseDir`/`stateDir` defaults
+   * derive from, via `../node-environment.ts`, whenever those aren't given
+   * explicitly. A caller running a second, `'preview'`-targeted node on a
+   * Mac that already has a `'production'` one MUST either set this or
+   * supply every one of `label`/`baseDir`/`stateDir` itself — leaving both
+   * unset for two backends on one machine is exactly the collision this
+   * field exists to make the operator no longer need to remember.
+   */
+  environment?: NodeEnvironment;
   label?: string;
   /** Overrides `~/Library/LaunchAgents`; resolved from `io.homeDir()` otherwise. */
   agentsDir?: string;
-  /** Overrides `~/.loombox` (`../install-layout.ts`'s `baseDir` — the parent of `versions/` and `current`); resolved from `io.homeDir()` otherwise. */
+  /** Overrides `../node-environment.ts`'s `defaultBaseDirName(environment)` under `io.homeDir()` (`../install-layout.ts`'s `baseDir` — the parent of `versions/` and `current`); resolved from `environment` otherwise. */
   baseDir?: string;
-  /** Overrides `~/.loombox/node` (this node's own state dir — identity, session history; `uninstall()`'s "everything by default" target unless `keepData`); resolved from `io.homeDir()` otherwise. */
+  /** Overrides `<baseDir>/node` (this node's own state dir — identity, session history; `uninstall()`'s "everything by default" target unless `keepData`); resolved from the (possibly defaulted) `baseDir` otherwise. */
   stateDir?: string;
   /** Injectable for tests; defaults to the real `node:fs`-backed local driver. */
   installLayoutDriver?: InstallLayoutDriver;
@@ -53,11 +64,12 @@ export function createLaunchdSupervisorBackend(
   io: LaunchdIo,
   options: LaunchdSupervisorBackendOptions = {},
 ): SupervisorBackend {
-  const label = options.label ?? DEFAULT_LAUNCHD_LABEL;
+  const environment = options.environment ?? 'production';
+  const label = options.label ?? defaultLaunchdLabel(environment);
   const agentsDir = options.agentsDir ?? join(io.homeDir(), 'Library', 'LaunchAgents');
   const plistPath = join(agentsDir, `${label}.plist`);
-  const baseDir = options.baseDir ?? join(io.homeDir(), '.loombox');
-  const stateDir = options.stateDir ?? join(io.homeDir(), '.loombox', 'node');
+  const baseDir = options.baseDir ?? join(io.homeDir(), defaultBaseDirName(environment));
+  const stateDir = options.stateDir ?? join(baseDir, 'node');
   const driver = options.installLayoutDriver ?? createLocalInstallLayoutDriver();
   const domainTarget = `gui/${io.uid()}`;
   const serviceTarget = `${domainTarget}/${label}`;

@@ -4,6 +4,7 @@ import path, { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTarGzArchive } from '../install-layout';
+import { defaultLaunchdLabel } from '../node-environment';
 import { NODE_BUNDLE_ENTRY_FILE } from '../node-release';
 import {
   DEFAULT_LAUNCHD_LABEL,
@@ -361,5 +362,17 @@ describe('createLaunchdSupervisorBackend (issue #654, decision logic against an 
       ['bootstrap', 'gui/501', PLIST_PATH],
       ['enable', SERVICE_TARGET],
     ]);
+  });
+});
+
+describe('createLaunchdSupervisorBackend (issue #867, environment defaults)', () => {
+  it('defaults label from the given environment, collision-free with production, when no explicit label override is given', async () => {
+    const io = fakeIo();
+    const productionBackend = createLaunchdSupervisorBackend(io, {});
+    const previewBackend = createLaunchdSupervisorBackend(io, { environment: 'preview' });
+
+    expect((await productionBackend.status()).message).toContain(DEFAULT_LAUNCHD_LABEL);
+    expect((await previewBackend.status()).message).toContain(defaultLaunchdLabel('preview'));
+    expect(defaultLaunchdLabel('preview')).not.toBe(DEFAULT_LAUNCHD_LABEL);
   });
 });

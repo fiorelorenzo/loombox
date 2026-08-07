@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTarGzArchive } from '../install-layout';
+import { defaultBaseDirName, defaultUnitName } from '../node-environment';
 import { NODE_BUNDLE_ENTRY_FILE } from '../node-release';
 import { FakeTransport } from '../ssh/fake-transport';
 import { LocalProcessTransport } from '../ssh/local-process-transport';
@@ -402,6 +403,33 @@ describe('createSystemdLocalSupervisorBackend (issue #658, decision logic agains
 
     expect(await backend.survivesReboot()).toBe(false);
   });
+
+  it('defaults unitName from the given environment, collision-free with production, when no explicit unitName override is given (issue #867)', async () => {
+    const transport = new FakeTransport({
+      onExec: () => ({ stdout: '', stderr: '', exitCode: 1 }),
+    });
+    await transport.connect();
+    const productionBackend = createSystemdLocalSupervisorBackend(
+      {
+        baseDir: '/home/loombox/.loombox',
+        unitDir: '/home/loombox/.config/systemd/user',
+        enableLinger: false,
+      },
+      transport,
+    );
+    const previewBackend = createSystemdLocalSupervisorBackend(
+      {
+        baseDir: '/home/loombox/.loombox-preview',
+        unitDir: '/home/loombox/.config/systemd/user',
+        environment: 'preview',
+        enableLinger: false,
+      },
+      transport,
+    );
+
+    expect((await productionBackend.status()).message).toContain('loombox-node.service');
+    expect((await previewBackend.status()).message).toContain('loombox-node-preview.service');
+  });
 });
 
 /** Whether a real, reachable `systemd --user` session exists on this machine — checked once, synchronously, so the suite below can `describe.skipIf` out entirely on a box/container with no user D-Bus/systemd session (e.g. most CI runners) instead of failing. */
@@ -521,6 +549,159 @@ describe.skipIf(!systemdUserSessionAvailable())(
       );
       // `systemctl status` on an unknown unit exits 4 ("no such unit").
       expect((unitStillThere as { code?: number }).code).toBe(4);
+    });
+  },
+);
+
+// Issue #867's own acceptance bar, against the REAL `systemctl --user` on
+// whatever machine runs it, same discipline as the single-node describe
+// block immediately above: every identifier is scratch (both unit names
+// carry this process's pid, both trees live under `os.tmpdir()`) — never
+// `loombox-node.service`/`~/.loombox`, this machine's real resident node.
+// The "production" backend below still uses `../node-environment.ts`'s
+// real `defaultBaseDirName('production')`/`defaultUnitName('production')`
+// derivation (via an explicit scratch `baseDir`/`unitName` built the same
+// way an operator's own would resolve), so this doubles as proof that the
+// two environments' defaults never collide when both are actually used.
+describe.skipIf(!systemdUserSessionAvailable())(
+  'createSystemdLocalSupervisorBackend (issue #867, two environments concurrently, scratch units)',
+  () => {
+    const prodUnitName = `loombox-envtest-prod-${process.pid}.service`;
+    const previewUnitName = `loombox-envtest-preview-${process.pid}.service`;
+    let homeDir: string;
+    let prodBaseDir: string;
+    let prodStateDir: string;
+    let previewBaseDir: string;
+    let previewStateDir: string;
+    let prodTransport: RecordingLocalTransport;
+    let previewTransport: RecordingLocalTransport;
+    const realUnitDir = join(homedir(), '.config', 'systemd', 'user');
+
+    beforeEach(async () => {
+      homeDir = await mkdtemp(join(tmpdir(), 'loombox-systemd-local-backend-envs-'));
+      prodBaseDir = join(homeDir, defaultBaseDirName('production'));
+      prodStateDir = join(prodBaseDir, 'node');
+      previewBaseDir = join(homeDir, defaultBaseDirName('preview'));
+      previewStateDir = join(previewBaseDir, 'node');
+      prodTransport = new RecordingLocalTransport();
+      previewTransport = new RecordingLocalTransport();
+      await prodTransport.connect();
+      await previewTransport.connect();
+    });
+
+    afterEach(async () => {
+      await prodTransport.close();
+      await previewTransport.close();
+      for (const name of [prodUnitName, previewUnitName]) {
+        await execFileAsync('systemctl', ['--user', 'disable', '--now', name]).catch(() => {});
+        await rm(join(realUnitDir, name), { force: true });
+      }
+      await execFileAsync('systemctl', ['--user', 'daemon-reload']).catch(() => {});
+      await rm(homeDir, { recursive: true, force: true });
+    });
+
+    it('runs one node per environment at once; restarting one never touches the other, and uninstalling one leaves the other running', async () => {
+      // Distinct defaults actually differ, on the exact paths a real
+      // two-environment devbox would resolve to (issue #867's own "make
+      // the defaults collision-free").
+      expect(prodBaseDir).not.toBe(previewBaseDir);
+      expect(prodStateDir).not.toBe(previewStateDir);
+      expect(defaultUnitName('production')).not.toBe(defaultUnitName('preview'));
+
+      const prodBackend = createSystemdLocalSupervisorBackend(
+        {
+          unitName: prodUnitName,
+          baseDir: prodBaseDir,
+          unitDir: realUnitDir,
+          stateDir: prodStateDir,
+          environment: 'production',
+          enableLinger: false,
+        },
+        prodTransport,
+      );
+      const previewBackend = createSystemdLocalSupervisorBackend(
+        {
+          unitName: previewUnitName,
+          baseDir: previewBaseDir,
+          unitDir: realUnitDir,
+          stateDir: previewStateDir,
+          environment: 'preview',
+          enableLinger: false,
+        },
+        previewTransport,
+      );
+
+      await mkdir(prodStateDir, { recursive: true });
+      await writeFile(
+        join(prodStateDir, 'identity.json'),
+        JSON.stringify({ nodeId: 'prod-scratch-node' }),
+      );
+      await mkdir(previewStateDir, { recursive: true });
+      await writeFile(
+        join(previewStateDir, 'identity.json'),
+        JSON.stringify({ nodeId: 'preview-scratch-node' }),
+      );
+
+      // Not `process.stdin.resume();` (the single-node test's own fixture
+      // above): under `systemd --user`'s default `StandardInput=null`,
+      // that stream hits EOF and lets the process exit within roughly a
+      // second — invisible to a test that checks `status()` immediately,
+      // but this test's second `install()` call is enough elapsed wall
+      // time to race it, flipping `state` to `'stopped'`/`'activating'`
+      // (systemd's own auto-restart already kicking in) depending on
+      // exactly when the check lands. A listening socket never depends on
+      // stdin at all — it keeps the event loop open indefinitely, so both
+      // spawned processes stay reliably up for the whole test.
+      const keepAlive = "import { createServer } from 'node:net'; createServer().listen(0);";
+      const prodInstall = await prodBackend.install({
+        version: '1.0.0',
+        fetchArchive: async () => fixtureArchive(keepAlive),
+        nodeExecutable: process.execPath,
+        environment: {},
+      });
+      expect(prodInstall.ok).toBe(true);
+      const previewInstall = await previewBackend.install({
+        version: '1.0.0',
+        fetchArchive: async () => fixtureArchive(keepAlive),
+        nodeExecutable: process.execPath,
+        environment: {},
+      });
+      expect(previewInstall.ok).toBe(true);
+
+      // "Two nodes on one machine, one per environment, both running and
+      // healthy" (#867's own acceptance).
+      expect((await prodBackend.status()).state).toBe('running');
+      expect((await previewBackend.status()).state).toBe('running');
+
+      // "Restarting one demonstrably does not touch the other."
+      await execFileAsync('systemctl', ['--user', 'restart', previewUnitName]);
+      expect((await previewBackend.status()).state).toBe('running');
+      expect((await prodBackend.status()).state).toBe('running');
+      const prodIdentityAfterPreviewRestart = await readFile(
+        join(prodStateDir, 'identity.json'),
+        'utf8',
+      );
+      expect(JSON.parse(prodIdentityAfterPreviewRestart)).toEqual({ nodeId: 'prod-scratch-node' });
+
+      // "Uninstalling one leaves the other running" — also exercises
+      // #814's uninstall scope: production's own bundle (`current`) and
+      // state dir survive preview's uninstall untouched.
+      const previewUninstall = await previewBackend.uninstall();
+      expect(previewUninstall.ok).toBe(true);
+      expect((await previewBackend.status()).installed).toBe(false);
+      expect((await prodBackend.status()).installed).toBe(true);
+      expect((await prodBackend.status()).state).toBe('running');
+      const prodIdentityAfterPreviewUninstall = await readFile(
+        join(prodStateDir, 'identity.json'),
+        'utf8',
+      );
+      expect(JSON.parse(prodIdentityAfterPreviewUninstall)).toEqual({
+        nodeId: 'prod-scratch-node',
+      });
+      await expect(readlink(join(previewBaseDir, 'current'))).rejects.toThrow();
+      await expect(readlink(join(prodBaseDir, 'current'))).resolves.toBeTruthy();
+
+      await prodBackend.uninstall();
     });
   },
 );

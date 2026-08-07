@@ -129,6 +129,73 @@ pnpm install
 sudo systemctl restart loombox-node.service
 ```
 
+## Running a second node against preview (issue #867, epic #863)
+
+Once a preview environment exists (`docs/deploy-relay.md`'s "Preview
+environment" section — its own relay at `preview-relay.loombox.dev`, its
+own web app at `preview.loombox.dev`, its own Postgres and GitHub OAuth
+App), a second resident node can point at it from the SAME machine as the
+production node above, without either interfering with the other.
+
+**What would collide if you just copied the files above onto
+`loombox-node.service`/`loombox-node.env` again:** the state dir (both
+default to `~/.loombox/node` — two nodes sharing one identity is not two
+nodes, it is one identity being fought over), the unit name (`systemctl
+--user restart loombox-node` would hit whichever node's unit won the
+name), and the node id shown in the account's node list (two rows named
+alike). `loombox-node-preview.service.example`/
+`loombox-node-preview.env.example` are the same files as above with all
+three already made distinct — copy those instead of the production ones:
+
+```bash
+sudo cp deploy/node/loombox-node-preview.service.example /etc/systemd/system/loombox-node-preview.service
+sudo cp deploy/node/loombox-node-preview.env.example /etc/loombox-node-preview.env
+sudo chmod 600 /etc/loombox-node-preview.env
+sudo chown dev:dev /etc/loombox-node-preview.env
+```
+
+Edit `/etc/loombox-node-preview.env` the same way as step 2 above, but
+every credential must be preview's own: a device token minted against
+`https://preview-relay.loombox.dev` for a preview account (sign up once at
+`https://preview.loombox.dev`, entirely separate from your production
+account), and that preview account's own Recovery Code. Production's
+Recovery Code does not unlock a preview account — they share no crypto
+material by design (#868).
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now loombox-node-preview.service
+journalctl -u loombox-node-preview.service -f
+```
+
+Both nodes are now independently running and healthy, each with its own
+identity under its own state dir (`~/.loombox/node` for production,
+`~/.loombox-preview/node` for preview) and its own account:
+
+```bash
+systemctl --user status loombox-node.service loombox-node-preview.service
+```
+
+Restarting one never touches the other — they are different unit names
+over different `EnvironmentFile=`s with different `LOOMBOX_NODE_STATE_DIR`s:
+
+```bash
+sudo systemctl restart loombox-node-preview.service   # production keeps running, untouched
+```
+
+Uninstalling one (stopping and disabling its unit, and — if you're really
+done with it — `rm -rf` its own state dir only) leaves the other running:
+neither unit's file, state dir, or install root is ever reachable from the
+other's.
+
+The same `.loombox-preview`/`loombox-node-preview.service` naming is not
+just a convention for this manual setup — `packages/node/src/node-
+environment.ts`'s `defaultBaseDirName`/`defaultUnitName`/`defaultLaunchdLabel`
+resolve to exactly these names when the automated local-provisioning path
+(`provisionLocalNode`, the desktop app's own node setup) is told
+`environment: 'preview'`, so a node set up by hand this way and one set up
+through the desktop app land on the same paths.
+
 ## Notes
 
 - **Restart=always** in the unit means a crashed or killed node comes back

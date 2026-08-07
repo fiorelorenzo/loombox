@@ -1,0 +1,61 @@
+# Example systemd unit for a resident loombox node targeting PREVIEW
+# (issue #867, epic #863). Mirrors ./loombox-node.service.example
+# (production) exactly, except the unit name, the env file it loads, and
+# its Description= — same binary, same WorkingDirectory, same checkout:
+# both units run out of the one repo clone, they just load different env.
+#
+# The distinct UNIT NAME below (not "loombox-node.service") is what keeps
+# `systemctl --user restart loombox-node` from ever being ambiguous between
+# the two — packages/node/src/node-environment.ts's own
+# `defaultUnitName('preview')` names this exact convention for the
+# automated local-provisioning path; this manual file just applies it by
+# hand.
+#
+#   sudo cp loombox-node-preview.service.example /etc/systemd/system/loombox-node-preview.service
+#   sudo cp loombox-node-preview.env.example /etc/loombox-node-preview.env   # then edit + chmod 600
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now loombox-node-preview.service
+#   journalctl -u loombox-node-preview.service -f
+#
+# See README.md for the full runbook (getting a device token, the recovery
+# code, and verifying the node registers) — everything there applies here
+# too, just against preview's own relay/web app/account.
+
+[Unit]
+Description=loombox resident node (preview)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+Group=dev
+WorkingDirectory=/home/dev/Progetti/loombox
+
+# Same PATH note as ./loombox-node.service.example — systemd never
+# activates mise, so PATH must point at its shims directly.
+Environment=PATH=/home/dev/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+
+# Preview's own secrets/config — never ./loombox-node.env (production's).
+EnvironmentFile=/etc/loombox-node-preview.env
+
+# Requires `pnpm install` already run at WorkingDirectory (normal repo
+# checkout, not a --prod-only install: tsx is a devDependency). This is
+# the SAME checkout the production unit runs out of — both units start the
+# exact same `pnpm --filter @loombox/node start` entry point, and diverge
+# entirely through which EnvironmentFile= they load.
+ExecStart=/home/dev/.local/share/mise/shims/pnpm --filter @loombox/node start
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening: narrow, but the node still needs to spawn `claude`/`npx` and
+# read/write project worktrees and its own state dir, so this deliberately
+# stays looser than e.g. a stateless network service.
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
