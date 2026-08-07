@@ -189,6 +189,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   github_connect_result: { routed: 'node' },
   jira_connect_request: { routed: 'client' },
   jira_connect_response: { routed: 'node' },
+  github_cli_import_request: { routed: 'client' },
+  github_cli_import_response: { routed: 'node' },
   connected_account_disconnect_request: { routed: 'client' },
   connected_account_disconnect_response: { routed: 'node' },
   account_pin_get_request: { routed: 'client' },

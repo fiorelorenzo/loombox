@@ -137,6 +137,59 @@ export const jiraConnectResponse = z.object({
 export type JiraConnectResponse = z.infer<typeof jiraConnectResponse>;
 
 // ---------------------------------------------------------------------
+// GitHub — `gh` CLI import (issue #223's flow, reachable here)
+// ---------------------------------------------------------------------
+
+/** A client asks `nodeId` to run SPEC §7.26's `gh` CLI import (issue #223) — a one-shot walk of every host+account the operator's local `gh` CLI already holds, including GitHub Enterprise Server hosts. No parameters: unlike the device-flow/Jira pairs above there is nothing the operator types, `gh` already holds everything this needs. One round trip, like `jiraConnectRequest` — but unlike either of those, a single reply can carry several imported accounts at once. */
+export const githubCliImportRequest = z.object({
+  type: z.literal('github_cli_import_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+});
+export type GithubCliImportRequest = z.infer<typeof githubCliImportRequest>;
+
+/** One host+account `gh auth status` reported, after this node tried to import it. `'imported'` always carries a newly-synced `ConnectedAccount` (SPEC §7.26's CLI-import bullet is unconditional: "one shot imports every host+account") plus `missingScopes` — the subset of the device-flow path's four requested scopes (`repo`, `read:user`, `read:org`, `read:project`) this gh-issued token does not grant, named up front rather than left to surface as a confusing failure the first time a tracker write needs one (issue #223's acceptance). `'error'` is this one host+account failing outright — gh itself reports its auth broken (expired/revoked), `GET /user` rejected the token, or gh returned no usable token — and carries no account; every other host+account in the same request is unaffected. */
+export const githubCliImportEntryOutcome = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('imported'),
+    account: connectedAccount,
+    missingScopes: z.array(z.string().min(1)),
+  }),
+  z.object({
+    outcome: z.literal('error'),
+    host: z.string().min(1),
+    login: z.string().min(1).optional(),
+    message: z.string().min(1),
+  }),
+]);
+export type GithubCliImportEntryOutcome = z.infer<typeof githubCliImportEntryOutcome>;
+
+/** `githubCliImportResponse.result`'s own outcome. `'success'` means this node was able to run `gh` and enumerate its accounts at all — `entries` (possibly a mix of `'imported'`/`'error'`, possibly empty) is the per-account detail above. `'failure'` means the import could not even start: `'gh_not_found'` (no `gh` on this node's `PATH`), `'gh_unsupported'` (a `gh` too old for `auth status --json`, which this module requires rather than parsing gh's human-readable text output), `'gh_not_logged_in'` (gh works but `gh auth status` names no host at all), or `'error'` for anything else. Never a token either way. */
+export const githubCliImportOutcome = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('success'),
+    entries: z.array(githubCliImportEntryOutcome),
+  }),
+  z.object({
+    outcome: z.literal('failure'),
+    reason: z.enum(['gh_not_found', 'gh_unsupported', 'gh_not_logged_in', 'error']),
+    message: z.string().min(1),
+  }),
+]);
+export type GithubCliImportOutcome = z.infer<typeof githubCliImportOutcome>;
+
+/** The import's terminal (and only) message — see {@link githubCliImportOutcome}'s doc comment for what `result` carries. */
+export const githubCliImportResponse = z.object({
+  type: z.literal('github_cli_import_response'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  requestId: z.string().min(1),
+  nodeId: z.string().min(1),
+  result: githubCliImportOutcome,
+});
+export type GithubCliImportResponse = z.infer<typeof githubCliImportResponse>;
+
+// ---------------------------------------------------------------------
 // Disconnect
 // ---------------------------------------------------------------------
 

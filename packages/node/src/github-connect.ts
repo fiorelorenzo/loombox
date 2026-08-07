@@ -77,8 +77,12 @@ export function resolveGithubConnectClientId(
  * fewer scopes than requested (an org restriction), the missing capability
  * is correctly absent too, since this reads the granted list, not the
  * requested one.
+ *
+ * Exported (not just this module's own concern) so #223's `gh` CLI import
+ * derives capabilities from a gh-issued token's granted scopes the exact
+ * same way the device flow does — one mapping, not two that could drift.
  */
-function deriveGithubCapabilities(grantedScopes: readonly string[]): string[] {
+export function deriveGithubCapabilities(grantedScopes: readonly string[]): string[] {
   const capabilities: string[] = [];
   if (grantedScopes.includes('repo')) capabilities.push('repo', 'issues');
   if (grantedScopes.includes('read:project')) capabilities.push('projects');

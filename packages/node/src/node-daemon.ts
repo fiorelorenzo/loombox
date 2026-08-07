@@ -143,6 +143,8 @@ import {
   type GitGraphRequest,
   type GitGraphRequestPayloadV1,
   type GitGraphResponsePayloadV1,
+  type GithubCliImportOutcome,
+  type GithubCliImportRequest,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -328,6 +330,7 @@ import {
 import { renderPromptTextWithMentions, type PromptMentionRef } from './prompt-mentions';
 import { GithubDeviceFlowError } from './github-device-flow';
 import { GithubConnectService, resolveGithubConnectClientId } from './github-connect';
+import { GithubCliImportService } from './github-cli-import';
 import { JiraConnectService } from './jira-connect';
 
 import { LocalExecutionTarget } from './local-execution-target';
@@ -888,6 +891,8 @@ export interface NodeDaemonOptions {
   githubConnectClientId?: string;
   /** SPEC §7.26, issue #230 — see `NodeDaemonOptions.mcpConfigStore`'s own default-construction convention above. Defaults to `new JiraConnectService({stateDir: options.stateDir})`. */
   jiraConnectService?: JiraConnectService;
+  /** SPEC §7.26, issue #223 — this node's `gh` CLI import path, the second way onto the same registry alongside the device flow above. Defaults to `new GithubCliImportService({stateDir: options.stateDir})`, same convention as `githubConnectService`/`jiraConnectService`. */
+  githubCliImportService?: GithubCliImportService;
   /** SPEC §7.26, issue #227/#230 — this node's per-project, per-capability account pin map. Defaults to `new AccountPinStore({stateDir: options.stateDir})`, same convention as `mcpConfigStore`/`permissionPolicyStore` above. */
   accountPinStore?: AccountPinStore;
   /** SPEC §7.10, issue #631 — this node's per-project `TrackerMode` (see `tracker-mode-store.ts`'s doc comment for why this exists at all: it replaces the browser-`localStorage`-only version that made the node structurally unable to honour a project's `live` choice). Defaults to `new TrackerModeStore({stateDir: options.stateDir})`, same convention as `accountPinStore` above. */
@@ -1701,6 +1706,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly githubConnectFlows = new Map<string, AbortController>();
   /** SPEC §7.26, issue #230's Jira API-token connect path. */
   private readonly jiraConnectService: JiraConnectService;
+  /** SPEC §7.26, issue #223's `gh` CLI import path. */
+  private readonly githubCliImportService: GithubCliImportService;
   /** SPEC §7.26, issue #227/#230's per-project, per-capability account pin map. */
   private readonly accountPinStore: AccountPinStore;
   /** SPEC §7.10, issue #631's per-project `TrackerMode` — `handleTrackerModeGetRequest`/`handleTrackerModeSetRequest`'s backing store, and ALSO this daemon's own synchronous read surface for other daemon code that needs a project's mode with no wire round trip: read `this.trackerModeStore.get(projectPath)` directly (mirrors `readTrackerSnapshot` already reading `this.nativeTrackerStore` directly, no wrapper needed for a field private to this same class). Consumed by {@link resolveTrackerDispatch}, the shared seam both `readTrackerSnapshot` and `applyTrackerWrite` dispatch through. */
@@ -1867,6 +1874,8 @@ export class NodeDaemon extends EventEmitter {
     this.githubConnectClientId = options.githubConnectClientId ?? resolveGithubConnectClientId();
     this.jiraConnectService =
       options.jiraConnectService ?? new JiraConnectService({ stateDir: options.stateDir });
+    this.githubCliImportService =
+      options.githubCliImportService ?? new GithubCliImportService({ stateDir: options.stateDir });
     this.accountPinStore =
       options.accountPinStore ?? new AccountPinStore({ stateDir: options.stateDir });
     this.trackerModeStore =
@@ -4492,6 +4501,9 @@ export class NodeDaemon extends EventEmitter {
       case 'jira_connect_request':
         this.handleJiraConnectRequest(message);
         return;
+      case 'github_cli_import_request':
+        this.handleGithubCliImportRequest(message);
+        return;
       case 'connected_account_disconnect_request':
         this.handleConnectedAccountDisconnectRequest(message);
         return;
@@ -7019,6 +7031,58 @@ export class NodeDaemon extends EventEmitter {
   private sendJiraConnectResponse(requestId: string, result: JiraConnectOutcome): void {
     this.relay.send({
       type: 'jira_connect_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId,
+      nodeId: this.nodeId,
+      result,
+    });
+  }
+
+  /**
+   * A client asked (via the relay) this node to run SPEC §7.26's `gh` CLI
+   * import (issue #223) — a one-shot walk of every host+account the local
+   * `gh` CLI already holds. Unlike the device-flow/Jira pairs above this
+   * can announce MULTIPLE accounts from one request: each `'imported'`
+   * entry gets its own `connected_account_announce` (issue #221) before
+   * the single terminal `github_cli_import_response`, exactly like a
+   * batch of individual connects would, just without a separate round
+   * trip per account. Mirrors `handleGithubConnectStartRequest`'s/
+   * `handleJiraConnectRequest`'s own known gap (see
+   * `node-daemon-account-connect.test.ts`'s top comment): `import()` is
+   * called with no injected `fetchImpl`, so this daemon always resolves
+   * identity against the real GitHub API in production; the full success
+   * path is proven end to end at the service level instead
+   * (`github-cli-import.test.ts`).
+   */
+  private handleGithubCliImportRequest(message: GithubCliImportRequest): void {
+    this.githubCliImportService
+      .import()
+      .then((result) => {
+        if (result.outcome === 'success') {
+          for (const entry of result.entries) {
+            if (entry.outcome === 'imported') {
+              this.relay.send({
+                type: 'connected_account_announce',
+                protocolVersion: PROTOCOL_V1,
+                account: entry.account,
+              });
+            }
+          }
+        }
+        this.sendGithubCliImportResponse(message.requestId, result);
+      })
+      .catch((error: unknown) => {
+        this.sendGithubCliImportResponse(message.requestId, {
+          outcome: 'failure',
+          reason: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  private sendGithubCliImportResponse(requestId: string, result: GithubCliImportOutcome): void {
+    this.relay.send({
+      type: 'github_cli_import_response',
       protocolVersion: PROTOCOL_V1,
       requestId,
       nodeId: this.nodeId,
