@@ -253,6 +253,7 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
         result: Promise.withResolvers<never>().promise,
       })),
       connectJiraAccount: vi.fn(),
+      scanAccountPins: vi.fn(async () => []),
       disconnectAccount: vi.fn(),
       getAccountPins: vi.fn(async () => ({})),
       setAccountPin: vi.fn(),

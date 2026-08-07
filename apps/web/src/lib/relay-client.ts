@@ -60,6 +60,7 @@ import {
   parseReviewCommentStatusPayloadV1,
   parseRunStatusPayloadV1,
   parseSessionTemplateListResultPayloadV1,
+  parseSnippetListResultPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
   parseTrackerConnectivityStatusPayloadV1,
@@ -71,6 +72,7 @@ import {
   trackerWriteResponsePayloadV1,
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
+  type AccountPinScanHitV1,
   type AgentInstructionsGetResponse,
   type AgentInstructionsGetResponsePayloadV1,
   type AgentInstructionsSetRequestPayloadV1,
@@ -212,6 +214,9 @@ import {
   type SessionViewStatePayloadV1,
   type SessionViewStateResult,
   parseSessionViewStatePayloadV1,
+  type SnippetListResult,
+  type SnippetListSetPayloadV1,
+  type SnippetV1,
   type SpendReportResponse,
   type SpendReportRowV1,
   type SshDiscoveryResponse,
@@ -266,6 +271,7 @@ export type {
   TargetHealth,
   TargetListEntry,
   SessionTemplateV1,
+  SnippetV1,
 } from '@loombox/protocol';
 export type {
   PermissionPolicyV1,
@@ -1463,6 +1469,11 @@ export class RelayClient {
     string,
     { resolve: (outcome: AccountPinResolveOutcome) => void; reject: (error: Error) => void }
   >();
+  /** requestId -> the pending `scanAccountPins` call it belongs to (SPEC §7.26's pre-disconnect scan-and-warn, issue #229). */
+  private readonly pendingAccountPinScanRequests = new Map<
+    string,
+    { resolve: (affected: AccountPinScanHitV1[]) => void; reject: (error: Error) => void }
+  >();
   /** requestId -> the pending `getTrackerMode`/`setTrackerMode` call it belongs to (SPEC §7.10, issue #631) — both share `tracker_mode_response`'s shape, mirroring `pendingAccountPinRequests`'s own consolidation immediately above (and `packages/relay/src/relay.ts`'s `pendingAccountRequests`, which routes this alongside the account-pin messages on purpose). */
   private readonly pendingTrackerModeRequests = new Map<
     string,
@@ -1876,6 +1887,11 @@ export class RelayClient {
   private readonly pendingAgentProfileListRequests = new Map<
     string,
     { resolve: (profiles: AgentProfileV1[]) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link listSnippets}/{@link saveSnippets} call it belongs to (issue #261). Both resolve to the same `snippet_list_result` reply, mirroring `pendingAgentProfileListRequests` above exactly — a snippet catalog has no per-session "active" half to pair with a second map. */
+  private readonly pendingSnippetListRequests = new Map<
+    string,
+    { resolve: (snippets: SnippetV1[]) => void; reject: (error: Error) => void }
   >();
   /** requestId -> the pending {@link getSessionAgentProfile}/{@link setSessionAgentProfile} call it belongs to (issue #752). Both resolve to the same `agent_profile_session_result` reply. */
   private readonly pendingAgentProfileSessionRequests = new Map<
@@ -2753,10 +2769,12 @@ export class RelayClient {
    * `connected_account_disconnect_response` handler), so a caller should
    * follow a successful disconnect with {@link refreshConnectedAccounts}
    * to see it drop out of {@link connectedAccounts}. Does not itself scan
-   * for or warn about project pins referencing this account (issue #229's
-   * full scan-and-warn) — the caller (this issue's confirm dialog) is
-   * responsible for confirming with the operator first, using whatever pin
-   * state it already has loaded.
+   * for, warn about, or clear project pins referencing this account —
+   * {@link scanAccountPins} is that step (issue #229), sent first and
+   * separately, so the caller can confirm with the operator using real
+   * project/capability names before ever calling this. A pin naming this
+   * account is left dangling, not cleared, once it succeeds — see
+   * {@link scanAccountPins}'s own doc comment for why.
    */
   disconnectAccount(
     nodeId: string,
@@ -2788,6 +2806,56 @@ export class RelayClient {
       });
       this.send({
         type: 'connected_account_disconnect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId,
+        nodeId,
+        accountId,
+      });
+    });
+  }
+
+  /**
+   * Asks `nodeId` to scan every project it has ever recorded an account
+   * pin for and report every `{projectPath, capability}` still pinned to
+   * `accountId` (SPEC §7.26's "Before letting a user disconnect an
+   * account still pinned somewhere, scan all project settings and warn";
+   * issue #229) — call this BEFORE {@link disconnectAccount}, never after,
+   * so a caller can decide whether disconnecting even needs a
+   * confirmation step: an empty result means proceed immediately (this
+   * issue's own acceptance), a non-empty one names exactly what would
+   * break. `disconnectAccount` deliberately never clears a pin this finds
+   * — it is left dangling, so a resolve through it after disconnecting
+   * fails with `AccountPinDanglingError` (an honest, real failure)
+   * instead of silently falling back to a different account; a rescan
+   * after disconnecting still finds the same hit, which is how an
+   * operator discovers it needs repinning.
+   */
+  scanAccountPins(
+    nodeId: string,
+    accountId: string,
+    timeoutMs = 15_000,
+  ): Promise<AccountPinScanHitV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot scan account pins, no open connection'));
+    }
+    const requestId = generateId('acctpinscan');
+    return new Promise<AccountPinScanHitV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAccountPinScanRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for account_pin_scan_response'));
+      }, timeoutMs);
+      this.pendingAccountPinScanRequests.set(requestId, {
+        resolve: (affected) => {
+          clearTimeout(timer);
+          resolve(affected);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'account_pin_scan_request',
         protocolVersion: PROTOCOL_V1,
         requestId,
         nodeId,
@@ -6626,6 +6694,9 @@ export class RelayClient {
       case 'agent_profile_list_result':
         this.handleAgentProfileListResult(message);
         return;
+      case 'snippet_list_result':
+        this.handleSnippetListResult(message);
+        return;
       case 'agent_profile_session_result':
         this.handleAgentProfileSessionResult(message);
         return;
@@ -6727,6 +6798,13 @@ export class RelayClient {
         if (!pending) return;
         this.pendingAccountPinResolveRequests.delete(message.requestId);
         pending.resolve(message.result);
+        return;
+      }
+      case 'account_pin_scan_response': {
+        const pending = this.pendingAccountPinScanRequests.get(message.requestId);
+        if (!pending) return;
+        this.pendingAccountPinScanRequests.delete(message.requestId);
+        pending.resolve(message.affected);
         return;
       }
       case 'tracker_mode_response': {
@@ -9659,5 +9737,87 @@ export class RelayClient {
     }
     listeners.add(listener);
     return () => listeners.delete(listener);
+  }
+
+  /** Reads this account's saved prompt/snippet catalog from the owning node (SPEC §7.18; issue #261) — `[]` for a node with nothing saved yet. No envelope on the request, mirrors {@link listAgentProfiles}. Requires an open connection and a session to route through; rejects on a timeout. */
+  listSnippets(sessionId: string, timeoutMs = 5000): Promise<SnippetV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot list snippets, no open connection'));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('snippets');
+    return new Promise<SnippetV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSnippetListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for snippet_list_result'));
+      }, timeoutMs);
+      this.pendingSnippetListRequests.set(requestId, {
+        resolve: (snippets) => {
+          clearTimeout(timer);
+          resolve(snippets);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ type: 'snippet_list_get', protocolVersion: PROTOCOL_V1, sessionId, requestId });
+    });
+  }
+
+  /** Saves (fully replaces — never a partial patch) this account's snippet catalog (issue #261). Resolves with the saved result, mirrors {@link saveAgentProfiles}. */
+  saveSnippets(sessionId: string, snippets: SnippetV1[], timeoutMs = 5000): Promise<SnippetV1[]> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot save snippets, no open connection'));
+    }
+    this.ensureSubscribed(sessionId);
+    const requestId = generateId('snippets');
+    return new Promise<SnippetV1[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSnippetListRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for snippet_list_result'));
+      }, timeoutMs);
+      this.pendingSnippetListRequests.set(requestId, {
+        resolve: (saved) => {
+          clearTimeout(timer);
+          resolve(saved);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      const payload: SnippetListSetPayloadV1 = { snippets };
+      this.envelopeCrypto
+        .seal('session', sessionId, sessionId, payload)
+        .then((envelope) => {
+          this.send({
+            type: 'snippet_list_set',
+            protocolVersion: PROTOCOL_V1,
+            sessionId,
+            requestId,
+            envelope,
+          });
+        })
+        .catch((error: unknown) => {
+          this.pendingSnippetListRequests.delete(requestId);
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link listSnippets}/{@link saveSnippets} calls (issue #261). Mirrors {@link handleAgentProfileListResult}. */
+  private handleSnippetListResult(message: SnippetListResult): void {
+    const pending = this.pendingSnippetListRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingSnippetListRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => pending.resolve(parseSnippetListResultPayloadV1(decrypted).snippets))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
   }
 }

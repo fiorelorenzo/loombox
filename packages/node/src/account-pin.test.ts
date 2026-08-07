@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { connectedAccountSecretRef, type ConnectedAccount } from '@loombox/protocol';
 
@@ -13,10 +16,12 @@ import {
   resolveAccountForRead,
   resolveAccountForWrite,
   resolveAccountForWriteOnThisNode,
+  scanPinsForAccount,
   type AccountPinMap,
   type AccountResolutionTarget,
   type NodePresenceCheck,
 } from './account-pin';
+import { AccountPinStore } from './account-pin-store';
 
 function account(overrides: Partial<ConnectedAccount> = {}): ConnectedAccount {
   const base = {
@@ -391,5 +396,84 @@ describe('resolveAccountForWriteOnThisNode (SPEC §7.26 "Node-locality", issue #
         presenceOf(['anything']),
       ),
     ).rejects.toThrow(AccountPinDanglingError);
+  });
+});
+
+describe('scanPinsForAccount (SPEC §7.26 pre-disconnect scan-and-warn, issue #229)', () => {
+  it('finds nothing for an account nobody has pinned', () => {
+    expect(scanPinsForAccount({}, octocat.id)).toEqual([]);
+    expect(scanPinsForAccount({ '/proj-a': { github: otherGithub.id } }, octocat.id)).toEqual([]);
+  });
+
+  it('never counts an explicit opt-out (null) or an absent key as a hit, even for the scanned account', () => {
+    const projectPins: Record<string, AccountPinMap> = {
+      '/proj-a': { github: null, jira: undefined },
+    };
+    expect(scanPinsForAccount(projectPins, octocat.id)).toEqual([]);
+  });
+
+  it('finds every project/capability pinned to the target account and ignores pins naming a different account', () => {
+    const projectPins: Record<string, AccountPinMap> = {
+      '/home/dev/proj-a': { github: octocat.id, jira: jiraAccount.id },
+      '/home/dev/proj-b': { github: otherGithub.id },
+      '/home/dev/proj-c': { github: octocat.id, jira: null },
+    };
+    expect(scanPinsForAccount(projectPins, octocat.id)).toEqual([
+      { projectPath: '/home/dev/proj-a', capability: 'github' },
+      { projectPath: '/home/dev/proj-c', capability: 'github' },
+    ]);
+  });
+
+  it('sorts hits by projectPath then capability, regardless of input key order', () => {
+    const projectPins: Record<string, AccountPinMap> = {
+      '/home/dev/zeta': { jira: octocat.id, github: octocat.id },
+      '/home/dev/alpha': { jira: octocat.id, github: octocat.id },
+    };
+    expect(scanPinsForAccount(projectPins, octocat.id)).toEqual([
+      { projectPath: '/home/dev/alpha', capability: 'github' },
+      { projectPath: '/home/dev/alpha', capability: 'jira' },
+      { projectPath: '/home/dev/zeta', capability: 'github' },
+      { projectPath: '/home/dev/zeta', capability: 'jira' },
+    ]);
+  });
+
+  describe('against a real AccountPinStore fixture with several pins', () => {
+    let stateDir: string;
+
+    beforeEach(async () => {
+      stateDir = await mkdtemp(path.join(tmpdir(), 'loombox-account-pin-scan-test-'));
+    });
+
+    afterEach(async () => {
+      await rm(stateDir, { recursive: true, force: true });
+    });
+
+    it('names the real projects and capabilities still pinned to the account being disconnected, across a store with mixed pins', () => {
+      const store = new AccountPinStore({ stateDir });
+      // Two projects/capabilities pinned to octocat — the ones a disconnect
+      // of octocat should warn about by name.
+      store.setPin('/home/dev/loombox', 'github', octocat.id);
+      store.setPin('/home/dev/side-project', 'github', octocat.id);
+      // A third project pinned to a *different* GitHub account — untouched
+      // by disconnecting octocat, must not appear in the scan.
+      store.setPin('/home/dev/other-repo', 'github', otherGithub.id);
+      // Jira on one of the same projects, pinned to a Jira account — a
+      // different capability on an already-affected project, still not a
+      // hit for octocat's own scan.
+      store.setPin('/home/dev/loombox', 'jira', jiraAccount.id);
+      // An explicit opt-out — never a hit for any account.
+      store.setPin('/home/dev/opted-out', 'github', null);
+
+      const affected = scanPinsForAccount(store.allProjectPins(), octocat.id);
+      expect(affected).toEqual([
+        { projectPath: '/home/dev/loombox', capability: 'github' },
+        { projectPath: '/home/dev/side-project', capability: 'github' },
+      ]);
+
+      // The Jira account's own scan finds exactly its one real pin.
+      expect(scanPinsForAccount(store.allProjectPins(), jiraAccount.id)).toEqual([
+        { projectPath: '/home/dev/loombox', capability: 'jira' },
+      ]);
+    });
   });
 });

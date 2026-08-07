@@ -214,6 +214,36 @@ describe('AgentSupervisor — attach/resume across disconnects (issue #78)', () 
   });
 });
 
+describe('AgentSupervisor.readPersistedTranscriptUpdates (issue #264: forking a past session)', () => {
+  it('reads a session transcript straight off disk, with no in-memory AgentSession tracking it at all — never mind a live one', async () => {
+    const supervisorA = new AgentSupervisor({ providers: [echoProvider()], stateDir });
+    const session = await supervisorA.start({ workspacePath, providerId: 'test-echo' });
+    await session.prompt('hi there');
+    session.close();
+
+    // A brand-new supervisor instance, same state dir, that never spawned
+    // or reloaded this session — the archive-facing case: this session's
+    // agent is long gone, and nothing here ever calls `get()` or
+    // `reloadPersistedSessions()` on it first.
+    const supervisorB = new AgentSupervisor({ providers: [], stateDir });
+    expect(supervisorB.get(session.id)).toBeUndefined();
+
+    const updates = supervisorB.readPersistedTranscriptUpdates(session.id);
+    expect(updates).toEqual(session.getTranscriptUpdates());
+    expect(updates.some((update) => update.kind === 'agent_message_chunk')).toBe(true);
+
+    // Reading never registers the session either — this stays a pure,
+    // side-effect-free disk read, unlike `reloadPersistedSessions()`.
+    expect(supervisorB.get(session.id)).toBeUndefined();
+    expect(supervisorB.listSessions()).toHaveLength(0);
+  });
+
+  it('returns an empty array for an id with nothing persisted, never a throw', () => {
+    const supervisor = new AgentSupervisor({ providers: [], stateDir });
+    expect(supervisor.readPersistedTranscriptUpdates('never-existed')).toEqual([]);
+  });
+});
+
 describe('AgentSupervisor — completion/attention events independent of any client (issue #79)', () => {
   it('records a turn-finished attention transition to disk even with zero listeners attached', async () => {
     const supervisor = new AgentSupervisor({ providers: [echoProvider()], stateDir });

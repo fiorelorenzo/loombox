@@ -4,6 +4,7 @@ import type {
   AcpProvider,
   AcpSpawnConfig,
   AcpToolKind,
+  AcpTranscriptUpdate,
   SandboxedSpawnConfig,
 } from '@loombox/providers-core';
 import { claudeProvider, claudeProviderModule } from '@loombox/providers-claude';
@@ -270,6 +271,20 @@ export class AgentSupervisor {
   /** Looks up a still-running (or, post-reload, replay-only) session by id; the re-attach path (never respawns). */
   get(sessionId: string): AgentSession | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /**
+   * Reads a session's transcript straight from disk, keyed by its
+   * ACP-level session id — the archive-facing counterpart to {@link get}/
+   * {@link reloadPersistedSessions} for a session that never got (and, on
+   * this process's lifetime, may never get) an in-memory `AgentSession` of
+   * its own again (issue #264: forking a past session whose agent process
+   * is long gone). Delegates straight to
+   * `TranscriptStore.readTranscriptUpdates()` — `[]` for an id with
+   * nothing persisted, never a throw, matching that method's own contract.
+   */
+  readPersistedTranscriptUpdates(acpSessionId: string): AcpTranscriptUpdate[] {
+    return this.store.readTranscriptUpdates(acpSessionId);
   }
 
   /** Every session currently held by this supervisor. */

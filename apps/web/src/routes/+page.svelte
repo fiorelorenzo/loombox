@@ -40,6 +40,7 @@
     type ConnectedAccount,
     type ConnectionStatus,
     type FileTreeDirectoryState,
+    type SnippetV1,
     type TargetListEntry,
   } from '$lib/relay-client';
   import { AuthStore, type StoredAuthSession } from '$lib/auth-store';
@@ -185,6 +186,7 @@
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
+  import SnippetPicker from '$lib/components/SnippetPicker.svelte';
   import TranscriptSearchBar from '$lib/components/TranscriptSearchBar.svelte';
   import TranscriptTimeline, {
     type TranscriptJumpTarget,
@@ -1060,6 +1062,13 @@
   // character of the composer (slash commands are a whole-message
   // convention, never embedded mid-sentence like `@file`).
   let slashTriggerStart = $state<number | undefined>(undefined);
+  // The reusable prompt/snippet library's picker (SPEC §7.18; issue #261)
+  // — opened by a composer button, not a typed trigger like `/`/`@`
+  // above, since a saved snippet can be inserted at any point in an
+  // already-started draft, not only at the very first character.
+  let snippetPickerOpen = $state(false);
+  /** The account's saved snippet catalog (issue #261), mirrored via `RelayClient.listSnippets` — loaded fresh every time {@link openSnippetPicker} opens the picker, since it can change from another device between opens. */
+  let snippets = $state<SnippetV1[]>([]);
   // The cross-project attention inbox (SPEC §7.13; issues #167/#168/#169):
   // one live list across every session on this account, independent of
   // which session (if any) is currently selected/open — see
@@ -2371,6 +2380,95 @@
   function closeSlashPicker(): void {
     slashPickerOpen = false;
     slashTriggerStart = undefined;
+  }
+
+  /** Purely local, client-generated — mirrors `NewSessionDialog.svelte`'s own `newTemplateId()` fallback exactly (`crypto.randomUUID` is missing in older Safari and in some test environments; this id is never a security boundary, only a catalog key). */
+  function newSnippetId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `snip_${crypto.randomUUID()}`;
+    }
+    return `snip_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  /** Opens the snippet library picker (issue #261), first refreshing {@link snippets} off the owning node so a save from another device shows up immediately — mirrors `NewSessionDialog.svelte`'s own `loadTemplates` on open. */
+  function openSnippetPicker(): void {
+    if (!client || !selectedSessionId) return;
+    client
+      .listSnippets(selectedSessionId)
+      .then((loaded) => {
+        snippets = loaded;
+        snippetPickerOpen = true;
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `Failed to load snippets: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
+  function closeSnippetPicker(): void {
+    snippetPickerOpen = false;
+  }
+
+  /**
+   * Inserts `snippet.text` verbatim into the composer at the caret,
+   * replacing any current selection (issue #261's "produces exactly the
+   * text expected" acceptance) — the one genuinely new insertion shape
+   * this file needed: unlike {@link insertSlashCommand} (always at
+   * `slashTriggerStart`, the composer's very first character) and
+   * {@link addMention} (always at a typed `@partial-query` span), a
+   * snippet can be triggered by a button click at ANY point in an
+   * already-started draft, so this reads the textarea's live
+   * `selectionStart`/`selectionEnd` directly rather than a remembered
+   * trigger offset. Falls back to appending at the end when the textarea
+   * ref isn't mounted yet (never blocks the insert on a DOM detail).
+   */
+  function insertSnippetText(snippet: SnippetV1): void {
+    const textarea = composerTextarea;
+    const caret = textarea?.selectionStart ?? draft.length;
+    const selectionEnd = textarea?.selectionEnd ?? caret;
+    const before = draft.slice(0, caret);
+    const after = draft.slice(selectionEnd);
+    draft = `${before}${snippet.text}${after}`;
+    const newCaret = caret + snippet.text.length;
+    tick().then(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(newCaret, newCaret);
+    });
+  }
+
+  /** Saves `name`/`text` as a new snippet, appended to the existing catalog (issue #261) — `RelayClient.saveSnippets` fully replaces, never patches, so this sends the whole prior `snippets` plus the new entry, mirroring `NewSessionDialog.svelte`'s own `handleSaveTemplate`. */
+  function saveSnippet(name: string, text: string): void {
+    if (!client || !selectedSessionId) return;
+    const snippet: SnippetV1 = { id: newSnippetId(), name, text };
+    client
+      .saveSnippets(selectedSessionId, [...snippets, snippet])
+      .then((saved) => {
+        snippets = saved;
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `Failed to save snippet: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
+  /** Removes one snippet by id (issue #261) — same "send the whole catalog minus this entry" shape as {@link saveSnippet}. */
+  function deleteSnippet(id: string): void {
+    if (!client || !selectedSessionId) return;
+    client
+      .saveSnippets(
+        selectedSessionId,
+        snippets.filter((entry) => entry.id !== id),
+      )
+      .then((saved) => {
+        snippets = saved;
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `Failed to delete snippet: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
   }
 
   /**
@@ -5100,6 +5198,13 @@
                             <IconButton label="Attach image" onclick={pickFiles}>
                               <Icon name="attach" size="20px" />
                             </IconButton>
+                            <IconButton
+                              label="Insert snippet"
+                              disabled={!client || !selectedSessionId}
+                              onclick={openSnippetPicker}
+                            >
+                              <Icon name="file" size="20px" />
+                            </IconButton>
                             {#if narrowViewport}
                               <IconButton
                                 label={configControlsExpanded
@@ -5522,6 +5627,16 @@
   commands={slashCommands}
   onSelect={insertSlashCommand}
   onClose={closeSlashPicker}
+/>
+
+<SnippetPicker
+  open={snippetPickerOpen}
+  {snippets}
+  draftText={draft}
+  onInsert={insertSnippetText}
+  onSave={saveSnippet}
+  onDelete={deleteSnippet}
+  onClose={closeSnippetPicker}
 />
 
 {#if newSessionProject}

@@ -87,6 +87,9 @@ function validateSession(raw: unknown, context: string): Session {
       `${context}: "spendCapUsd" must be a positive, finite number when present`,
     );
   }
+  if (record.acpSessionId !== undefined && typeof record.acpSessionId !== 'string') {
+    throw new SessionStoreError(`${context}: "acpSessionId" must be a string when present`);
+  }
   return {
     id: record.id,
     projectPath: record.projectPath,
@@ -99,6 +102,7 @@ function validateSession(raw: unknown, context: string): Session {
     nodeId: record.nodeId,
     targetId: record.targetId,
     spendCapUsd: record.spendCapUsd,
+    acpSessionId: record.acpSessionId,
   };
 }
 

@@ -22,14 +22,20 @@
    * against the wrong node surfaces that node's own real failure message
    * rather than silently no-op'ing.
    *
-   * Disconnect's confirm step carries a generic warning that a pinned
-   * project may break — the full per-pin scan-and-warn is issue #229's
-   * scope, deliberately not built here (SPEC §7.26: "Before letting a user
+   * Disconnect's confirm step (issue #229's "Before letting a user
    * disconnect an account still pinned somewhere, scan all project
-   * settings and warn" is the eventual behavior; this issue's own handoff
-   * comment scopes #230 to the generic warning only).
+   * settings and warn") runs `scanAccountPins` the moment Disconnect is
+   * clicked, before showing anything: an account with no pins never gets
+   * a confirm bar at all — it disconnects immediately, per this issue's
+   * own acceptance — and one with pins gets a bar naming every real
+   * `{projectPath, capability}` the scan found, not a generic "some
+   * project may be affected" warning.
    */
-  import type { ConnectedAccount, ConnectedAccountDisconnectResponse } from '@loombox/protocol';
+  import type {
+    AccountPinScanHitV1,
+    ConnectedAccount,
+    ConnectedAccountDisconnectResponse,
+  } from '@loombox/protocol';
   import { SvelteSet } from 'svelte/reactivity';
   import Badge from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
@@ -37,6 +43,11 @@
   import Row from './ui/Row.svelte';
 
   export interface DisconnectAccountsClient {
+    scanAccountPins: (
+      nodeId: string,
+      accountId: string,
+      timeoutMs?: number,
+    ) => Promise<AccountPinScanHitV1[]>;
     disconnectAccount: (
       nodeId: string,
       accountId: string,
@@ -58,6 +69,8 @@
   const confirmingDisconnect = new SvelteSet<string>();
   const busyKeys = new SvelteSet<string>();
   let actionMessages = $state<Record<string, string>>({});
+  /** `account.id` -> the real hits {@link startDisconnect}'s scan found for it — populated only while a confirm bar for that account is showing, so the bar can name them (issue #229). */
+  let affectedByAccount = $state<Record<string, AccountPinScanHitV1[]>>({});
 
   function toggleExpanded(id: string): void {
     if (expandedKeys.has(id)) expandedKeys.delete(id);
@@ -78,15 +91,51 @@
     });
   }
 
-  function startDisconnect(id: string): void {
-    confirmingDisconnect.add(id);
+  function clearAffected(id: string): void {
+    if (!(id in affectedByAccount)) return;
+    const next = { ...affectedByAccount };
+    delete next[id];
+    affectedByAccount = next;
+  }
+
+  /** Runs #229's scan first — an account nothing is pinned to disconnects immediately with no confirm bar; one or more hits shows the bar naming them and waits for {@link confirmDisconnect}. */
+  async function startDisconnect(account: ConnectedAccount): Promise<void> {
+    if (!nodeId) {
+      actionMessages = {
+        ...actionMessages,
+        [account.id]: 'Select a node above first — disconnect runs on a specific node.',
+      };
+      return;
+    }
+    busyKeys.add(account.id);
+    try {
+      const affected = await client.scanAccountPins(nodeId, account.id);
+      if (affected.length === 0) {
+        await runDisconnect(account);
+        return;
+      }
+      affectedByAccount = { ...affectedByAccount, [account.id]: affected };
+      confirmingDisconnect.add(account.id);
+    } catch (error) {
+      actionMessages = {
+        ...actionMessages,
+        [account.id]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      busyKeys.delete(account.id);
+    }
   }
 
   function cancelDisconnect(id: string): void {
     confirmingDisconnect.delete(id);
+    clearAffected(id);
   }
 
   async function confirmDisconnect(account: ConnectedAccount): Promise<void> {
+    await runDisconnect(account);
+  }
+
+  async function runDisconnect(account: ConnectedAccount): Promise<void> {
     if (!nodeId) {
       actionMessages = {
         ...actionMessages,
@@ -111,6 +160,7 @@
     } finally {
       busyKeys.delete(account.id);
       confirmingDisconnect.delete(account.id);
+      clearAffected(account.id);
     }
   }
 </script>
@@ -165,9 +215,18 @@
             {#if confirmingDisconnect.has(account.id)}
               <div class="disconnect-confirm" data-testid={`disconnect-confirmbar-${account.id}`}>
                 <p class="disconnect-warning">
-                  Disconnect {account.label}? Any project pinned to this account may stop working
-                  until it's repinned.
+                  Disconnect {account.label}? It is pinned in {affectedByAccount[account.id]
+                    ?.length ?? 0}
+                  {(affectedByAccount[account.id]?.length ?? 0) === 1 ? 'place' : 'places'} and will stop
+                  working there until repinned:
                 </p>
+                <ul class="disconnect-affected" data-testid={`disconnect-affected-${account.id}`}>
+                  {#each affectedByAccount[account.id] ?? [] as hit (`${hit.projectPath}:${hit.capability}`)}
+                    <li class="disconnect-affected-item font-mono">
+                      {hit.projectPath} ({hit.capability})
+                    </li>
+                  {/each}
+                </ul>
                 <div class="disconnect-confirm-actions">
                   <Button
                     size="sm"
@@ -193,7 +252,8 @@
               <Button
                 size="sm"
                 variant="danger"
-                onclick={() => startDisconnect(account.id)}
+                loading={busyKeys.has(account.id)}
+                onclick={() => startDisconnect(account)}
                 dataTestId={`disconnect-start-${account.id}`}
               >
                 Disconnect
@@ -291,6 +351,17 @@
     margin: 0;
     font-size: var(--text-small-size);
     color: var(--color-text-secondary);
+  }
+
+  .disconnect-affected {
+    margin: 0;
+    padding-left: var(--space-md);
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .disconnect-affected-item {
+    word-break: break-all;
   }
 
   .disconnect-confirm-actions {

@@ -40,6 +40,19 @@ export interface Session {
   targetId: string | undefined;
   /** This session's own spend cap in USD (SPEC §7.16; issue #251) — the more specific of the two scopes `NodeDaemon.effectiveSpendCapUsd` resolves, beating the project-wide `SpendCapStore` value when both are set. `undefined` means this session has no cap of its own (falls back to the project cap, if any). Set via {@link SessionManager.setSpendCapUsd}; persisted through `SessionStore` exactly like every other `Session` field. */
   spendCapUsd: number | undefined;
+  /**
+   * This session's ACP-level agent session id (issue #264) — the key its
+   * on-disk transcript log lives under in `@loombox/supervisor`'s
+   * `TranscriptStore`, distinct from `id` itself (see `AgentSession.id`'s
+   * own "separate, node-generated id" doc comment). `undefined` until its
+   * first agent actually starts (`NodeDaemon.finishSessionCreation` sets it
+   * once `AgentSupervisor.start()`/`startWithChild()` resolves) and never
+   * cleared afterward — this is what lets a LATER fork of this same
+   * session, once its own agent process is long gone, still find its
+   * transcript on disk (`NodeDaemon.forkSessionInternal`'s persisted-source
+   * fallback for a session with no live bridge).
+   */
+  acpSessionId: string | undefined;
 }
 
 /**
@@ -397,6 +410,7 @@ export class SessionManager {
       nodeId,
       targetId: targetId ?? 'local',
       spendCapUsd: undefined,
+      acpSessionId: undefined,
     };
 
     this.sessions.set(id, session);
@@ -429,6 +443,14 @@ export class SessionManager {
    * untracked changes included — the part a bare branch-off would silently
    * drop, and the part that actually matters, since an agent's edits are
    * usually uncommitted.
+   *
+   * Past-session honesty (issue #264): a session forked long after it
+   * ended can find its own workspace gone by then — the project folder
+   * moved or deleted, or its isolated worktree removed by hand (a user
+   * cleaning up `.loombox/worktrees/*`, say). `git worktree add`/
+   * {@link replaceWorktreeContents} below would fail on either case too,
+   * just with a raw git/fs error; checking both up front lets the
+   * {@link CannotForkSessionError} name exactly what's missing instead.
    */
   async forkSession(
     sourceId: string,
@@ -442,6 +464,37 @@ export class SessionManager {
       throw new CannotForkSessionError(
         sourceId,
         'the source session runs in place (workInPlace), with no isolated worktree of its own to fork from',
+      );
+    }
+    try {
+      await stat(source.projectPath);
+    } catch {
+      throw new CannotForkSessionError(
+        sourceId,
+        `its project folder no longer exists on disk: ${source.projectPath}`,
+      );
+    }
+    try {
+      await stat(source.worktreePath);
+    } catch {
+      throw new CannotForkSessionError(
+        sourceId,
+        `its own worktree no longer exists on disk: ${source.worktreePath} (it may have been removed manually)`,
+      );
+    }
+    try {
+      await execFileAsync('git', [
+        '-C',
+        source.projectPath,
+        'show-ref',
+        '--verify',
+        '--quiet',
+        `refs/heads/${source.branch}`,
+      ]);
+    } catch {
+      throw new CannotForkSessionError(
+        sourceId,
+        `its branch "${source.branch}" no longer exists in ${source.projectPath} (the worktree it belonged to may have been removed)`,
       );
     }
 
@@ -471,6 +524,9 @@ export class SessionManager {
       // cap starts unset (falling back to the project cap, if any) rather
       // than silently carrying the source's own session-scoped limit.
       spendCapUsd: undefined,
+      // Set once this fork's own agent actually starts, same as an
+      // ordinary creation — see `acpSessionId`'s own doc comment.
+      acpSessionId: undefined,
     };
 
     this.sessions.set(id, session);
@@ -511,6 +567,14 @@ export class SessionManager {
       );
     }
     session.spendCapUsd = capUsd;
+    this.persist();
+    return session;
+  }
+
+  /** Records this session's ACP-level agent session id — see `Session.acpSessionId`'s own doc comment for what this unlocks and why it's a separate id from `Session.id`. Called once by `NodeDaemon.finishSessionCreation`, right after that session's first agent successfully starts; never cleared afterward. Throws a plain `Error` (mirrors {@link setSpendCapUsd}'s own unchecked-id contract) for an unknown session id. */
+  setAcpSessionId(id: string, acpSessionId: string): Session {
+    const session = this.requireSession(id);
+    session.acpSessionId = acpSessionId;
     this.persist();
     return session;
   }

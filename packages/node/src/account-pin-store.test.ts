@@ -108,4 +108,42 @@ describe('AccountPinStore', () => {
       expect('github' in store.get('/proj-a')).toBe(true);
     });
   });
+
+  describe('allProjectPins (issue #229 pre-disconnect scan)', () => {
+    it('is {} for a fresh state dir with nothing saved', () => {
+      const store = new AccountPinStore({ stateDir });
+      expect(store.allProjectPins()).toEqual({});
+    });
+
+    it('returns every project this node has ever recorded a pin for, each matching what get() returns for it', () => {
+      const store = new AccountPinStore({ stateDir });
+      store.setPin('/proj-a', 'github', 'github:github.com:1111');
+      store.setPin('/proj-a', 'jira', null);
+      store.setPin('/proj-b', 'jira', 'jira:myteam.atlassian.net:5b10ac8d');
+      store.setPin('/proj-c', 'github', 'github:github.com:1111');
+
+      expect(store.allProjectPins()).toEqual({
+        '/proj-a': { github: 'github:github.com:1111', jira: null },
+        '/proj-b': { jira: 'jira:myteam.atlassian.net:5b10ac8d' },
+        '/proj-c': { github: 'github:github.com:1111' },
+      });
+    });
+
+    it("omits a project once remove() clears it, and never lets a caller mutate this store's own state through the returned object", () => {
+      const store = new AccountPinStore({ stateDir });
+      store.setPin('/proj-a', 'github', 'github:github.com:1111');
+      store.setPin('/proj-b', 'github', 'github:github.com:1111');
+
+      const snapshot = store.allProjectPins();
+      snapshot['/proj-a'].github = 'github:github.com:9999999';
+      delete snapshot['/proj-b'];
+      expect(store.getPin('/proj-a', 'github')).toBe('github:github.com:1111');
+      expect(store.getPin('/proj-b', 'github')).toBe('github:github.com:1111');
+
+      store.remove('/proj-b');
+      expect(store.allProjectPins()).toEqual({
+        '/proj-a': { github: 'github:github.com:1111' },
+      });
+    });
+  });
 });
