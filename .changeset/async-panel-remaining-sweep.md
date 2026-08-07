@@ -1,0 +1,9 @@
+---
+'@loombox/web': patch
+---
+
+Fix: finishes issue #650's sweep of hand-rolled loading/error/empty triples onto the shared `AsyncPanel` primitive #900 introduced. #900 landed the primitive and adopted 8 call sites (the pin list, the Runner, and six others); this adopts the remaining 9 files it identified: `SpendReportPanel`, `CommitGraphViewer`, `GitBranchPanel` (branches and stashes, two independent loads), `WorktreeDiffViewer` (the read-only diff and the staging/hunks view, two independent loads), `CheckpointsDialog` (the unsupported-target gate and the checkpoint list), `FileEditor`, `DirectoryPicker`, `FileTreePanel` (per-node, recursive — one `AsyncPanel` per directory in the tree), and `pages/TrackerPage` (the tracker-mode gate and the record snapshot, nested).
+
+Real behaviour fix along the way: `CheckpointsDialog`'s catch block stored a caught `RelayClient` rejection's raw `err.message`/`String(err)` directly, so a relay timeout there would have printed `RelayClient: timed out waiting for checkpoint_list_response` verbatim — the exact wire-message leak #650 was originally filed over for the pin list and the Runner. It now reads through `loadErrorMessage`, the same established "This/The X didn't answer in time..." sentence (#582/#505) every other adopted panel uses.
+
+Every panel's own pre-existing test suite passes unchanged — the proof this refactor is behaviour-preserving beyond the one intentional fix above. `CheckpointsDialog`, `WorktreeDiffViewer`, `FileTreePanel`, and `TrackerPage` needed real design work to fit the primitive (nested/recursive state, or a persistent create-form that must stay visible through an error or an empty list): each extracts the always-visible piece into its own snippet, reused via `AsyncPanel`'s `errorExtra` slot and its `content` snippet, rather than forcing the whole state machine through one `{status: 'loaded'}` branch.

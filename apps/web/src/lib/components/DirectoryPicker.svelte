@@ -66,9 +66,9 @@
   import { untrack } from 'svelte';
   import { addRecentPath, loadRecentPaths } from '$lib/recent-paths';
   import { Icon } from './icons';
-  import WovenLoader from './WovenLoader.svelte';
-  import ErrorNotice from './ui/ErrorNotice.svelte';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Input from './ui/Input.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
 
   export interface DirectoryPickerClient {
     browseDirectory: (
@@ -267,6 +267,31 @@
     if (entry.kind !== 'dir' || currentDir === undefined) return;
     void navigate(joinAbsolute(currentDir, entry.name));
   }
+
+  /**
+   * One tagged value, not the two independent flags above (issue #650) —
+   * `'idle'` (the one render tick before the mount `$effect` above's first
+   * `navigate()` resolves) has no `AsyncPanelState` counterpart on
+   * purpose (see that type's own doc comment on why): the template below
+   * simply never mounts `AsyncPanel` while `status === 'idle'`, so this
+   * branch's fallback value is inert, never actually rendered. The
+   * zero-entries case stays a compact inline `<p class="hint">` inside
+   * `content` rather than `AsyncPanel`'s own bigger `EmptyState` — this
+   * component's own hand-rolled empty note was never `EmptyState`'s shape
+   * to begin with (see `AsyncPanel.svelte`'s own doc comment, which names
+   * this component specifically).
+   */
+  const entriesState = $derived<AsyncPanelState<FsEntryV1[]>>(
+    status === 'error'
+      ? {
+          status: 'error',
+          message: loadError ?? 'Failed to load this directory.',
+          retryable: loadErrorRetryable,
+        }
+      : status === 'loaded'
+        ? { status: 'loaded', data: entries }
+        : { status: 'loading' },
+  );
 </script>
 
 <div class="directory-picker" data-testid="directory-picker">
@@ -344,45 +369,47 @@
     {/if}
 
     <div class="entries" data-testid="directory-picker-entries">
-      {#if status === 'loading'}
-        <p class="status-line" data-testid="directory-picker-loading">
-          <WovenLoader size="sm" label="Loading directory" />
-          Loading…
-        </p>
-      {:else if status === 'error'}
-        <ErrorNotice
-          message={loadError ?? 'Failed to load this directory.'}
-          retryable={loadErrorRetryable}
+      {#if status !== 'idle'}
+        <AsyncPanel
+          state={entriesState}
+          loadingLabel="Loading directory"
+          loadingTestId="directory-picker-loading"
+          loadingText="Loading…"
           onRetry={retryLoad}
-        />
-      {:else if status === 'loaded' && entries.length === 0}
-        <p class="hint" data-testid="directory-picker-empty">This folder is empty.</p>
-      {:else if status === 'loaded'}
-        <ul class="entry-list">
-          {#each entries as entry (entry.name)}
-            <li>
-              {#if entry.kind === 'dir'}
-                <button
-                  type="button"
-                  class="entry entry-dir"
-                  onclick={() => handleEntryClick(entry)}
-                  data-testid="directory-picker-entry"
-                >
-                  <span class="entry-icon" aria-hidden="true"
-                    ><Icon name="folder" size="100%" /></span
-                  >
-                  <span class="entry-name">{entry.name}</span>
-                </button>
-              {:else}
-                <span class="entry entry-file" data-testid="directory-picker-file">
-                  <span class="entry-icon" aria-hidden="true"><Icon name="file" size="100%" /></span
-                  >
-                  <span class="entry-name">{entry.name}</span>
-                </span>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+        >
+          {#snippet content(loadedEntries)}
+            {#if loadedEntries.length === 0}
+              <p class="hint" data-testid="directory-picker-empty">This folder is empty.</p>
+            {:else}
+              <ul class="entry-list">
+                {#each loadedEntries as entry (entry.name)}
+                  <li>
+                    {#if entry.kind === 'dir'}
+                      <button
+                        type="button"
+                        class="entry entry-dir"
+                        onclick={() => handleEntryClick(entry)}
+                        data-testid="directory-picker-entry"
+                      >
+                        <span class="entry-icon" aria-hidden="true"
+                          ><Icon name="folder" size="100%" /></span
+                        >
+                        <span class="entry-name">{entry.name}</span>
+                      </button>
+                    {:else}
+                      <span class="entry entry-file" data-testid="directory-picker-file">
+                        <span class="entry-icon" aria-hidden="true"
+                          ><Icon name="file" size="100%" /></span
+                        >
+                        <span class="entry-name">{entry.name}</span>
+                      </span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/snippet}
+        </AsyncPanel>
       {/if}
     </div>
   {/if}
@@ -500,13 +527,13 @@
     padding: var(--space-2xs);
   }
 
-  .status-line {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already
+     matches this panel's own former `.status-line` on every property
+     except text color; this restates only that one delta — scoped by
+     testid, not class, since the element now renders inside
+     `AsyncPanel.svelte`'s own template. */
+  :global([data-testid='directory-picker-loading']) {
     color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
   }
 
   .entry-list {

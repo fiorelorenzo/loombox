@@ -48,10 +48,11 @@
     GitStashSaveResponsePayloadV1,
     GitStashSummaryV1,
   } from '@loombox/protocol';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
 
   export interface GitBranchPanelClient {
     requestBranches(sessionId: string): Promise<GitBranchListResponsePayloadV1>;
@@ -168,6 +169,23 @@
       stashesState = { status: 'error', message: errorMessage(error) };
     }
   }
+
+  /** One `AsyncPanelState` per independently-fetched list (issue #650) — `BranchesState`/`StashesState` above were already a single tagged union each (never independent loading/error booleans), so this is a pure reshape onto the shared primitive's own union, not a bug fix like the Runner's. A repo always has at least one branch, so `branchesPanelState` never needs an `'empty'` status; the stash list's own "no stashed changes" note stays inline in `content` (its own compact `<p>`, never `EmptyState`'s bigger treatment — same call `DirectoryPicker`/`SpendReportPanel` made) since folding it through `AsyncPanel`'s built-in `empty` branch would reskin a message nobody asked to change. */
+  const branchesPanelState = $derived<AsyncPanelState<GitBranchSummaryV1[]>>(
+    branchesState.status === 'loading'
+      ? { status: 'loading' }
+      : branchesState.status === 'error'
+        ? { status: 'error', message: branchesState.message, retryable: true }
+        : { status: 'loaded', data: branchesState.branches },
+  );
+
+  const stashesPanelState = $derived<AsyncPanelState<GitStashSummaryV1[]>>(
+    stashesState.status === 'loading'
+      ? { status: 'loading' }
+      : stashesState.status === 'error'
+        ? { status: 'error', message: stashesState.message, retryable: true }
+        : { status: 'loaded', data: stashesState.stashes },
+  );
 
   function errorMessage(error: unknown): string {
     const raw = error instanceof Error ? error.message : String(error);
@@ -411,35 +429,36 @@
 <div class="git-branch-panel" data-testid="git-branch-panel">
   <Card elevation="raised" padding="md">
     <h3>Branches</h3>
-    {#if branchesState.status === 'loading'}
-      <div class="git-branch-loading" data-testid="git-branch-list-loading">
-        <WovenLoader size="sm" label="Loading branches" />
-      </div>
-    {:else if branchesState.status === 'error'}
-      <ErrorNotice message={branchesState.message} retryable onRetry={loadBranches} />
-    {:else}
-      <ul class="git-branch-list" data-testid="git-branch-list">
-        {#each branchesState.branches as branch (branch.name)}
-          <li class="git-branch-row" data-testid="git-branch-row">
-            <span class="git-branch-name" class:git-branch-current={branch.current}>
-              {branch.name}
-              {#if branch.current}<span class="git-branch-current-tag">current</span>{/if}
-            </span>
-            {#if !branch.current}
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={switchingName === branch.name}
-                onclick={() => handleSwitch(branch.name)}
-                dataTestId={`git-branch-switch-${branch.name}`}
-              >
-                Switch
-              </Button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <AsyncPanel
+      state={branchesPanelState}
+      loadingLabel="Loading branches"
+      loadingTestId="git-branch-list-loading"
+      onRetry={loadBranches}
+    >
+      {#snippet content(branches)}
+        <ul class="git-branch-list" data-testid="git-branch-list">
+          {#each branches as branch (branch.name)}
+            <li class="git-branch-row" data-testid="git-branch-row">
+              <span class="git-branch-name" class:git-branch-current={branch.current}>
+                {branch.name}
+                {#if branch.current}<span class="git-branch-current-tag">current</span>{/if}
+              </span>
+              {#if !branch.current}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={switchingName === branch.name}
+                  onclick={() => handleSwitch(branch.name)}
+                  dataTestId={`git-branch-switch-${branch.name}`}
+                >
+                  Switch
+                </Button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/snippet}
+    </AsyncPanel>
 
     {#if switchError}
       <ErrorNotice message={switchError} class="git-branch-inline-error" />
@@ -612,57 +631,60 @@
       </p>
     {/if}
 
-    {#if stashesState.status === 'loading'}
-      <div class="git-branch-loading" data-testid="git-stash-list-loading">
-        <WovenLoader size="sm" label="Loading stashes" />
-      </div>
-    {:else if stashesState.status === 'error'}
-      <ErrorNotice message={stashesState.message} retryable onRetry={loadStashes} />
-    {:else if stashesState.stashes.length === 0}
-      <p class="git-stash-empty-note" data-testid="git-stash-empty">No stashed changes.</p>
-    {:else}
-      <ul class="git-stash-list" data-testid="git-stash-list">
-        {#each stashesState.stashes as stash (stash.index)}
-          <li class="git-stash-row" data-testid="git-stash-row">
-            <span class="git-stash-message">{stash.message}</span>
-            <div class="git-stash-actions">
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={poppingIndex === stash.index}
-                onclick={() => handlePop(stash.index)}
-                dataTestId={`git-stash-pop-${stash.index}`}
-              >
-                Pop
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                loading={droppingIndex === stash.index}
-                onclick={() => handleDrop(stash.index)}
-                dataTestId={`git-stash-drop-${stash.index}`}
-              >
-                Drop
-              </Button>
-            </div>
-            {#if popConflict?.index === stash.index}
-              <div class="git-branch-conflict" data-testid="git-stash-pop-conflict">
-                <p>{popConflict.message}</p>
-                <ul>
-                  {#each popConflict.conflictedPaths as path (path)}
-                    <li>{path}</li>
-                  {/each}
-                </ul>
-                <p>
-                  The stash was kept — nothing was lost. Resolve the conflicts, then Drop this
-                  entry, or discard the conflicted changes and try again.
-                </p>
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <AsyncPanel
+      state={stashesPanelState}
+      loadingLabel="Loading stashes"
+      loadingTestId="git-stash-list-loading"
+      onRetry={loadStashes}
+    >
+      {#snippet content(stashes)}
+        {#if stashes.length === 0}
+          <p class="git-stash-empty-note" data-testid="git-stash-empty">No stashed changes.</p>
+        {:else}
+          <ul class="git-stash-list" data-testid="git-stash-list">
+            {#each stashes as stash (stash.index)}
+              <li class="git-stash-row" data-testid="git-stash-row">
+                <span class="git-stash-message">{stash.message}</span>
+                <div class="git-stash-actions">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={poppingIndex === stash.index}
+                    onclick={() => handlePop(stash.index)}
+                    dataTestId={`git-stash-pop-${stash.index}`}
+                  >
+                    Pop
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    loading={droppingIndex === stash.index}
+                    onclick={() => handleDrop(stash.index)}
+                    dataTestId={`git-stash-drop-${stash.index}`}
+                  >
+                    Drop
+                  </Button>
+                </div>
+                {#if popConflict?.index === stash.index}
+                  <div class="git-branch-conflict" data-testid="git-stash-pop-conflict">
+                    <p>{popConflict.message}</p>
+                    <ul>
+                      {#each popConflict.conflictedPaths as path (path)}
+                        <li>{path}</li>
+                      {/each}
+                    </ul>
+                    <p>
+                      The stash was kept — nothing was lost. Resolve the conflicts, then Drop this
+                      entry, or discard the conflicted changes and try again.
+                    </p>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/snippet}
+    </AsyncPanel>
     {#if popError}
       <ErrorNotice message={popError} class="git-branch-inline-error" />
     {/if}
@@ -683,9 +705,14 @@
     margin: 0 0 var(--space-sm) 0;
   }
 
-  .git-branch-loading {
-    display: flex;
-    align-items: center;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already gives
+     `display:flex;align-items:center;gap:xs`; this only restates the two
+     deltas this panel's own loading rows always had (a wider gap, and
+     `space-sm` top/bottom breathing room the base treatment doesn't
+     add) — narrowly scoped by testid, not class, since the element
+     itself now renders inside `AsyncPanel.svelte`'s own template. */
+  :global([data-testid='git-branch-list-loading']),
+  :global([data-testid='git-stash-list-loading']) {
     gap: var(--space-sm);
     padding: var(--space-sm) 0;
   }

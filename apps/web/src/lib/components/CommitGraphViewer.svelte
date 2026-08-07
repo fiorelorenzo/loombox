@@ -26,11 +26,10 @@
    */
   import type { GitGraphCommitV1 } from '@loombox/protocol';
   import type { GraphTabViewerState } from '$lib/tabs.svelte';
+  import type { AsyncPanelState } from '$lib/async-panel';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
-  import ErrorNotice from './ui/ErrorNotice.svelte';
-  import EmptyState from './ui/EmptyState.svelte';
-  import WovenLoader from './WovenLoader.svelte';
 
   interface Props {
     /** `CanvasTabsState.graphViewer`'s current value — loading/loaded/error. */
@@ -44,6 +43,17 @@
   }
 
   const { viewer, onRetry, loadingMore, onLoadMore }: Props = $props();
+
+  /** Reshapes `viewer` (already a `loading | loaded | error` tagged union — never independent booleans) onto the shared primitive (issue #650); the zero-commits case folds into `AsyncPanel`'s own `empty` branch since this panel's message was already `EmptyState`'s exact shape. */
+  const graphState = $derived<AsyncPanelState<readonly GitGraphCommitV1[]>>(
+    viewer.status === 'loading'
+      ? { status: 'loading' }
+      : viewer.status === 'error'
+        ? { status: 'error', message: viewer.message, retryable: true }
+        : viewer.commits.length === 0
+          ? { status: 'empty', message: 'No commits yet on this branch.' }
+          : { status: 'loaded', data: viewer.commits },
+  );
 
   function shortSha(sha: string): string {
     return sha.slice(0, 7);
@@ -77,72 +87,71 @@
 </script>
 
 <div class="commit-graph-viewer" data-testid="commit-graph-viewer">
-  {#if viewer.status === 'loading'}
-    <div class="commit-graph-loading" data-testid="commit-graph-loading">
-      <WovenLoader size="md" label="Loading commit graph" />
-    </div>
-  {:else if viewer.status === 'error'}
-    <div class="commit-graph-error">
-      <ErrorNotice message={viewer.message} retryable {onRetry} />
-    </div>
-  {:else if viewer.commits.length === 0}
-    <EmptyState message="No commits yet on this branch." />
-  {:else}
-    <ol class="commit-graph-list" data-testid="commit-graph-list">
-      {#each viewer.commits as commit (commit.sha)}
-        <li class="commit-graph-row" data-testid="commit-graph-row">
-          <Card elevation="raised" padding="sm">
-            <div class="commit-graph-row-head">
-              <span class="commit-graph-sha font-mono" title={commit.sha}>
-                {shortSha(commit.sha)}
-              </span>
-              {#if commit.parents.length >= 2}
-                <span class="commit-graph-merge-badge" data-testid="commit-graph-merge-badge">
-                  merge · {commit.parents.length} parents
+  <AsyncPanel
+    state={graphState}
+    loadingLabel="Loading commit graph"
+    loadingTestId="commit-graph-loading"
+    loadingSize="md"
+    errorTestId="commit-graph-error"
+    {onRetry}
+  >
+    {#snippet content(commits)}
+      <ol class="commit-graph-list" data-testid="commit-graph-list">
+        {#each commits as commit (commit.sha)}
+          <li class="commit-graph-row" data-testid="commit-graph-row">
+            <Card elevation="raised" padding="sm">
+              <div class="commit-graph-row-head">
+                <span class="commit-graph-sha font-mono" title={commit.sha}>
+                  {shortSha(commit.sha)}
                 </span>
-              {/if}
-              {#if commit.isHead}
-                <span class="commit-graph-head-badge" data-testid="commit-graph-head-badge">
-                  HEAD
+                {#if commit.parents.length >= 2}
+                  <span class="commit-graph-merge-badge" data-testid="commit-graph-merge-badge">
+                    merge · {commit.parents.length} parents
+                  </span>
+                {/if}
+                {#if commit.isHead}
+                  <span class="commit-graph-head-badge" data-testid="commit-graph-head-badge">
+                    HEAD
+                  </span>
+                {/if}
+                {#each commit.refs as ref (ref.name + ref.kind)}
+                  <span
+                    class="commit-graph-ref-badge"
+                    class:tag={ref.kind === 'tag'}
+                    data-testid="commit-graph-ref-badge"
+                    title={refKindLabel(ref.kind)}
+                  >
+                    {ref.name}
+                  </span>
+                {/each}
+              </div>
+              <p class="commit-graph-subject">{commit.subject}</p>
+              <p class="commit-graph-meta">
+                <span class="commit-graph-author">{commit.authorName}</span>
+                <span class="commit-graph-date" title={commit.authorDateIso}>
+                  {relativeDate(commit.authorDateIso)}
                 </span>
-              {/if}
-              {#each commit.refs as ref (ref.name + ref.kind)}
-                <span
-                  class="commit-graph-ref-badge"
-                  class:tag={ref.kind === 'tag'}
-                  data-testid="commit-graph-ref-badge"
-                  title={refKindLabel(ref.kind)}
-                >
-                  {ref.name}
-                </span>
-              {/each}
-            </div>
-            <p class="commit-graph-subject">{commit.subject}</p>
-            <p class="commit-graph-meta">
-              <span class="commit-graph-author">{commit.authorName}</span>
-              <span class="commit-graph-date" title={commit.authorDateIso}>
-                {relativeDate(commit.authorDateIso)}
-              </span>
-            </p>
-          </Card>
-        </li>
-      {/each}
-    </ol>
+              </p>
+            </Card>
+          </li>
+        {/each}
+      </ol>
 
-    {#if viewer.nextOffset !== null}
-      <div class="commit-graph-load-more">
-        <Button
-          variant="secondary"
-          size="sm"
-          loading={loadingMore}
-          onclick={onLoadMore}
-          dataTestId="commit-graph-load-more"
-        >
-          Load more
-        </Button>
-      </div>
-    {/if}
-  {/if}
+      {#if viewer.status === 'loaded' && viewer.nextOffset !== null}
+        <div class="commit-graph-load-more">
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={loadingMore}
+            onclick={onLoadMore}
+            dataTestId="commit-graph-load-more"
+          >
+            Load more
+          </Button>
+        </div>
+      {/if}
+    {/snippet}
+  </AsyncPanel>
 </div>
 
 <style>
@@ -157,10 +166,16 @@
     min-width: 0;
   }
 
-  .commit-graph-loading {
-    display: flex;
-    align-items: center;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already gives
+     `display:flex;align-items:center`; this restates this panel's own
+     wider gap/padding — scoped by testid, not class, since the loading
+     row now renders inside `AsyncPanel.svelte`'s own template. */
+  :global([data-testid='commit-graph-loading']) {
     gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+  }
+
+  :global([data-testid='commit-graph-error']) {
     padding: var(--space-sm) 0;
   }
 
