@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import type { TrackerItemLive } from '@loombox/shared';
+import { describe, expect, it, vi } from 'vitest';
+import type {
+  TrackerBackend,
+  TrackerBinding,
+  TrackerItemLive,
+  TrackerTransition,
+} from '@loombox/shared';
 
 import type { TrackerBackendResolutionError } from './tracker-backend-composition';
 import {
+  applyLiveTrackerCategoryMove,
   describeTrackerBackendResolutionError,
+  LiveTrackerCategoryMoveError,
   liveItemToTrackerRecord,
   liveTrackerTypeDefinition,
   trackerBackendResolutionErrorToWireV1,
@@ -132,6 +139,153 @@ describe('liveItemToTrackerRecord', () => {
       activity: [],
       comments: [],
     });
+  });
+});
+
+/** A binding shape neither backend's own `requireXTarget` guard would reject \u2014 the exact fields never matter to `applyLiveTrackerCategoryMove` itself, which only ever forwards `binding` verbatim to whichever `TrackerBackend` method it calls. */
+function fakeBinding(): TrackerBinding {
+  return { connectionId: 'conn_1', target: { owner: 'fiorelorenzo', repo: 'loombox' } };
+}
+
+function fakeItem(fields: Record<string, unknown>): TrackerItemLive {
+  return { externalId: '42', title: 'Ship it', url: 'https://example.test/42', fields };
+}
+
+/** A minimal `TrackerBackend` double \u2014 every method a `vi.fn`, so a test asserts exactly which ones a given move does or does not call. `listTransitions`/`transition` are present by default (a "both slice 1 and slice 2" backend, i.e. GitHub or Jira today); the capability-less fallback test below overrides them to `undefined` instead of omitting them, since `Partial<TrackerBackend>` would otherwise still carry this factory's own defaults. */
+function fakeBackend(overrides: Partial<TrackerBackend> = {}): TrackerBackend {
+  return {
+    id: 'github',
+    capabilities: {
+      comments: true,
+      transitions: true,
+      boards: false,
+      sprints: false,
+      labels: false,
+      milestones: false,
+      customFields: false,
+    },
+    listBindings: vi.fn(),
+    list: vi.fn(),
+    get: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(async (_binding, _externalId, fields) => fakeItem(fields)),
+    listTransitions: vi.fn(),
+    transition: vi.fn(),
+    ...overrides,
+  };
+}
+
+/**
+ * {@link applyLiveTrackerCategoryMove} (issue #696) \u2014 the live half of a
+ * board move, exercised directly against a fake `TrackerBackend` (no
+ * relay, no node, no real GitHub/Jira shape) since the function itself is
+ * provider-agnostic: it only ever calls the four `TrackerBackend` methods
+ * by name. The relay-level proof that a REAL board move reaches a REAL
+ * (stubbed-HTTP) backend through this exact function lives in
+ * `node-daemon-tracker-live.test.ts`/`node-daemon-tracker-live-jira.test.ts`
+ * instead \u2014 this file's job is the branchy category-diff logic itself,
+ * which is far cheaper to cover exhaustively here than through a full wire
+ * round trip per case.
+ */
+describe('applyLiveTrackerCategoryMove (issue #696)', () => {
+  it('a plain field edit with no workflowCategory key at all skips the read entirely and forwards fields unchanged', async () => {
+    const backend = fakeBackend();
+
+    const item = await applyLiveTrackerCategoryMove(backend, fakeBinding(), '42', {
+      title: 'New title',
+    });
+
+    expect(backend.get).not.toHaveBeenCalled();
+    expect(backend.listTransitions).not.toHaveBeenCalled();
+    expect(backend.transition).not.toHaveBeenCalled();
+    expect(backend.update).toHaveBeenCalledWith(fakeBinding(), '42', { title: 'New title' });
+    expect(item.fields.title).toBe('New title');
+  });
+
+  it('resubmitting the SAME category unchanged reads it, then still only calls update \u2014 never a same-category transition attempt', async () => {
+    const backend = fakeBackend({
+      get: vi.fn(async () => fakeItem({ workflowCategory: 'new' })),
+    });
+
+    await applyLiveTrackerCategoryMove(backend, fakeBinding(), '42', {
+      title: 'x',
+      workflowCategory: 'new',
+    });
+
+    expect(backend.get).toHaveBeenCalledWith(fakeBinding(), '42');
+    expect(backend.listTransitions).not.toHaveBeenCalled();
+    expect(backend.transition).not.toHaveBeenCalled();
+    expect(backend.update).toHaveBeenCalledWith(fakeBinding(), '42', {
+      title: 'x',
+      workflowCategory: 'new',
+    });
+  });
+
+  it('a genuine move to a reachable category transitions first, then updates with the stale workflowCategory/state/stateReason fields stripped', async () => {
+    const backend = fakeBackend({
+      get: vi.fn(async () => fakeItem({ workflowCategory: 'new' })),
+      listTransitions: vi.fn(async (): Promise<TrackerTransition[]> => [
+        { id: 't-noop', name: 'stay new', targetCategory: 'new' },
+        { id: 't-done', name: 'close it', targetCategory: 'done' },
+      ]),
+    });
+
+    const item = await applyLiveTrackerCategoryMove(backend, fakeBinding(), '42', {
+      title: 'Ship it',
+      workflowCategory: 'done',
+      state: 'stale-open',
+      stateReason: null,
+    });
+
+    expect(backend.listTransitions).toHaveBeenCalledWith(fakeBinding(), '42');
+    expect(backend.transition).toHaveBeenCalledWith(fakeBinding(), '42', 't-done');
+    expect(backend.update).toHaveBeenCalledWith(fakeBinding(), '42', { title: 'Ship it' });
+    expect(item.fields.title).toBe('Ship it');
+  });
+
+  it('a move to a category no discovered transition reaches throws LiveTrackerCategoryMoveError and never calls transition or update', async () => {
+    const backend = fakeBackend({
+      get: vi.fn(async () => fakeItem({ workflowCategory: 'new' })),
+      listTransitions: vi.fn(async (): Promise<TrackerTransition[]> => [
+        { id: 't-noop', name: 'stay new', targetCategory: 'new' },
+      ]),
+    });
+
+    const error = await applyLiveTrackerCategoryMove(backend, fakeBinding(), '42', {
+      workflowCategory: 'done',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(LiveTrackerCategoryMoveError);
+    expect((error as Error).message).toContain('done');
+    expect((error as Error).message).toContain('new');
+    expect(backend.transition).not.toHaveBeenCalled();
+    expect(backend.update).not.toHaveBeenCalled();
+  });
+
+  it('a move with zero discovered transitions at all (nothing available from the current status) says so rather than listing an empty set', async () => {
+    const backend = fakeBackend({
+      get: vi.fn(async () => fakeItem({ workflowCategory: 'done' })),
+      listTransitions: vi.fn(async () => []),
+    });
+
+    const error = await applyLiveTrackerCategoryMove(backend, fakeBinding(), '42', {
+      workflowCategory: 'new',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(LiveTrackerCategoryMoveError);
+    expect((error as Error).message).toMatch(/no transitions are available/i);
+  });
+
+  it('a backend missing listTransitions/transition (capability-less) falls back to a plain field patch, exactly as before this function existed', async () => {
+    const backend = fakeBackend({ listTransitions: undefined, transition: undefined });
+
+    const item = await applyLiveTrackerCategoryMove(backend, fakeBinding(), '42', {
+      workflowCategory: 'done',
+    });
+
+    expect(backend.get).not.toHaveBeenCalled();
+    expect(backend.update).toHaveBeenCalledWith(fakeBinding(), '42', { workflowCategory: 'done' });
+    expect(item.fields.workflowCategory).toBe('done');
   });
 });
 

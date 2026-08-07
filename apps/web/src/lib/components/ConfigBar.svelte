@@ -703,7 +703,7 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    max-width: 14rem;
+    max-width: var(--config-popover-width);
     padding: var(--space-2xs) var(--space-md);
     background: var(--color-surface);
     color: inherit;
@@ -762,8 +762,8 @@
     flex-direction: column;
     gap: var(--space-md);
     width: max-content;
-    min-width: 14rem;
-    max-height: 20rem;
+    min-width: var(--config-popover-width);
+    max-height: var(--config-popover-max-height);
     overflow-y: auto;
     padding: var(--space-md);
     background: var(--color-surface-raised);

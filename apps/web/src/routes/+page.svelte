@@ -5974,7 +5974,16 @@
   .sidebar-destinations {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    /* `--space-3xs` (issue #605): nearest token for the hairline gap
+       between stacked destination rows — 1.8px at the current 14.4px
+       root vs the old bare `1px` literal, under a pixel of visible
+       difference. Same substitution as `.sidebar-sessions ul`'s,
+       `.session-main`'s and `.project-group-sessions`' identical `1px`
+       gaps below, and the same convention every other tight intra-list
+       gap in this app already reads (e.g. `AttachmentBar.svelte`,
+       `MessageItem.svelte`) — no file in the repo still spells this out
+       as a bare `1px`. */
+    gap: var(--space-3xs);
     padding: var(--space-sm) var(--space-sm) var(--space-xs);
     flex-shrink: 0;
   }
@@ -6059,8 +6068,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 1.2rem;
-    height: 1.2rem;
+    /* `--nav-icon-size` (issue #605): no dedicated badge-size token exists
+       yet, and this badge sits beside `.destination-icon` in the same row,
+       which already reads that token — reusing it keeps the two boxes the
+       same size instead of drifting by eye. ~0.7px larger than the old
+       literal (1.2rem/17.28px -> 1.25rem/18px at the current root), not
+       perceptible at this size. */
+    min-width: var(--nav-icon-size);
+    height: var(--nav-icon-size);
     padding: 0 var(--space-2xs);
     border-radius: var(--radius-full);
     background: var(--color-warning-subtle);
@@ -6248,7 +6263,8 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    /* `--space-3xs` (issue #605): see `.sidebar-destinations` above. */
+    gap: var(--space-3xs);
   }
 
   .session-row {
@@ -6334,7 +6350,8 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
-    gap: 1px;
+    /* `--space-3xs` (issue #605): see `.sidebar-destinations` above. */
+    gap: var(--space-3xs);
   }
 
   .session-title-row {
@@ -6359,8 +6376,8 @@
 
   .session-attention-dot {
     flex-shrink: 0;
-    width: 0.4rem;
-    height: 0.4rem;
+    width: var(--attention-dot-size);
+    height: var(--attention-dot-size);
     border-radius: var(--radius-full);
     background: var(--color-warning);
   }
@@ -6519,7 +6536,8 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    /* `--space-3xs` (issue #605): see `.sidebar-destinations` above. */
+    gap: var(--space-3xs);
   }
 
   /* Indented one step under their group (design spec v4 §3.2). */
@@ -6590,8 +6608,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
+    /* `--space-2xl` (issue #605): exact value match (both 2rem) — a
+       spacing-scale token doubling as this avatar box's fixed size, same
+       convention `InteractiveTerminal.svelte`'s `min-width: var(--space-
+       sm)` and this file's own `.session` `padding: var(--space-xs)
+       var(--space-sm)` already use. */
+    width: var(--space-2xl);
+    height: var(--space-2xl);
     border: 1px solid transparent;
     border-radius: var(--radius-md);
     background: var(--color-fill-subtle);
@@ -6607,10 +6630,14 @@
   .selvage-session.needs-attention::after {
     content: '';
     position: absolute;
-    top: -2px;
-    right: -2px;
-    width: 0.4rem;
-    height: 0.4rem;
+    /* `calc(var(--space-3xs) * -1)` (issue #605): same negative-offset
+       convention as `MessageItem.svelte`'s `margin-inline: calc(var(
+       --space-sm) * -1)`. `--space-3xs` is 1.8px at the current root vs
+       the old 2px literal — a ~0.2px difference, not perceptible. */
+    top: calc(var(--space-3xs) * -1);
+    right: calc(var(--space-3xs) * -1);
+    width: var(--attention-dot-size);
+    height: var(--attention-dot-size);
     border-radius: var(--radius-full);
     background: var(--color-warning);
   }
@@ -6622,8 +6649,8 @@
 
   .selvage-session :global(.selvage-status-dot) {
     position: absolute;
-    bottom: -2px;
-    right: -2px;
+    bottom: calc(var(--space-3xs) * -1);
+    right: calc(var(--space-3xs) * -1);
   }
 
   /* ------------------------------------------------------------------ */

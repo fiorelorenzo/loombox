@@ -29,14 +29,18 @@ export type {
   TerminalSpawnOptions,
 } from './terminal-supervisor';
 
-// v2: git-based checkpoint & rollback engine (SPEC §7.20; issue #266). No
-// AgentSupervisor/AgentSession wiring or wire-protocol surface yet — see
-// `./git-checkpoint-store.ts`'s module doc comment for why.
+// v2: git-based checkpoint & rollback engine (SPEC §7.20; issue #266), and
+// its filesystem-snapshot sibling for a project with no `.git` (issue
+// #267) — same public surface and return shapes, so `@loombox/node`'s
+// `NodeDaemon.getCheckpointStore` can hand a session either one (see
+// `./git-checkpoint-store.ts`'s module doc comment). `isGitWorktree` is
+// the probe that decision is made from.
 export {
   GitCheckpointStore,
   CheckpointNotFoundError,
   DetachedHeadError,
   DirtySubmoduleError,
+  isGitWorktree,
   NotAGitWorktreeError,
 } from './git-checkpoint-store';
 export type {
@@ -46,3 +50,10 @@ export type {
   RestorePreview,
   RestoreResult,
 } from './git-checkpoint-store';
+export {
+  FsSnapshotCheckpointStore,
+  MAX_FS_SNAPSHOT_BYTES,
+  MAX_FS_SNAPSHOT_FILES,
+  SnapshotTooLargeError,
+} from './fs-snapshot-checkpoint-store';
+export type { FsSnapshotCheckpointStoreOptions } from './fs-snapshot-checkpoint-store';
