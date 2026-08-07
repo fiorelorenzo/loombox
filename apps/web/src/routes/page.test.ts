@@ -1129,8 +1129,22 @@ describe('queued session: distinct from running, wait made visible (issue #255)'
         makeSession({ id: 'sess_b', title: 'On devbox', targetId: 'ssh_devbox' }),
       ],
       targets: [
-        { nodeId: 'node_1', targetId: 'local', label: 'Local', kind: 'local', reachable: true, providers: ['claude'] },
-        { nodeId: 'node_1', targetId: 'ssh_devbox', label: 'Devbox', kind: 'ssh', reachable: true, providers: ['claude'] },
+        {
+          nodeId: 'node_1',
+          targetId: 'local',
+          label: 'Local',
+          kind: 'local',
+          reachable: true,
+          providers: ['claude'],
+        },
+        {
+          nodeId: 'node_1',
+          targetId: 'ssh_devbox',
+          label: 'Devbox',
+          kind: 'ssh',
+          reachable: true,
+          providers: ['claude'],
+        },
       ],
       sessionStatuses: { sess_a: 'queued', sess_b: 'queued' },
       sessionStatusUpdatedAt: {
@@ -1141,9 +1155,7 @@ describe('queued session: distinct from running, wait made visible (issue #255)'
 
     const rows = await screen.findAllByTestId('session-row-item');
     const titleFor = (title: string) =>
-      rows
-        .find((row) => row.textContent?.includes(title))
-        ?.querySelector('button.session');
+      rows.find((row) => row.textContent?.includes(title))?.querySelector('button.session');
     expect(titleFor('On local')?.getAttribute('title')).toContain('Queued: waiting for a slot');
     expect(titleFor('On devbox')?.getAttribute('title')).toContain('Queued: waiting for a slot');
   });

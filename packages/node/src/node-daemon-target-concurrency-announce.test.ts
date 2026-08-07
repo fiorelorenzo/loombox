@@ -195,7 +195,9 @@ describe('NodeDaemon target_announce concurrency cap (SPEC §7.16, issue #255)',
       amk: generateAmk(),
       stateDir: nodeStateDir,
       targets: [{ id: 'ssh:devbox', kind: 'ssh', label: 'devbox', providers: [] }],
-      sshTargets: [{ id: 'ssh:devbox', label: 'devbox', host: '10.0.0.5', maxConcurrentSessions: 3 }],
+      sshTargets: [
+        { id: 'ssh:devbox', label: 'devbox', host: '10.0.0.5', maxConcurrentSessions: 3 },
+      ],
       sshTransportFactory: () => new FakeTransport(),
     });
 

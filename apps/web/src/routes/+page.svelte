@@ -2633,7 +2633,10 @@
   );
   /** Per-target best-effort running/queued snapshot (issue #255's "the wait ... explicable" — the limit means nothing on its own), keyed by `${nodeId}:${targetId}` exactly like `TargetStatusView.svelte`'s own `rowKey`. Passed straight through to `SettingsPage`/`TargetStatusView` alongside the wire-sent cap. */
   const targetConcurrency = $derived(
-    summarizeTargetConcurrency(sessions, (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined),
+    summarizeTargetConcurrency(
+      sessions,
+      (id) => sessionStatuses.get(id) as SessionStatusV1 | undefined,
+    ),
   );
 
   /**
@@ -4924,7 +4927,8 @@
       hasSelectedSession={selectedSessionId !== undefined}
       {selectedSessionStatus}
       selectedSessionStatusReason={selectedSessionId
-        ? (sessionStatusReasons.get(selectedSessionId) ?? sessionQueueReasons.get(selectedSessionId))
+        ? (sessionStatusReasons.get(selectedSessionId) ??
+          sessionQueueReasons.get(selectedSessionId))
         : undefined}
       {queuedSessionCount}
       usage={transcript?.usage}

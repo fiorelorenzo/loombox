@@ -489,7 +489,9 @@
                   {@const snapshot = concurrency.get(key) ?? { running: 0, queued: 0 }}
                   <span class="metric" data-testid={`target-concurrency-${key}`}>
                     <span class="metric-label">Slots</span>
-                    <span class="metric-value font-mono" data-testid={`target-concurrency-cap-${key}`}
+                    <span
+                      class="metric-value font-mono"
+                      data-testid={`target-concurrency-cap-${key}`}
                       >{snapshot.running}/{target.maxConcurrentSessions}</span
                     >
                     <span

@@ -81,10 +81,7 @@ describe('queuePositionReasons (issue #255)', () => {
   });
 
   it('keeps two different targets’ queues fully independent', () => {
-    const sessions = [
-      session('a', 'node-1', 'local'),
-      session('b', 'node-1', 'ssh:devbox'),
-    ];
+    const sessions = [session('a', 'node-1', 'local'), session('b', 'node-1', 'ssh:devbox')];
     const reasons = queuePositionReasons(
       sessions,
       () => 'queued',
