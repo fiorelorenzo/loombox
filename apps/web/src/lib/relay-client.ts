@@ -158,6 +158,9 @@ import {
   type McpPromptGetRequestPayloadV1,
   type McpPromptGetResponse,
   type NewDeviceBootstrapRequest,
+  type NodeSelfUpdateApplyResponse,
+  type NodeSelfUpdateStatusV1,
+  type NodeSelfUpdateSummaryV1,
   type PermissionPolicyResult,
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyV1,
@@ -273,6 +276,11 @@ export type {
   DecommissionTargetResponse,
   TargetUpdateResponse,
   TargetVersionStatusV1,
+} from '@loombox/protocol';
+export type {
+  NodeSelfUpdateApplyResponse,
+  NodeSelfUpdateStatusV1,
+  NodeSelfUpdateSummaryV1,
 } from '@loombox/protocol';
 export type {
   AccountPinErrorType,
@@ -1808,6 +1816,15 @@ export class RelayClient {
     { resolve: (response: TargetUpdateResponse) => void; reject: (error: Error) => void }
   >();
   /**
+   * requestId -> the pending {@link applyNodeSelfUpdate} call it belongs
+   * to (issue #656's explicit one-tap "Update" action) — same shape as
+   * {@link pendingTargetUpdateRequests} and for the same reason.
+   */
+  private readonly pendingNodeSelfUpdateApplyRequests = new Map<
+    string,
+    { resolve: (response: NodeSelfUpdateApplyResponse) => void; reject: (error: Error) => void }
+  >();
+  /**
    * requestId -> the pending {@link archiveSession} call it belongs to
    * (SPEC §7.2's board archive affordance; issue #512).
    * `session_archive_response` carries plain fields only (no envelope —
@@ -2448,6 +2465,54 @@ export class RelayClient {
         requestId,
       });
     });
+  }
+
+  /**
+   * The explicit, one-tap "Update" action for a NODE's own self-update
+   * (issue #656) — distinct from {@link updateTarget}, which re-provisions
+   * the supervisor on one of a node's `ssh:` targets. There is no
+   * `targetVersion` here on purpose (mirrors
+   * `@loombox/protocol`'s `nodeSelfUpdateApplyRequest` doc comment): a
+   * caller can only ever act on the version `nodeId` itself already
+   * announced via `target_list_request`'s `nodeSelfUpdate` field, never
+   * name an arbitrary one. Same routing-metadata-only boundary and
+   * "resolves either way, rejects only when genuinely unusable" contract
+   * as {@link decommissionTarget}/{@link updateTarget}; same generous
+   * timeout as {@link updateTarget} since a real update stages, verifies,
+   * and activates a real bundle before it ever replies.
+   */
+  applyNodeSelfUpdate(
+    options: { nodeId: string },
+    timeoutMs = 300_000,
+  ): Promise<NodeSelfUpdateApplyResponse> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot apply a node self-update, no open connection'),
+      );
+    }
+    const requestId = generateId('nodeselfupdate');
+    const { promise, resolve, reject } = Promise.withResolvers<NodeSelfUpdateApplyResponse>();
+    const timer = setTimeout(() => {
+      this.pendingNodeSelfUpdateApplyRequests.delete(requestId);
+      reject(new Error('RelayClient: timed out waiting for node_self_update_apply_response'));
+    }, timeoutMs);
+    this.pendingNodeSelfUpdateApplyRequests.set(requestId, {
+      resolve: (response) => {
+        clearTimeout(timer);
+        resolve(response);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
+    this.send({
+      type: 'node_self_update_apply_request',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: options.nodeId,
+      requestId,
+    });
+    return promise;
   }
 
   /**
@@ -6380,6 +6445,9 @@ export class RelayClient {
       case 'target_update_response':
         this.handleTargetUpdateResponse(message);
         return;
+      case 'node_self_update_apply_response':
+        this.handleNodeSelfUpdateApplyResponse(message);
+        return;
       case 'connected_account_list':
         this.handleConnectedAccountList(message);
         return;
@@ -7455,6 +7523,23 @@ export class RelayClient {
     const pending = this.pendingTargetUpdateRequests.get(message.requestId);
     if (!pending) return;
     this.pendingTargetUpdateRequests.delete(message.requestId);
+    pending.resolve(message);
+  }
+
+  /**
+   * The acting node's reply to one of this client's own
+   * {@link applyNodeSelfUpdate} calls (issue #656) — same shape as
+   * {@link handleTargetUpdateResponse}. On success, the acting node has
+   * ALREADY flipped `current` to the new version by the time this
+   * arrives (`applyNodeSelfUpdate`'s own doc comment) — restarting itself
+   * is what happens right after, never awaited here; a caller that wants
+   * to see the node's new `build`/`nodeSelfUpdate` fields refreshed calls
+   * `listTargets()` again once it reconnects.
+   */
+  private handleNodeSelfUpdateApplyResponse(message: NodeSelfUpdateApplyResponse): void {
+    const pending = this.pendingNodeSelfUpdateApplyRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingNodeSelfUpdateApplyRequests.delete(message.requestId);
     pending.resolve(message);
   }
 

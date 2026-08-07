@@ -7859,6 +7859,78 @@ describe('RelayClient: decommissionTarget / updateTarget (redesign v2 §3.3 conn
   });
 });
 
+describe('RelayClient: applyNodeSelfUpdate (issue #656)', () => {
+  it('sends a plain node_self_update_apply_request (no targetVersion field) and resolves with the outcome, no envelope', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-selfupdate-1';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-selfupdate-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_selfupdate_1',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-selfupdate-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const applyPromise = client.applyNodeSelfUpdate({ nodeId: 'node_selfupdate_1' });
+
+    const request = (await node.waitFor(
+      (m) => m.type === 'node_self_update_apply_request',
+    )) as { type: 'node_self_update_apply_request'; nodeId: string; requestId: string };
+    expect(request.nodeId).toBe('node_selfupdate_1');
+    // No `targetVersion` field on purpose (issue #656's own doc comment on
+    // `nodeSelfUpdateApplyRequest`): a client can only ever act on what
+    // the node itself already announced, never name an arbitrary version.
+    expect(Object.keys(request).sort()).toEqual(
+      ['nodeId', 'protocolVersion', 'requestId', 'type'].sort(),
+    );
+
+    node.send({
+      type: 'node_self_update_apply_response',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'node_selfupdate_1',
+      requestId: request.requestId,
+      ok: true,
+      fromVersion: '1.0.0',
+      toVersion: '2.0.0',
+      message: 'updated 1.0.0 -> 2.0.0; restarting to apply',
+    });
+
+    const response = await applyPromise;
+    expect(response.ok).toBe(true);
+    expect(response.fromVersion).toBe('1.0.0');
+    expect(response.toVersion).toBe('2.0.0');
+  });
+
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-selfupdate-no-conn',
+      deviceId: 'client-selfupdate-no-conn',
+    });
+    await expect(client.applyNodeSelfUpdate({ nodeId: 'node_x' })).rejects.toThrow(
+      /no open connection/,
+    );
+  });
+});
+
 describe('RelayClient: archiveSession (SPEC §7.2 board archive; issue #512)', () => {
   it('archiveSession sends a plain session_archive_request and resolves once outcome: "ok" comes back, dropping the session from the store', async () => {
     const amk = generateAmk();
