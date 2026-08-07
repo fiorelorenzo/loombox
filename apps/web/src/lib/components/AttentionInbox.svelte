@@ -253,6 +253,10 @@
       }
       case 'review_request':
         return 'Review requested';
+      case 'context_limit':
+        return item.contextPercent !== undefined
+          ? `Context window nearly full — ${item.contextPercent}% used`
+          : 'Context window nearly full';
     }
   }
 
@@ -316,6 +320,8 @@
         };
       case 'review_request':
         return { tone: 'info', label: 'Review' };
+      case 'context_limit':
+        return { tone: 'warning', label: 'Context' };
     }
   }
 

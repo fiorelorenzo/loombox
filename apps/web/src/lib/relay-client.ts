@@ -13,6 +13,8 @@ import {
   acpPermissionRequestPayloadSchema,
   acpTranscriptUpdateSchema,
   cancelAllPermissionRequests,
+  CONTEXT_NEAR_LIMIT_THRESHOLD,
+  contextFillPercent,
   createPermissionQueueState,
   createTranscriptState,
   enqueuePermissionRequest,
@@ -624,18 +626,29 @@ export interface RunClientState {
  *   for a retry (that module's own doc comment). A renderer offers
  *   forwarding a thread into the session as a follow-up prompt
  *   (`prompt_inject`) instead; this client never sends one itself.
+ * - `'context_limit'` — a session whose latest real `usage_update`-derived
+ *   context-fill percentage (`@loombox/providers-core`'s
+ *   `contextFillPercent`, over `TranscriptState.usage` — already
+ *   parent-only, see that type's `attributedToSubagent` doc comment) has
+ *   crossed `CONTEXT_NEAR_LIMIT_THRESHOLD` (issue #250, SPEC §7.9's
+ *   near-limit warning, the cross-project sibling of `StatusBar`'s own
+ *   in-session meter warning). Never guessed: a session whose provider
+ *   never reports `usage_update.size`/`used` (`contextFillPercent`
+ *   returns `undefined`) simply never produces this item — see
+ *   `recomputeAttentionInbox`. See `contextPercent`/`tokensUsed`/
+ *   `contextWindow`.
  *
- * All seven are the "needs the user now" classes this client wires to
+ * All eight are the "needs the user now" classes this client wires to
  * live data. See {@link RelayClient.attentionInbox}'s doc comment for why
  * a session with a queue of several pending requests only ever
  * contributes its head as one item, why a session contributes at most one
  * of `awaiting_input`/`session_outcome` (its live status is one or the
  * other, never both), and why `ci_failure`/`run_failure`/
- * `tracker_failure`/`review_request` are each independent of the others
- * (a session can be idle/finished, have a failing check on its open PR,
- * have a failing local run, have an unresolved review thread on that same
- * PR, AND have a broken project tracker, all at once — five unrelated
- * facts about that session).
+ * `tracker_failure`/`review_request`/`context_limit` are each independent
+ * of the others (a session can be idle/finished, have a failing check on
+ * its open PR, have a failing local run, have an unresolved review thread
+ * on that same PR, have a broken project tracker, AND be near its context
+ * limit, all at once — six unrelated facts about that session).
  */
 export interface AttentionInboxItem {
   readonly kind:
@@ -645,7 +658,8 @@ export interface AttentionInboxItem {
     | 'ci_failure'
     | 'run_failure'
     | 'tracker_failure'
-    | 'review_request';
+    | 'review_request'
+    | 'context_limit';
   readonly sessionId: string;
   readonly sessionTitle: string;
   readonly projectPath: string;
@@ -723,6 +737,18 @@ export interface AttentionInboxItem {
    * unresolved.
    */
   readonly reviewThreads?: readonly ReviewCommentThreadV1[];
+  /**
+   * Set only for a `'context_limit'` item: the exact figures
+   * `contextFillPercent` derived this crossing from
+   * (`TranscriptState.usage.tokensUsed`/`.contextWindow`), so a renderer
+   * never has to re-derive or re-round the percentage itself. Never set
+   * when `kind` isn't `'context_limit'`: the node/provider genuinely
+   * reported nothing usable, not a `0` standing in for "unknown" (issue
+   * #250's own framing — never a guessed number).
+   */
+  readonly contextPercent?: number;
+  readonly tokensUsed?: number;
+  readonly contextWindow?: number;
 }
 
 /**
@@ -1526,6 +1552,24 @@ export class RelayClient {
     string,
     Writable<ReviewCommentStateV1 | undefined>
   >();
+  /**
+   * `sessionId` -> the client wall-clock ms (`Date.now()`) this session's
+   * `contextFillPercent` was FIRST observed at or above
+   * `CONTEXT_NEAR_LIMIT_THRESHOLD` (issue #250) — backs the attention
+   * inbox's `'context_limit'` item's `waitingSince`, populated and cleared
+   * by {@link recomputeAttentionInbox} itself (there is no separate wire
+   * push to decrypt into it, unlike {@link ciCheckStatuses} and its
+   * siblings: `usage_update` carries no timestamp of its own — see
+   * `NodeDaemon.recordUsageCost`'s own doc comment for the same honest gap
+   * on the node side — so "the moment THIS client saw the crossing" is the
+   * one real signal available, the same convention issue #744's
+   * `TranscriptToolCallItem.startedAtMs` already established). Deleted the
+   * moment a session's percentage drops back below the threshold, so a
+   * later, separate crossing gets a fresh timestamp rather than reusing a
+   * stale one — this is also what makes the item disappear from the inbox
+   * when a session's context genuinely frees up.
+   */
+  private readonly contextLimitCrossedAt = new Map<string, number>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -6088,10 +6132,12 @@ export class RelayClient {
    * Wires one session into the attention inbox: subscribes it (so its
    * `permission_request`/`session_update`/`ci_check_status`/`run_status`
    * traffic actually reaches this client, see `ensureSubscribed`) and
-   * recomputes the inbox whenever its transcript (status), permission
-   * queue, CI check state, or run status changes. Idempotent per session
-   * id, and a no-op before {@link attentionInbox} has ever been called
-   * (see `syncInboxTracking`).
+   * recomputes the inbox whenever its transcript (status, OR its
+   * `usage_update`-derived context-fill percentage, issue #250 — both ride
+   * the same `session_update` traffic, so no separate subscription is
+   * needed), permission queue, CI check state, or run status changes.
+   * Idempotent per session id, and a no-op before {@link attentionInbox}
+   * has ever been called (see `syncInboxTracking`).
    */
   private trackSessionForInbox(sessionId: string): void {
     if (this.inboxTrackedSessions.has(sessionId)) return;
@@ -6224,6 +6270,42 @@ export class RelayClient {
           trackerProvider: trackerConnectivity.provider,
           trackerConnectivityState: trackerConnectivity.state,
         });
+      }
+
+      // Issue #250: the cross-project sibling of `StatusBar`'s own
+      // in-session near-limit warning. `contextFillPercent` already
+      // returns `undefined` for a subagent-attributed update (`transcript.
+      // usage.tokensUsed`/`.contextWindow` are frozen to the last real
+      // PARENT-turn record, see `UsageRecord.attributedToSubagent`'s own
+      // doc comment) and for a provider that never reports `usage_update.
+      // size`/`used` at all — either way this session contributes no item,
+      // never a guessed one.
+      const contextPercent = contextFillPercent(transcript.usage);
+      if (contextPercent !== undefined && contextPercent >= CONTEXT_NEAR_LIMIT_THRESHOLD) {
+        const crossedAt = this.contextLimitCrossedAt.get(session.id) ?? Date.now();
+        this.contextLimitCrossedAt.set(session.id, crossedAt);
+        items.push({
+          kind: 'context_limit',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: crossedAt,
+          contextPercent,
+          tokensUsed: transcript.usage?.tokensUsed,
+          contextWindow: transcript.usage?.contextWindow,
+        });
+      } else {
+        // Below the threshold (or no usable data at all) — clear any prior
+        // crossing so a LATER, separate crossing gets a fresh `waitingSince`
+        // rather than reusing a stale one. This is also the "does it clear"
+        // half of issue #250's own acceptance: a real later `usage_update`
+        // reporting fewer tokens in context (e.g. after the agent's own
+        // auto-compaction — `reduceUsage`'s doc comment: these two fields
+        // are the LATEST reported figures, never frozen outside a
+        // subagent-attributed update) drops this session's item from the
+        // inbox on the very next recompute.
+        this.contextLimitCrossedAt.delete(session.id);
       }
     }
     items.sort((a, b) => a.waitingSince - b.waitingSince);
