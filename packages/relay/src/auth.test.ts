@@ -244,3 +244,53 @@ describe('migrateBetterAuth — boot-time schema setup (#119)', () => {
     expect(response.headers.get('set-auth-token')).toBeTruthy();
   });
 });
+
+describe('preview/production isolation (#868, epic #863) — different BETTER_AUTH_SECRET rejects a cross-environment token', () => {
+  it('a token minted with one secret is rejected by an auth instance mounted with a different secret, and the reverse', async () => {
+    // Stands in for the real deploy shape: preview and production are two
+    // separate Better Auth instances, each with its own database (separate
+    // Postgres containers on prodbox, `loombox-relay-preview` vs `relay`)
+    // and — the part this test isolates — its own `BETTER_AUTH_SECRET`
+    // (`deploy/relay-preview/docker-compose.yml`'s header comment and
+    // `docs/deploy-relay.md`'s "Preview environment" section). The bearer
+    // plugin HMAC-signs the session token with `secret` (see
+    // `better-auth`'s `plugins/bearer`); a signature made with one secret
+    // fails verification against another before the DB is even consulted,
+    // so this holds even though the two environments' databases already
+    // make it true for an unrelated reason (see the live check in
+    // docs/deploy-relay.md's "Verifying isolation").
+    const preview = await buildTestAuth({ secret: 'preview-secret-preview-secret-preview!!' });
+    const production = await buildTestAuth({ secret: 'production-secret-production-secret!!!!' });
+
+    const previewToken = await bearerTokenForNewUser(preview, 'isolation-preview@example.com');
+    const productionToken = await bearerTokenForNewUser(
+      production,
+      'isolation-production@example.com',
+    );
+
+    // Positive control: each token resolves fine against its OWN instance.
+    await expect(resolveAccountIdViaBetterAuth(preview, previewToken)).resolves.toBeDefined();
+    await expect(resolveAccountIdViaBetterAuth(production, productionToken)).resolves.toBeDefined();
+
+    // The actual isolation claim: neither token resolves against the OTHER instance.
+    await expect(resolveAccountIdViaBetterAuth(production, previewToken)).resolves.toBeUndefined();
+    await expect(resolveAccountIdViaBetterAuth(preview, productionToken)).resolves.toBeUndefined();
+  });
+
+  it('the same secret alone is not what protects a session — a foreign token is still rejected on a shared-secret instance with a separate database', async () => {
+    // Belt-and-suspenders on the OTHER isolation leg (separate databases,
+    // see docs/deploy-relay.md): even if two instances somehow shared a
+    // secret, a session created on one is a row in ITS OWN database only,
+    // so resolving it against an instance backed by a different database
+    // still fails — the accountId a token resolves to is never assumed,
+    // it is looked up.
+    const sharedSecret = 'shared-secret-shared-secret-shared-secret';
+    const instanceA = await buildTestAuth({ secret: sharedSecret });
+    const instanceB = await buildTestAuth({ secret: sharedSecret });
+
+    const tokenFromA = await bearerTokenForNewUser(instanceA, 'db-isolation@example.com');
+
+    await expect(resolveAccountIdViaBetterAuth(instanceA, tokenFromA)).resolves.toBeDefined();
+    await expect(resolveAccountIdViaBetterAuth(instanceB, tokenFromA)).resolves.toBeUndefined();
+  });
+});
