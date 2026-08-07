@@ -784,9 +784,7 @@ describe('TargetStatusView node self-update (issue #656)', () => {
     render(TargetStatusView, {
       props: { targets: SELF_UPDATE_TARGETS, loading: false, error: undefined, onRefresh: noop },
     });
-    expect(
-      screen.queryByTestId('target-node-update-available-node_current:local'),
-    ).toBeNull();
+    expect(screen.queryByTestId('target-node-update-available-node_current:local')).toBeNull();
     expect(
       screen.getByTestId('target-node-update-available-node_stale:local').textContent?.trim(),
     ).toBe('Update available');
@@ -836,9 +834,9 @@ describe('TargetStatusView node self-update (issue #656)', () => {
     expect(applyNodeSelfUpdate).toHaveBeenCalledWith({ nodeId: 'node_stale' });
 
     await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
-    expect(
-      screen.getByTestId('target-action-message-node_stale:local').textContent,
-    ).toContain('updated 1.0.0 -> 2.0.0');
+    expect(screen.getByTestId('target-action-message-node_stale:local').textContent).toContain(
+      'updated 1.0.0 -> 2.0.0',
+    );
   });
 
   it('a failed apply never refreshes, and shows the failure message on the row instead', async () => {
@@ -865,9 +863,9 @@ describe('TargetStatusView node self-update (issue #656)', () => {
     await waitFor(() =>
       expect(screen.getByTestId('target-action-message-node_stale:local')).toBeTruthy(),
     );
-    expect(
-      screen.getByTestId('target-action-message-node_stale:local').textContent,
-    ).toContain('actively working on a turn');
+    expect(screen.getByTestId('target-action-message-node_stale:local').textContent).toContain(
+      'actively working on a turn',
+    );
     expect(onRefresh).not.toHaveBeenCalled();
   });
 });

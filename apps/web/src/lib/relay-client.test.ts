@@ -7889,9 +7889,11 @@ describe('RelayClient: applyNodeSelfUpdate (issue #656)', () => {
 
     const applyPromise = client.applyNodeSelfUpdate({ nodeId: 'node_selfupdate_1' });
 
-    const request = (await node.waitFor(
-      (m) => m.type === 'node_self_update_apply_request',
-    )) as { type: 'node_self_update_apply_request'; nodeId: string; requestId: string };
+    const request = (await node.waitFor((m) => m.type === 'node_self_update_apply_request')) as {
+      type: 'node_self_update_apply_request';
+      nodeId: string;
+      requestId: string;
+    };
     expect(request.nodeId).toBe('node_selfupdate_1');
     // No `targetVersion` field on purpose (issue #656's own doc comment on
     // `nodeSelfUpdateApplyRequest`): a client can only ever act on what

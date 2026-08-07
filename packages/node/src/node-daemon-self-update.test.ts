@@ -404,7 +404,9 @@ describe('NodeDaemon self-update — real relay, real subprocess (issue #656)', 
       });
 
       await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
-      await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
+      await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], {
+        cwd: projectPath,
+      });
       await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
       await execFileAsync('git', ['commit', '--allow-empty', '-m', 'initial commit'], {
         cwd: projectPath,

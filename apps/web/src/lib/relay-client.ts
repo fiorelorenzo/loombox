@@ -159,8 +159,6 @@ import {
   type McpPromptGetResponse,
   type NewDeviceBootstrapRequest,
   type NodeSelfUpdateApplyResponse,
-  type NodeSelfUpdateStatusV1,
-  type NodeSelfUpdateSummaryV1,
   type PermissionPolicyResult,
   type PermissionPolicySetPayloadV1,
   type PermissionPolicyV1,
