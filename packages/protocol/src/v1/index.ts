@@ -918,6 +918,18 @@ export {
   ciCheckStatus,
 } from './ci-check';
 export type {
+  TrackerConnectivityStateV1,
+  TrackerConnectivityStatusPayloadV1,
+  TrackerConnectivityStatus,
+} from './tracker-connectivity';
+export {
+  trackerConnectivityStateV1,
+  parseTrackerConnectivityStatusPayloadV1,
+  safeParseTrackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatus,
+} from './tracker-connectivity';
+export type {
   CiAutoIterateStopReasonV1,
   CiAutoIterateAttemptV1,
   CiAutoIterateStateV1,
@@ -1319,6 +1331,11 @@ import {
   ciCheckStatus,
 } from './ci-check';
 import {
+  trackerConnectivityStateV1,
+  trackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatus,
+} from './tracker-connectivity';
+import {
   ciAutoIterateStopReasonV1,
   ciAutoIterateAttemptV1,
   ciAutoIterateStateV1,
@@ -1706,6 +1723,9 @@ export const schemasV1 = {
   ciCheckStateV1,
   ciCheckStatusPayloadV1,
   ciCheckStatus,
+  trackerConnectivityStateV1,
+  trackerConnectivityStatusPayloadV1,
+  trackerConnectivityStatus,
   agentInstructionsFileNameV1,
   agentInstructionsFileStateV1,
   agentInstructionsGetResponsePayloadV1,
