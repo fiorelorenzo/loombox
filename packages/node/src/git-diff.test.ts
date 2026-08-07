@@ -1,4 +1,4 @@
-import { GIT_GRAPH_DEFAULT_LIMIT, GIT_GRAPH_MAX_LIMIT } from '@loombox/protocol';
+import { GIT_GRAPH_MAX_LIMIT } from '@loombox/protocol';
 import { execFile } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
