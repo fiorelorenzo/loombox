@@ -74,6 +74,11 @@
   } from '$lib/session-status';
   import { queuePositionReasons, summarizeTargetConcurrency } from '$lib/target-concurrency';
   import { diagnoseSessionStall } from '$lib/session-stall-diagnosis';
+  import { classifyTargetHealth } from '$lib/target-health';
+  import {
+    inboxTargetHealthContext,
+    type InboxTargetHealthContext,
+  } from '$lib/inbox-target-health';
   import { fuzzyFilter, fuzzyMatch } from '$lib/fuzzy';
   import {
     fileMention,
@@ -170,7 +175,7 @@
   import RecoveryCodeEntryForm from '$lib/components/RecoveryCodeEntryForm.svelte';
   import ReviewChangesDialog from '$lib/components/ReviewChangesDialog.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
-  import StatusBar, { type TargetHealthDotState } from '$lib/components/StatusBar.svelte';
+  import StatusBar from '$lib/components/StatusBar.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
   import TranscriptSearchBar from '$lib/components/TranscriptSearchBar.svelte';
   import TranscriptTimeline, {
@@ -2713,35 +2718,19 @@
     Array.from(new Set(sessions.map((session) => session.projectPath))).sort(),
   );
 
-  /** Per-target health for the status bar's own summary (issue #736; before it, the header's `StatusDot` cluster this doc comment used to describe) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the two never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). `TargetHealthDotState` itself is `StatusBar.svelte`'s own exported type, not redeclared here — the one place a `TargetListEntry` becomes this vocabulary. */
-  const TARGET_OVERLOAD_PERCENT = 90;
-  function classifyTargetHealth(target: TargetListEntry): TargetHealthDotState {
-    if (!target.reachable) return 'unreachable';
-    if (!target.health) return 'no-data';
-    if (!target.health.healthy) return 'unreachable';
-    // `loadPercent`, never the deprecated `cpuPercent` those two used to
-    // share: same number, but the old name claimed it was utilisation when
-    // it has always been a load-average proxy (v5 design spec §3). A peer
-    // that predates the field reports no load at all, which must not read as
-    // a healthy zero - `TargetStatusView` shows an em dash for exactly this,
-    // so the dot abstains here too rather than inventing good news.
-    const { loadPercent, memPercent, diskPercent } = target.health;
-    if (loadPercent === undefined) return 'no-data';
-    if (
-      loadPercent >= TARGET_OVERLOAD_PERCENT ||
-      memPercent >= TARGET_OVERLOAD_PERCENT ||
-      diskPercent >= TARGET_OVERLOAD_PERCENT
-    ) {
-      return 'overloaded';
-    }
-    return 'healthy';
-  }
+  /** Per-target health for the status bar's own summary (issue #736; before it, the header's `StatusDot` cluster this doc comment used to describe) — mirrors `TargetStatusView.svelte`'s own local `healthState()` classification so the two never disagree, without either importing internals from the other (that component stays purely presentational and untouched by this issue). `classifyTargetHealth` itself now lives in `$lib/target-health.ts` (issue #204's own extraction, so the attention inbox's target-health context — `inboxTargetHealthBySessionId` below — reads the identical judgment rather than a third copy); `TargetHealthDotState` stays `StatusBar.svelte`'s own exported type. */
   const targetHealthDots = $derived(
     targetStatusEntries.map((target) => ({
       key: `${target.nodeId}:${target.targetId}`,
       label: target.label ?? target.targetId,
       state: classifyTargetHealth(target),
     })),
+  );
+  /** `${nodeId}:${targetId}` -> its live `TargetListEntry` — the one lookup `sessionStallReasons` and `inboxTargetHealthBySessionId` below both join a session's own `nodeId`/`targetId` against, hoisted out of `sessionStallReasons`'s own `$derived.by` (issue #271's original home for it) so the second consumer doesn't rebuild an identical map every recompute. */
+  const targetsByKey = $derived(
+    new SvelteMap(
+      targetStatusEntries.map((target) => [`${target.nodeId}:${target.targetId}`, target]),
+    ),
   );
   /** The status bar's Behind badge (issue #736): every currently-listed target whose build identity doesn't match this relay's own — `TargetStatusView`'s per-row `isBehind`/`buildIdentityMismatch` check, aggregated across the account instead of per row. */
   const targetsBehindCount = $derived(
@@ -2801,9 +2790,6 @@
    * `'Working'`/etc., same as before this feature existed).
    */
   const sessionStallReasons = $derived.by(() => {
-    const targetsByKey = new SvelteMap(
-      targetStatusEntries.map((target) => [`${target.nodeId}:${target.targetId}`, target]),
-    );
     const reasons = new SvelteMap<string, string>();
     for (const session of sessions) {
       const target = targetsByKey.get(`${session.nodeId}:${session.targetId}`);
@@ -2817,6 +2803,40 @@
       if (diagnosis.cause !== 'unknown') reasons.set(session.id, diagnosis.message);
     }
     return reasons;
+  });
+
+  /**
+   * Issue #204's own attention-inbox enrichment: target-health context for
+   * a "stalled/errored" inbox row, joined in by `sessionId` alongside the
+   * unmodified `attentionInboxItems` list `RelayClient.attentionInbox()`
+   * already produces — additive to, not a rework of, that v1 shape (see
+   * `inbox-target-health.ts`'s own doc comment). Only ever populated for
+   * the two "live session status" kinds a stalled-or-errored session
+   * actually produces in the inbox — `'session_outcome'` with `outcome:
+   * 'error'`, and `'awaiting_input'` — never `'permission'` (the agent
+   * already reached a tool call; nothing about target load explains a
+   * pending approval) and never the four PR/tracker-derived kinds
+   * (`ci_failure`/`run_failure`/`tracker_failure`/`review_request`
+   * describe GitHub/Jira/local-runner state, unrelated to the executing
+   * target's own health). `targetsByKey` is the same lookup
+   * `sessionStallReasons` above already shares, so this can't quietly
+   * disagree with it or the status bar's own target dots.
+   */
+  const inboxTargetHealthBySessionId = $derived.by(() => {
+    const contexts = new SvelteMap<string, InboxTargetHealthContext>();
+    for (const item of attentionInboxItems) {
+      const isStalledOrErrored =
+        item.kind === 'awaiting_input' ||
+        (item.kind === 'session_outcome' && item.outcome === 'error');
+      if (!isStalledOrErrored) continue;
+      const session = sessions.find((candidate) => candidate.id === item.sessionId);
+      const target = session
+        ? targetsByKey.get(`${session.nodeId}:${session.targetId}`)
+        : undefined;
+      const context = inboxTargetHealthContext(target);
+      if (context) contexts.set(item.sessionId, context);
+    }
+    return contexts;
   });
 
   /**
@@ -4486,6 +4506,7 @@
               {#if mainView === 'inbox'}
                 <InboxPage
                   items={attentionInboxItems}
+                  targetHealthBySessionId={inboxTargetHealthBySessionId}
                   onResolve={resolveInboxPermission}
                   onOpenSession={openSessionFromInbox}
                   onReply={replyFromInbox}

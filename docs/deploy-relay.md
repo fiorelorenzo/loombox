@@ -237,18 +237,20 @@ production's own two:
 | 5181 | pitchbox prod web |
 | 5185 | loombox prod relay |
 | 5186 | loombox prod web |
-| 5187 | **loombox preview relay (#864, this section)** |
+| 5187 | loombox preview relay (#864) |
+| 5188 | **loombox preview web (#865, epic #863)** |
 | 5190 | loombox-landing web |
 | 5191 | pitchbox preview web |
 | 5281 | embertold prod web |
 | 5291 | embertold preview web |
 | 5434 | pitchbox prod postgres |
 
-(Confirmed free via `ss -tlnp` on prodbox at the time #864 was written; a
-future preview-web deploy, #863's sub-issue 2, should recheck this table
-before claiming a port for itself the same way.) loombox preview's Postgres
-publishes no host port at all, same as production's - only the `relay`
-service needs one, reached over the compose-internal network.
+(Confirmed free via `ss -tlnp` on prodbox at the time #864 was written, and
+rechecked the same way — plus this table's own last-known state — when
+#865 claimed 5188 for preview web.) loombox preview's Postgres publishes
+no host port at all, same as production's - only the `relay` and preview
+web's own `web` service need one, each reached over its own
+compose-internal network.
 
 ### Bring up
 

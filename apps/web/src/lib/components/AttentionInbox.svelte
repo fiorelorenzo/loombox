@@ -123,6 +123,22 @@
    *   on-button badge goes, and the hint bar below the list is now the
    *   only place a digit shortcut is advertised — load-bearing, not
    *   decoration.
+   *
+   * **Target-health context (issue #204, SPEC §7.13/§7.21).** A
+   * `'session_outcome'` error or an `'awaiting_input'` row gets an extra
+   * one-line note when its own session's executing target has something
+   * relevant to say — unreachable, overloaded (with which resource:
+   * `load`/`memory`/`disk`), or genuinely never sampled yet (rendered as
+   * "no data", never a silent omission that would otherwise read as
+   * "target is fine"). Purely additive to the v1 shape above: it is a
+   * SEPARATE `targetHealthBySessionId` prop, keyed by `sessionId`, joined
+   * in by the caller (`+page.svelte`'s `inboxTargetHealthBySessionId`) —
+   * `AttentionInboxItem`/`RelayClient.attentionInbox()` themselves are
+   * untouched, since that store has no target-list data of its own (only
+   * `listTargets()`'s separate request/response `+page.svelte` already
+   * polls). See `$lib/inbox-target-health.ts` for the classification and
+   * wording, and `targetHealthFor` below for which two item kinds this
+   * ever applies to and why the other five never do.
    */
   import type {
     AcpPermissionOption,
@@ -130,6 +146,7 @@
   } from '@loombox/providers-core/browser';
   import { SvelteMap } from 'svelte/reactivity';
   import type { AttentionInboxItem } from '../relay-client';
+  import type { InboxTargetHealthContext } from '$lib/inbox-target-health';
   import { isTypingTarget } from '$lib/keyboard';
   import { renderMarkdownToHtml } from '$lib/markdown';
   import { triggerHapticFeedback } from '$lib/haptics';
@@ -142,12 +159,37 @@
 
   interface Props {
     items: AttentionInboxItem[];
+    /** Target-health context for a stalled/errored item, keyed by `sessionId` (issue #204, SPEC §7.13/§7.21) — see {@link targetHealthFor}'s own doc comment for which two item kinds this ever applies to. Defaults to an empty map, so an existing caller that hasn't wired it (this file's own pre-#204 tests) renders exactly as before. */
+    targetHealthBySessionId?: ReadonlyMap<string, InboxTargetHealthContext>;
     onResolve: (sessionId: string, requestId: string, option: AcpPermissionOption) => void;
     onOpenSession: (sessionId: string) => void;
     onReply: (sessionId: string, text: string) => void;
   }
 
-  const { items, onResolve, onOpenSession, onReply }: Props = $props();
+  const {
+    items,
+    targetHealthBySessionId = new Map(),
+    onResolve,
+    onOpenSession,
+    onReply,
+  }: Props = $props();
+
+  /**
+   * Issue #204's own additive context: the target-health explanation for a
+   * "stalled/errored" row, when its caller found one worth showing
+   * (`$lib/inbox-target-health.ts`'s own doc comment covers the full
+   * "no data ≠ healthy" contract). Re-checked here, not just trusted from
+   * the caller's map, so this component's own rendering rule — only
+   * `'awaiting_input'` and an errored `'session_outcome'` ever carry this,
+   * never `'permission'` or the four PR/tracker-derived kinds — holds even
+   * against a map a test hands it directly.
+   */
+  function targetHealthFor(item: AttentionInboxItem): InboxTargetHealthContext | undefined {
+    const isStalledOrErrored =
+      item.kind === 'awaiting_input' ||
+      (item.kind === 'session_outcome' && item.outcome === 'error');
+    return isStalledOrErrored ? targetHealthBySessionId.get(item.sessionId) : undefined;
+  }
 
   /** How long an answered row lingers, dimmed, before its real callback fires (E2-1: "clears after a couple of seconds"). */
   const ANSWER_LINGER_MS = 2200;
@@ -423,6 +465,7 @@
       {#each items as item, index (itemKey(item))}
         {@const status = itemStatus(item)}
         {@const answered = isPendingAnswer(item)}
+        {@const health = targetHealthFor(item)}
         <Row
           as="li"
           class="item"
@@ -454,6 +497,15 @@
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html renderMarkdownToHtml(messageSource(item))}
             </div>
+            {#if health}
+              <p
+                class="target-health"
+                data-tone={health.state}
+                data-testid="attention-inbox-target-health"
+              >
+                {health.message}
+              </p>
+            {/if}
             {#if item.kind === 'ci_failure' && item.prUrl}
               <!-- eslint-disable svelte/no-navigation-without-resolve -- the node's own CI check state carries GitHub's PR URL (github.com/.../pull/N), never an internal SvelteKit route; the rule can't statically prove that from a dynamic href. -->
               <a
@@ -642,6 +694,27 @@
      its own base rule). */
   .message {
     font-size: var(--text-small-size);
+  }
+
+  /* Issue #204's own target-health note: `data-tone` mirrors
+     `TargetStatusView.svelte`'s own `data-health` convention (warning for
+     `'overloaded'`, danger for `'unreachable'`) so a stalled/errored row's
+     explanation reads with the same urgency vocabulary the Nodes page
+     already uses for the identical classification; `'no-data'` is
+     deliberately the muted/neutral tone, not danger — it is an honest "we
+     don't know", not a fault. */
+  .target-health {
+    margin: 0;
+    font-size: var(--text-small-size);
+    color: var(--color-text-muted);
+  }
+
+  .target-health[data-tone='overloaded'] {
+    color: var(--color-warning);
+  }
+
+  .target-health[data-tone='unreachable'] {
+    color: var(--color-danger);
   }
 
   .ci-pr-link {

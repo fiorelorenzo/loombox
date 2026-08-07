@@ -1,0 +1,46 @@
+# loombox web PWA - prodbox PREVIEW deployment (#865, epic #863).
+#
+# Same shape as ../web/docker-compose.yml (production) on purpose - read
+# that file's own header first for the base reasoning (tini as PID 1,
+# loopback-only publish, why PUBLIC_LOOMBOX_RELAY_URL is a plain runtime env
+# var rather than baked into the JS bundle). Every difference from it below
+# exists only to keep preview from sharing a single byte with production:
+# its own compose project name, its own loopback port (5188 - see
+# docs/deploy-relay.md's "Prodbox loopback port map"), and its own public
+# hostnames as the env defaults.
+#
+# Run from this directory (deploy/web-preview/) so compose picks the
+# project name below:
+#   docker compose up -d --build
+
+name: loombox-web-preview
+
+services:
+  web:
+    build:
+      # context is the repo root so pnpm can resolve the workspace - the
+      # exact same apps/web/Dockerfile production uses, no preview-specific
+      # image.
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      # adapter-node's CSRF/form-action check needs the real public origin
+      # behind Caddy's reverse proxy - preview's own, never production's.
+      ORIGIN: ${ORIGIN:-https://preview.loombox.dev}
+      # Preview's own relay (#864), never production's relay.loombox.dev -
+      # a preview web build that defaulted to production's relay would
+      # write preview-shaped traffic into the real database, exactly the
+      # isolation failure #863 exists to prevent. There is no equivalent
+      # "just works" fallback here the way production's #381 default is:
+      # this MUST be preview-relay.loombox.dev.
+      PUBLIC_LOOMBOX_RELAY_URL: ${PUBLIC_LOOMBOX_RELAY_URL:-wss://preview-relay.loombox.dev}
+    ports:
+      # loopback-only publish; host Caddy reverse-proxies to this (prodbox
+      # UFW+Docker caveat: a 0.0.0.0 publish would bypass UFW). 5185-5187,
+      # 5190, 5191, 5281, 5291, 5434 are taken - see docs/deploy-relay.md's
+      # port table, which this deploy adds its own row to.
+      - '127.0.0.1:5188:3000'
+    restart: unless-stopped

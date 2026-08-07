@@ -19,6 +19,7 @@ import type { NodeIdentity } from './identity';
 import { NodeIdentityStore } from './identity';
 import { createNode, type NodeDaemon } from './node-daemon';
 import { resolveAccountIdViaRelay, type AccountIdResolver } from './resolve-account-id';
+import { allowLiveNodeStateDir } from './ssh/verify-and-persist';
 import { DEFAULT_LOCAL_TARGET } from './target';
 import type { WebSocketConstructor } from './relay-connection';
 
@@ -197,6 +198,11 @@ export interface StartedNode {
  * token once approved.
  */
 export async function start(options: StartOptions = {}): Promise<StartedNode> {
+  // Issue #876: this is the one legitimate place `NodeIdentityStore` (and
+  // every other store below it) may fall back to the live
+  // `~/.loombox/node` when no `stateDir` override is configured — a real
+  // node process, not a one-off script poking at the same constructors.
+  allowLiveNodeStateDir();
   const config = loadNodeConfig(options);
 
   // Issue #257: the ONE place a `local` session's agent process running

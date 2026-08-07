@@ -1,0 +1,77 @@
+name: deploy-preview
+
+# Ships main's HEAD to the preview environment on every push to main (issue
+# #865, epic #863) - web only. Preview's relay (deploy/relay-preview/,
+# #864) stays a manual bring-up; this workflow never touches it.
+#
+# THE DECISION (issue #865's own body lays out three candidates: every push
+# to main, a preview-*/manual-dispatch trigger, or a dedicated preview
+# branch): push to main. Argued in full in CONTRIBUTING.md's "Deploying to
+# preview" section; the short version is that the other two both fail the
+# one property a preview environment exists for - a preview-*
+# tag/dispatch can drift from main for weeks with nobody noticing, and
+# loombox is single-trunk (no branch other than main ever holds anything
+# worth previewing), so a dedicated preview branch would just be a second
+# name for main with extra ceremony. "Always exactly what main looks like"
+# is the only option where a broken main is instantly visible somewhere
+# real, which is the whole point.
+#
+# Deliberately does NOT gate on ci.yml passing the way deploy-prod.yml's
+# own `deploy` job does - see CONTRIBUTING.md for why that's the correct
+# reading of "push to main" rather than an oversight: preview is meant to
+# surface a broken main immediately, not hide it behind a green-CI gate the
+# way the deliberate, human-triggered prod pipeline does.
+on:
+  push:
+    branches: [main]
+
+# A separate group from deploy-prod.yml's prod-deploy: a preview rollout
+# must never queue behind, or block, a production one - the two touch
+# entirely different boxes (/opt/apps/loombox-preview vs. /opt/apps/
+# loombox) and there is no reason for one to wait on the other.
+#
+# cancel-in-progress is false, for the same reason deploy-prod.yml's own
+# comment gives: by the time this workflow reaches the `deploy` job it may
+# already have flipped releases/current or be mid-rebuild, and cancelling
+# there abandons preview half-updated with no health gate having run.
+# GitHub's own queueing already does the coalescing a high-frequency
+# trigger like this needs without cancel-in-progress: only the newest
+# pending run in a concurrency group survives the queue while an earlier
+# one is still running (deploy-prod.yml's own comment documents this,
+# confirmed against this repo). A burst of pushes to main - genuinely
+# close to twenty in one overnight session while the last few waves of this
+# epic's neighbours landed - collapses to at most one deploy in flight plus
+# one queued, never a backlog of twenty sequential ones.
+concurrency:
+  group: preview-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-web:
+    name: build web bundle
+    uses: ./.github/workflows/build-web.yml
+    with:
+      artifact-name: web-build-preview
+
+  deploy:
+    name: deploy to preview
+    needs: build-web
+    runs-on: [self-hosted, prodbox]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download web bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build-preview
+          path: ${{ runner.temp }}/web-build-preview
+
+      # No pnpm install here, same reasoning as deploy-prod.yml's own
+      # Deploy step: scripts/deploy-preview.sh only unpacks the artifact
+      # build-web already produced and drives docker/rsync, and this
+      # runner has no system node/pnpm on PATH.
+      - name: Deploy to preview
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: scripts/deploy-preview.sh "${{ runner.temp }}/web-build-preview"

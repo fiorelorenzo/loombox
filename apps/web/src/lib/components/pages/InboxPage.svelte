@@ -20,19 +20,22 @@
    */
   import type { AcpPermissionOption } from '@loombox/providers-core/browser';
   import type { AttentionInboxItem } from '$lib/relay-client';
+  import type { InboxTargetHealthContext } from '$lib/inbox-target-health';
   import AttentionInbox from '../AttentionInbox.svelte';
   import PageLayout from './PageLayout.svelte';
 
   interface Props {
     items: AttentionInboxItem[];
+    /** Target-health context for a stalled/errored item, keyed by `sessionId` (issue #204) — see `AttentionInbox.svelte`'s own doc comment for what this adds. Optional/defaulted so a caller that hasn't wired it (e.g. an existing test) still renders the plain v1 row. */
+    targetHealthBySessionId?: ReadonlyMap<string, InboxTargetHealthContext>;
     onResolve: (sessionId: string, requestId: string, option: AcpPermissionOption) => void;
     onOpenSession: (sessionId: string) => void;
     onReply: (sessionId: string, text: string) => void;
   }
 
-  const { items, onResolve, onOpenSession, onReply }: Props = $props();
+  const { items, targetHealthBySessionId, onResolve, onOpenSession, onReply }: Props = $props();
 </script>
 
 <PageLayout title="Inbox" testid="inbox-page">
-  <AttentionInbox {items} {onResolve} {onOpenSession} {onReply} />
+  <AttentionInbox {items} {targetHealthBySessionId} {onResolve} {onOpenSession} {onReply} />
 </PageLayout>
