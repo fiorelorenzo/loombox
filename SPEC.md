@@ -197,17 +197,22 @@ adapter:
   future `gemini-cli` release), not a shipped adapter; Gemini is registered
   through `AGENT_CATALOGUE`'s custom-agent quick-add, the same generic path
   any other ACP agent takes. Issue #273 (the reserved bespoke-module slot)
-  is closed on that basis. The spike filed the two real gaps a future
-  bespoke module would exist to close, each its own issue: #843 (Gemini
-  implements no ACP v1 session-lifecycle method except the deprecated
-  `session/load` — `session/resume`/`list`/`close`/`delete` are
-  unimplemented on the real binary, not just unadvertised; the fix, if
-  taken, is a `packages/providers/core`-level `session/load` fallback, not
-  a provider-level one) and #844 (Gemini's `session/new` carries a
-  non-standard `models` axis, paired with `unstable_setSessionModel`, that
-  `mapConfigOptions` never reads — no model-switcher UI is possible for
-  Gemini today). A bespoke Gemini module is worth building again only once
-  one of those two is picked up.
+  is closed on that basis. The spike filed two real gaps a future bespoke
+  module would exist to close: #843 (Gemini implements no ACP v1
+  session-lifecycle method except the deprecated `session/load` —
+  `session/resume`/`list`/`close`/`delete` are unimplemented on the real
+  binary, not just unadvertised; the fix, if taken, is a
+  `packages/providers/core`-level `session/load` fallback, not a
+  provider-level one — still open) and #844 (Gemini's `session/new`
+  carries a non-standard `models` axis, paired with
+  `unstable_setSessionModel`, that `mapConfigOptions` never read — closed
+  generically, in core, not by a bespoke module: `mapConfigOptions` now
+  folds `models` into a `'model'` category the exact same way it already
+  folds ACP-baseline `modes` into `'mode'`, so `ConfigBar`'s existing
+  popover picks it up with no new UI, and `AcpClient.setConfigOption`
+  routes that one category through the real `session/set_model` request
+  instead of `session/set_config_option`). A bespoke Gemini module is
+  worth building only once #843 is picked up.
 - **Generic ACP adapter** (`packages/providers/generic`) is what any other
   ACP-speaking agent gets automatically — flat tool-call list, `ToolKind`-
   generic rows, plain permission buttons, `ResourceLink` for file/image
@@ -217,7 +222,7 @@ adapter:
   warrant one.
 - v1 ships **Claude Code + Codex** adapter modules (Codex's ACP completeness
   verified at build time, §10/§12). **Gemini** is registered generic-tier
-  only (§16, issue #272) — no bespoke module is planned unless #843 or #844
+  only (§16, issue #272) — no bespoke module is planned unless #843
   gets picked up (bullet above). loombox deliberately does not chase
   provider breadth for its own sake (§11).
 
