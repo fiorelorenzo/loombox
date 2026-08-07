@@ -31,9 +31,11 @@ import {
   type KeymapV1,
   type PermissionPolicyV1,
   type PermissionResponse,
+  type PrMergeOutcome,
   type PromptInjectV1,
   type RestorePreviewV1,
   type RestoreResultV1,
+  type ReviewCommentStateV1,
   type RunStatusStateV1,
   type SessionMetaPublic,
   type WireMessageV1,
@@ -11256,5 +11258,328 @@ describe('RelayClient: attention inbox run_failure class (SPEC §7.13/§7.15; is
       (value) => value.length === 1 && value[0]!.kind === 'run_failure',
     );
     expect(afterCiGreen[0]!.sessionId).toBe(session.id);
+  });
+});
+
+describe('RelayClient: attention inbox review_request class (SPEC §7.13/§7.14; issue #240)', () => {
+  it('raises exactly one review_request item for an unresolved thread, clears it once resolved, and never duplicates across polls', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-review';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-review',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+    const fakeNode = node;
+
+    const session = makeSessionMeta({ id: 'sess_review_a', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Ship the feature', projectPath: '/proj-review' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-review' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const sendReviewCommentStatus = async (status: {
+      state: 'unknown' | 'clear' | 'pending';
+      prUrl: string;
+      prNumber: number;
+      threads: Array<{
+        threadId: string;
+        commentId: string;
+        body: string;
+        authorLogin?: string;
+        path?: string;
+        line?: number;
+        createdAt: string;
+      }>;
+      updatedAt: number;
+    }) => {
+      const envelope = await nodeSeal(session.id, { status }, key);
+      fakeNode.send({
+        type: 'review_comment_status',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        envelope,
+      });
+    };
+
+    // First poll: one unresolved thread.
+    await sendReviewCommentStatus({
+      state: 'pending',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      threads: [
+        {
+          threadId: 'PRRT_1',
+          commentId: 'PRRC_1',
+          body: 'please fix the null check',
+          authorLogin: 'reviewer1',
+          path: 'src/foo.ts',
+          line: 10,
+          createdAt: '2026-08-01T00:00:00Z',
+        },
+      ],
+      updatedAt: 1000,
+    });
+
+    const afterComment = await waitForStore(inbox, (value) => value.length === 1);
+    expect(afterComment[0]).toMatchObject({
+      kind: 'review_request',
+      sessionId: session.id,
+      sessionTitle: 'Ship the feature',
+      projectPath: '/proj-review',
+      nodeId: session.nodeId,
+      waitingSince: 1000,
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+    });
+    expect(afterComment[0].reviewThreads).toHaveLength(1);
+    expect(afterComment[0].reviewThreads?.[0]).toMatchObject({
+      commentId: 'PRRC_1',
+      body: 'please fix the null check',
+    });
+
+    // Same still-open thread repolled — must update the existing item in
+    // place, never add a second one (mirrors ci_failure's own "still red"
+    // repoll behaviour).
+    await sendReviewCommentStatus({
+      state: 'pending',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      threads: [
+        {
+          threadId: 'PRRT_1',
+          commentId: 'PRRC_1',
+          body: 'please fix the null check',
+          authorLogin: 'reviewer1',
+          createdAt: '2026-08-01T00:00:00Z',
+        },
+      ],
+      updatedAt: 2000,
+    });
+    const stillPending = await waitForStore(inbox, (value) => value[0]?.waitingSince === 2000);
+    expect(stillPending).toHaveLength(1);
+
+    // The thread resolves — the item must clear, not linger stale.
+    await sendReviewCommentStatus({
+      state: 'clear',
+      prUrl: 'https://github.com/fiorelorenzo/loombox/pull/12',
+      prNumber: 12,
+      threads: [],
+      updatedAt: 3000,
+    });
+    await waitForStore(inbox, (value) => value.length === 0);
+  });
+
+  it('is independent of a ci_failure item: a session can carry both at once, neither clearing the other', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-inbox-review-and-ci';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-inbox-review-and-ci',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_review_and_ci', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(
+      session.id,
+      { title: 'Ship the feature', projectPath: '/proj-both' },
+      key,
+    );
+    node.send({
+      type: 'session_announce',
+      protocolVersion: PROTOCOL_V1,
+      session,
+      privateEnvelope,
+    });
+
+    client = new RelayClient({ relayUrl: relay.url, amk, accountId, deviceId: 'client-both' });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length === 1);
+    const inbox = client.attentionInbox();
+    await waitForNotificationCount(client.sessions, 1);
+
+    const reviewEnvelope = await nodeSeal(
+      session.id,
+      {
+        status: {
+          state: 'pending',
+          prUrl: 'https://github.com/fiorelorenzo/loombox/pull/9',
+          prNumber: 9,
+          threads: [
+            {
+              threadId: 'PRRT_1',
+              commentId: 'PRRC_1',
+              body: 'nit',
+              createdAt: '2026-08-01T00:00:00Z',
+            },
+          ],
+          updatedAt: 500,
+        } satisfies ReviewCommentStateV1,
+      },
+      key,
+    );
+    node.send({
+      type: 'review_comment_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: reviewEnvelope,
+    });
+
+    const ciEnvelope = await nodeSeal(
+      session.id,
+      {
+        status: {
+          state: 'failing',
+          headSha: 'sha-1',
+          prUrl: 'https://github.com/fiorelorenzo/loombox/pull/9',
+          prNumber: 9,
+          checkRuns: [{ id: 1, name: 'build', status: 'completed', conclusion: 'failure' }],
+          updatedAt: 600,
+        } satisfies CiCheckStateV1,
+      },
+      key,
+    );
+    node.send({
+      type: 'ci_check_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: ciEnvelope,
+    });
+
+    const both = await waitForStore(inbox, (value) => value.length === 2);
+    expect(both.map((item) => item.kind).sort()).toEqual(['ci_failure', 'review_request']);
+    expect(both.every((item) => item.sessionId === session.id)).toBe(true);
+
+    // The review thread resolves — only the review_request item clears;
+    // the independently-tracked ci_failure item stays.
+    const reviewClearEnvelope = await nodeSeal(
+      session.id,
+      {
+        status: {
+          state: 'clear',
+          prUrl: 'https://github.com/fiorelorenzo/loombox/pull/9',
+          prNumber: 9,
+          threads: [],
+          updatedAt: 700,
+        } satisfies ReviewCommentStateV1,
+      },
+      key,
+    );
+    node.send({
+      type: 'review_comment_status',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      envelope: reviewClearEnvelope,
+    });
+
+    const afterReviewClears = await waitForStore(
+      inbox,
+      (value) => value.length === 1 && value[0]!.kind === 'ci_failure',
+    );
+    expect(afterReviewClears[0]!.sessionId).toBe(session.id);
+  });
+});
+
+describe('RelayClient.mergePr (SPEC §7.14; issue #240)', () => {
+  it('rejects immediately when there is no open connection', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-merge-no-conn',
+      deviceId: 'client-merge-no-conn',
+    });
+    // Deliberately never connected.
+    await expect(client.mergePr('sess_x', 'squash')).rejects.toThrow(/no open connection/);
+  });
+
+  it('seals the chosen merge method and resolves with a merged outcome the node replies with', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-merge-ok';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_merge_ok',
+    });
+
+    const mergePromise = client!.mergePr(session.id, 'squash');
+
+    const request = (await node!.waitFor((m) => m.type === 'pr_merge_request')) as {
+      type: 'pr_merge_request';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    const requestPayload = await nodeOpen<{ method: string }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ method: 'squash' });
+
+    const result: PrMergeOutcome = { outcome: 'merged', sha: 'merged-sha' };
+    const responseEnvelope = await nodeSeal(session.id, { result }, key);
+    node!.send({
+      type: 'pr_merge_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(mergePromise).resolves.toEqual(result);
+  });
+
+  it('resolves with a blocked or conflicted outcome without throwing — an honest, renderable result, not a transport error', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-merge-blocked';
+    const { session, key } = await setupCheckpointSession(amk, accountId, {
+      id: 'sess_merge_blocked',
+    });
+
+    const blockedPromise = client!.mergePr(session.id, 'merge');
+    const blockedRequest = (await node!.waitFor((m) => m.type === 'pr_merge_request')) as {
+      requestId: string;
+    };
+    const blockedResult: PrMergeOutcome = { outcome: 'blocked', reason: 'requirements_not_met' };
+    node!.send({
+      type: 'pr_merge_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: blockedRequest.requestId,
+      envelope: await nodeSeal(session.id, { result: blockedResult }, key),
+    });
+    await expect(blockedPromise).resolves.toEqual(blockedResult);
+
+    const conflictPromise = client!.mergePr(session.id, 'rebase');
+    const conflictRequest = (await node!.waitFor(
+      (m) => m.type === 'pr_merge_request' && m.requestId !== blockedRequest.requestId,
+    )) as { requestId: string };
+    const conflictResult: PrMergeOutcome = { outcome: 'conflict' };
+    node!.send({
+      type: 'pr_merge_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: conflictRequest.requestId,
+      envelope: await nodeSeal(session.id, { result: conflictResult }, key),
+    });
+    await expect(conflictPromise).resolves.toEqual(conflictResult);
   });
 });
