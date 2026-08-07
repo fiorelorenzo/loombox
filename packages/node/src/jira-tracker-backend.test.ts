@@ -551,17 +551,18 @@ describe('JiraTrackerBackend two REST bases (issue #214 acceptance)', () => {
 });
 
 describe('JiraTrackerBackend.listTransitions/transition (issue #216 acceptance)', () => {
-  it("listTransitions() GETs .../issue/{key}/transitions and maps id/name/requiresFields from Jira's own discovered workflow", async () => {
+  it("listTransitions() GETs .../issue/{key}/transitions and maps id/name/requiresFields/targetCategory (issue #696) from Jira's own discovered workflow", async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe(`${SITE_BASE}/rest/api/3/issue/LB-213/transitions`);
       expect(init?.method).toBeUndefined();
       return jsonResponse(200, {
         transitions: [
-          { id: '11', name: 'To Do', fields: {} },
+          { id: '11', name: 'To Do', fields: {}, to: { statusCategory: { key: 'new' } } },
           {
             id: '21',
             name: 'Done',
             fields: { resolution: { required: true, name: 'Resolution' } },
+            to: { statusCategory: { key: 'done' } },
           },
         ],
       });
@@ -571,8 +572,21 @@ describe('JiraTrackerBackend.listTransitions/transition (issue #216 acceptance)'
     const transitions = await svc.listTransitions(binding(), 'LB-213');
 
     expect(transitions).toEqual([
-      { id: '11', name: 'To Do', requiresFields: false },
-      { id: '21', name: 'Done', requiresFields: true },
+      { id: '11', name: 'To Do', requiresFields: false, targetCategory: 'new' },
+      { id: '21', name: 'Done', requiresFields: true, targetCategory: 'done' },
+    ]);
+  });
+
+  it('listTransitions() defaults targetCategory to "new" when Jira omits `to.statusCategory` entirely (issue #696)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, { transitions: [{ id: '31', name: 'Some future status', fields: {} }] }),
+    );
+    const svc = backend(fetchImpl);
+
+    const transitions = await svc.listTransitions(binding(), 'LB-213');
+
+    expect(transitions).toEqual([
+      { id: '31', name: 'Some future status', requiresFields: false, targetCategory: 'new' },
     ]);
   });
 
