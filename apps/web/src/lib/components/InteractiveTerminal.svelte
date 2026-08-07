@@ -151,6 +151,7 @@
     /** The CURRENT terminal_open's id — reassigned on retry (issue #582), which is exactly why `onData`/`onResize` below read it through this mutable field rather than closing over a value captured at mount. */
     terminalId?: string;
     unsubscribeOutput?: () => void;
+    unsubscribeResync?: () => void;
     openTimeoutHandle?: ReturnType<typeof setTimeout>;
   }
 
@@ -254,10 +255,21 @@
     view.errorMessage = undefined;
     view.timedOut = false;
     runtime.unsubscribeOutput?.();
+    runtime.unsubscribeResync?.();
     const terminalId = client.openTerminal(sessionId, runtime.terminal.cols, runtime.terminal.rows);
     runtime.terminalId = terminalId;
     runtime.unsubscribeOutput = client.onTerminalOutput(sessionId, terminalId, (chunk) => {
       runtime.terminal.write(chunk);
+    });
+    // SPEC §7.16/issue #207: a slow client's bounded terminal_output queue
+    // drops the oldest chunks under a sustained burst rather than blocking
+    // the pipe — this renders that drop VISIBLY (a dim, bracketed gap
+    // notice) instead of the scrollback silently missing bytes with no
+    // indication anything was lost.
+    runtime.unsubscribeResync = client.onTerminalResync(sessionId, terminalId, () => {
+      runtime.terminal.write(
+        '\r\n\x1b[2m[--- output dropped: client too slow to keep up ---]\x1b[0m\r\n',
+      );
     });
     armOpenTimeout(tabId);
   }
@@ -318,6 +330,7 @@
     if (!runtime) return;
     runtimes.delete(tabId);
     runtime.unsubscribeOutput?.();
+    runtime.unsubscribeResync?.();
     clearTabOpenTimeout(tabId);
     runtime.resizeObserver?.disconnect();
     if (runtime.terminalId) client.closeTerminal(sessionId, runtime.terminalId);

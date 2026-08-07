@@ -878,7 +878,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
    * means at most `N * maxTerminalQueueDepth` items in flight, and N is a
    * user-controlled, inherently small number, never adversarial.
    */
-  function terminalOutboxFor(client: ClientConnection, sessionId: string, terminalId: string): BoundedTerminalOutbox {
+  function terminalOutboxFor(
+    client: ClientConnection,
+    sessionId: string,
+    terminalId: string,
+  ): BoundedTerminalOutbox {
     const key = `${sessionId}:${terminalId}`;
     let outbox = client.terminalOutboxes.get(key);
     if (!outbox) {
@@ -920,7 +924,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     const unsubscribe = fanOutBackend.subscribe(sessionId, (payload) => {
       if (payload.kind === 'update') client.outbox.enqueue(payload.item);
       else if (payload.kind === 'terminal') {
-        terminalOutboxFor(client, payload.item.sessionId, payload.item.terminalId).enqueue(payload.item);
+        terminalOutboxFor(client, payload.item.sessionId, payload.item.terminalId).enqueue(
+          payload.item,
+        );
       } else {
         sendDirect(client, payload.message);
         // A closed terminal's queue is never coming back — drop it from
@@ -928,7 +934,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // terminals over its lifetime doesn't accumulate one empty,
         // never-reclaimed `BoundedTerminalOutbox` per terminal ever opened.
         if (payload.message.type === 'terminal_closed') {
-          client.terminalOutboxes.delete(`${payload.message.sessionId}:${payload.message.terminalId}`);
+          client.terminalOutboxes.delete(
+            `${payload.message.sessionId}:${payload.message.terminalId}`,
+          );
         }
       }
     });

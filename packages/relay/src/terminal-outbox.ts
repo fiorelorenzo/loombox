@@ -97,7 +97,12 @@ function buildMarkers(dropped: readonly TerminalOutboxItem[]): TerminalResyncMar
     } else {
       // `Map` iterates in insertion order, so this doubles as the marker
       // output order — no separate index needed.
-      ranges.set(key, { sessionId: item.sessionId, terminalId: item.terminalId, fromSeq: from, toSeq: to });
+      ranges.set(key, {
+        sessionId: item.sessionId,
+        terminalId: item.terminalId,
+        fromSeq: from,
+        toSeq: to,
+      });
     }
   }
   return [...ranges.values()].map((range) =>

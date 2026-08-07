@@ -8339,6 +8339,7 @@ describe('RelayClient: interactive PTY terminals (SPEC §7.5; issues #172/#173/#
       protocolVersion: PROTOCOL_V1,
       sessionId: session.id,
       terminalId,
+      seq: 0,
       envelope: await nodeSeal(
         session.id,
         { data: Buffer.from(outputBytes).toString('base64') },

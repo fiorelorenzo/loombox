@@ -91,7 +91,11 @@ async function derivePhoneSessionKey(
   return importAesGcmKey(node.key);
 }
 
-async function phoneSeal(sessionId: string, value: unknown, key: CryptoKey): Promise<EncryptedEnvelope> {
+async function phoneSeal(
+  sessionId: string,
+  value: unknown,
+  key: CryptoKey,
+): Promise<EncryptedEnvelope> {
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
   const envelope = await encryptEnvelope(sessionId, plaintext, key);
   return {
@@ -102,7 +106,11 @@ async function phoneSeal(sessionId: string, value: unknown, key: CryptoKey): Pro
   };
 }
 
-async function phoneOpen<T>(sessionId: string, wire: EncryptedEnvelope, key: CryptoKey): Promise<T> {
+async function phoneOpen<T>(
+  sessionId: string,
+  wire: EncryptedEnvelope,
+  key: CryptoKey,
+): Promise<T> {
   const envelope = {
     resourceId: wire.resourceId,
     iv: fromBase64(wire.iv),
@@ -190,9 +198,9 @@ async function decryptedTerminalOutputChunks(
   const chunks = await Promise.all(
     candidates.map(async (m) => ({
       seq: m.seq,
-      text: Buffer.from(fromBase64((await phoneOpen<{ data: string }>(sessionId, m.envelope, key)).data)).toString(
-        'utf8',
-      ),
+      text: Buffer.from(
+        fromBase64((await phoneOpen<{ data: string }>(sessionId, m.envelope, key)).data),
+      ).toString('utf8'),
     })),
   );
   return chunks.sort((a, b) => a.seq - b.seq);
@@ -260,7 +268,6 @@ async function waitForTerminalOutputLine(
   }
 }
 
-
 /** Real hermetic bash (issue #503), matching every other real-PTY suite in this package. */
 function hermeticTerminalSupervisor(): TerminalSupervisor {
   return new TerminalSupervisor({
@@ -277,8 +284,12 @@ let phone: TestPhone | undefined;
 
 beforeEach(async () => {
   relay = await startRelay();
-  projectPath = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-terminal-backpressure-test-'));
-  nodeStateDir = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-terminal-backpressure-state-'));
+  projectPath = await mkdtemp(
+    path.join(tmpdir(), 'loombox-node-daemon-terminal-backpressure-test-'),
+  );
+  nodeStateDir = await mkdtemp(
+    path.join(tmpdir(), 'loombox-node-daemon-terminal-backpressure-state-'),
+  );
   await execFileAsync('git', ['init', '-b', 'main'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], { cwd: projectPath });
   await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: projectPath });
@@ -305,7 +316,11 @@ afterEach(async () => {
 });
 
 /** Opens a real terminal over the wire, mirroring `node-daemon-permission-policy.test.ts`'s identical helper, returning everything a burst test needs. */
-async function openRealTerminal(): Promise<{ sessionId: string; key: CryptoKey; terminalId: string }> {
+async function openRealTerminal(): Promise<{
+  sessionId: string;
+  key: CryptoKey;
+  terminalId: string;
+}> {
   const amk = generateAmk();
   const accountId = 'acct-terminal-backpressure';
 
@@ -345,9 +360,7 @@ async function openRealTerminal(): Promise<{ sessionId: string; key: CryptoKey; 
     requestId: 'req-open-burst',
     envelope: openEnvelope,
   });
-  await phone.waitFor(
-    (m) => m.type === 'terminal_opened' && m.requestId === 'req-open-burst',
-  );
+  await phone.waitFor((m) => m.type === 'terminal_opened' && m.requestId === 'req-open-burst');
 
   return { sessionId: session.id, key, terminalId };
 }
@@ -358,8 +371,18 @@ async function typeIntoTerminal(
   key: CryptoKey,
   text: string,
 ): Promise<void> {
-  const envelope = await phoneSeal(sessionId, { data: toBase64(new TextEncoder().encode(text)) }, key);
-  phone!.send({ type: 'terminal_input', protocolVersion: PROTOCOL_V1, sessionId, terminalId, envelope });
+  const envelope = await phoneSeal(
+    sessionId,
+    { data: toBase64(new TextEncoder().encode(text)) },
+    key,
+  );
+  phone!.send({
+    type: 'terminal_input',
+    protocolVersion: PROTOCOL_V1,
+    sessionId,
+    terminalId,
+    envelope,
+  });
 }
 
 /** A hermetic bash `for` loop over builtins (`printf`, no per-line fork) that emits `count` uniquely-numbered lines fast, then one trailing done marker so a test can poll for real completion instead of guessing a duration. */
@@ -369,8 +392,8 @@ function burstCommand(count: number, doneMarker: string): string {
 
 /** Extracts the sorted, deduped set of line numbers actually present in `text` (from `burstCommand`'s own `L%05d-...` format). */
 function lineNumbersIn(text: string): number[] {
-  const numbers = [...text.matchAll(/L(\d{5})-0123456789012345678901234567890123456789/g)].map((m) =>
-    Number(m[1]),
+  const numbers = [...text.matchAll(/L(\d{5})-0123456789012345678901234567890123456789/g)].map(
+    (m) => Number(m[1]),
   );
   return [...new Set(numbers)].sort((a, b) => a - b);
 }
@@ -505,10 +528,7 @@ describe('a busy terminal never blocks a second terminal on the same session (SP
         requestId: 'req-open-fast',
         envelope: openEnvelope,
       });
-      await phone!.waitFor(
-        (m) =>
-          m.type === 'terminal_opened' && m.requestId === 'req-open-fast',
-      );
+      await phone!.waitFor((m) => m.type === 'terminal_opened' && m.requestId === 'req-open-fast');
       const openLatencyMs = Date.now() - openStart;
 
       await typeIntoTerminal(sessionId, secondTerminalId, key, 'echo second-terminal-alive\n');
