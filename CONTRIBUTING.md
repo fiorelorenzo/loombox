@@ -301,10 +301,28 @@ unofficial, faster sibling of this pipeline, not a replacement for it.
 
 ### Deploying to preview
 
-A second, fully isolated relay deployment for testing changes before they
-reach production — its own compose project, its own Postgres, its own
-GitHub OAuth App, sharing nothing with the pipeline above. Not part of the
-tag-triggered pipeline (it's a manual bring-up, not auto-deployed on every
-tag): see `docs/deploy-relay.md`'s "Preview environment" section for the
-full runbook, including the one step that's manual on purpose (GitHub
-OAuth Apps have no creation API).
+A second, fully isolated environment for testing changes before they reach
+production, at `preview.loombox.dev` / `preview-relay.loombox.dev`. The
+relay half (#864) is a manual bring-up, not auto-deployed - its own
+compose project, its own Postgres, its own GitHub OAuth App, sharing
+nothing with the pipeline above; see `docs/deploy-relay.md`'s "Preview
+environment" section for the full runbook, including the one step that's
+manual on purpose (GitHub OAuth Apps have no creation API).
+
+The web half (#865, epic #863) **is** auto-deployed, on every push to
+`main` (`.github/workflows/deploy-preview.yml`,
+`scripts/deploy-preview.sh`), deliberately a different promotion trigger
+than production's tag-cut pipeline above. `deploy/web/README.md`'s own
+"Preview environment" section has the full argument for why push-to-main
+won this over a `preview-*` tag/dispatch or a dedicated `preview` branch
+(the short version: the other two can silently drift from what main
+actually looks like, which is the one failure mode that makes a preview
+environment worthless), how the served commit stays provably matched to
+the artifact (the exact same `client/_app/version.json` health gate
+`deploy-prod.sh` uses), how it's visible in the app itself (Settings >
+Appearance's Build line), and how to roll it back by hand.
+
+`build-web.yml` is the one place both pipelines get the web bundle from -
+split out of `deploy-prod.yml` when this pipeline was added so there is
+exactly one job that knows how to build `@loombox/web`, not two that can
+drift apart.

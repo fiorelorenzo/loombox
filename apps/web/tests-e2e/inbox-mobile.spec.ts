@@ -1,4 +1,4 @@
-import type { PermissionResponse } from '@loombox/protocol';
+import { PROTOCOL_V1, type PermissionResponse } from '@loombox/protocol';
 import { expect, sendPermissionRequest, sendSessionUpdate, test } from './fixtures';
 
 /**
@@ -106,5 +106,68 @@ test.describe('Attention inbox at 390px (issue #167)', () => {
     await expect(page.getByTestId('inbox-page')).toHaveCount(0);
     await expect(tabbarInbox).not.toHaveClass(/active/);
     await expect(page.getByTestId('composer-input')).toBeVisible();
+  });
+
+  test('an awaiting_input row shows target-health context for an overloaded target, within the 390px viewport (issue #204)', async ({
+    page,
+    loombox,
+  }) => {
+    // Sent before `page.goto` (mirrors `seedTrackerMode`'s own "before the
+    // page can issue its first request" discipline): by the time
+    // `+page.svelte`'s target-status poll fires its very first
+    // `listTargets()` round trip, the relay's `TargetStore` already has
+    // this target and its overloaded reading recorded, so no race against
+    // the 10s poll interval is needed.
+    loombox.node.send({
+      type: 'target_announce',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'e2e-node-daemon',
+      targets: [{ id: 'local', kind: 'local', label: 'This machine', providers: ['claude'] }],
+    });
+    loombox.node.send({
+      type: 'target_status',
+      protocolVersion: PROTOCOL_V1,
+      nodeId: 'e2e-node-daemon',
+      samples: [
+        {
+          targetId: 'local',
+          cpuPercent: 96,
+          loadPercent: 96,
+          memPercent: 40,
+          memUsedBytes: 4_000_000_000,
+          memTotalBytes: 10_000_000_000,
+          diskPercent: 50,
+          diskUsedBytes: 50_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          healthy: true,
+          sampledAt: Date.now(),
+        },
+      ],
+    });
+
+    await page.goto('/');
+    await expect(page.getByTestId('composer-input')).toBeVisible();
+
+    await sendSessionUpdate(loombox.node, loombox.session, {
+      kind: 'session_status',
+      status: 'awaiting_input',
+      updatedAt: new Date().toISOString(),
+    });
+
+    const tabbarInbox = page.getByTestId('tabbar-inbox');
+    await expect(tabbarInbox.getByTestId('tabbar-inbox-count')).toHaveText('1');
+    await tabbarInbox.click();
+
+    const row = page.getByTestId('attention-inbox-item');
+    await expect(row).toHaveCount(1);
+    const note = row.getByTestId('attention-inbox-target-health');
+    await expect(note).toHaveText('target overloaded — load 96%');
+
+    // Same measured-not-guessed discipline as this file's own first test:
+    // the note must not push the row past the 390px viewport it renders in.
+    const rowBox = await row.boundingBox();
+    expect(rowBox).not.toBeNull();
+    expect(rowBox!.x).toBeGreaterThanOrEqual(0);
+    expect(rowBox!.x + rowBox!.width).toBeLessThanOrEqual(390);
   });
 });

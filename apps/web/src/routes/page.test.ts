@@ -14,6 +14,7 @@ import type {
   AcpMcpServerStatusEntry,
   AcpSessionStatus,
   PermissionQueueState,
+  TranscriptItem,
   TranscriptState,
 } from '@loombox/providers-core/browser';
 import type { SessionStatusV1 } from '@loombox/protocol';
@@ -40,6 +41,7 @@ import type {
   TargetListEntry,
 } from '$lib/relay-client';
 import type { StoredAuthSession } from '$lib/auth-store';
+import { TOOL_CALL_BURST_THRESHOLD } from '$lib/transcript/tool-call-bursts';
 import type * as AuthStoreModule from '$lib/auth-store';
 import type * as RelayClientModule from '$lib/relay-client';
 
@@ -2402,8 +2404,22 @@ describe('transcript search (SPEC.md §7.19; issues #262/#263)', () => {
     };
   }
 
-  /** A long session: one needle message right at the start, then 600 unrelated tool calls — enough to push the needle well above the pinned-to-tail window issue #755's windowing mounts by default (the same order of magnitude `TranscriptTimeline.test.ts`'s own "brings a turn's edit into view" acceptance test uses). */
+  /** A long session: one needle message right at the start, then 600 unrelated tool calls — enough to push the needle well above the pinned-to-tail window issue #755's windowing mounts by default (the same order of magnitude `TranscriptTimeline.test.ts`'s own "brings a turn's edit into view" acceptance test uses). Grouped into `TOOL_CALL_BURST_THRESHOLD`-sized runs separated by a filler message: a single unbroken 600-call run would collapse into ONE tier-3 burst card (issue #202) and defeat this fixture's whole "many real mounted rows between here and the tail" premise. */
   function longTranscriptWithNeedle(): TranscriptState {
+    const filler: TranscriptItem[] = [];
+    for (let batch = 0; batch < 600 / TOOL_CALL_BURST_THRESHOLD; batch += 1) {
+      for (let i = 0; i < TOOL_CALL_BURST_THRESHOLD; i += 1) {
+        filler.push(readOnlyToolCall(`tc${batch}_${i}`));
+      }
+      filler.push({
+        type: 'message',
+        id: `fm${batch}`,
+        kind: 'agent_message_chunk',
+        turnId: 't1',
+        messageId: `fm${batch}`,
+        text: 'ok',
+      });
+    }
     return {
       ...createTranscriptState(),
       items: [
@@ -2415,7 +2431,7 @@ describe('transcript search (SPEC.md §7.19; issues #262/#263)', () => {
           messageId: 'm0',
           text: 'investigating the flaky-retry-needle regression in the payment worker',
         },
-        ...Array.from({ length: 600 }, (_, i) => readOnlyToolCall(`tc${i}`)),
+        ...filler,
       ],
     };
   }

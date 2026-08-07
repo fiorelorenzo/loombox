@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -128,14 +128,37 @@ describe('NodeIdentityStore', () => {
     }
   });
 
-  it('create() overwrites any existing identity at the same path with a fresh one', async () => {
+  it('create() refuses to overwrite an existing identity without an explicit replaceExisting flag (issue #876)', async () => {
     const store = new NodeIdentityStore({ stateDir, osKeyringBackendFactory: noOsKeyring });
     const first = await store.create();
-    const second = await store.create();
+
+    await expect(store.create()).rejects.toThrow(
+      /refusing to overwrite the identity already persisted/,
+    );
+    // The refused call must not have touched anything already on disk.
+    const reloaded = await store.load();
+    expect(reloaded!.publicKeyBase64).toBe(first.publicKeyBase64);
+  });
+
+  it('create({ replaceExisting: true }) overwrites an existing identity with a fresh one, backing up the previous file first', async () => {
+    const store = new NodeIdentityStore({ stateDir, osKeyringBackendFactory: noOsKeyring });
+    const first = await store.create();
+    const second = await store.create({ replaceExisting: true });
 
     expect(second.publicKeyBase64).not.toBe(first.publicKeyBase64);
     const reloaded = await store.load();
     expect(reloaded!.publicKeyBase64).toBe(second.publicKeyBase64);
+
+    const backupRaw = await readFile(path.join(stateDir, 'identity.json.bak'), 'utf8');
+    const backup = JSON.parse(backupRaw) as { publicKeyRaw: string };
+    expect(Buffer.from(backup.publicKeyRaw, 'base64').toString('base64')).toBe(
+      Buffer.from(first.publicKeyRaw).toString('base64'),
+    );
+  });
+
+  it('loadOrCreate() never refuses on a fresh stateDir (its own load() already confirmed nothing is there to protect)', async () => {
+    const store = new NodeIdentityStore({ stateDir, osKeyringBackendFactory: noOsKeyring });
+    await expect(store.loadOrCreate()).resolves.toBeDefined();
   });
 
   describe('issue #118: OS-native keyring backend', () => {

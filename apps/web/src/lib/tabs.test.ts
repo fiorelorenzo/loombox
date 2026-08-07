@@ -69,7 +69,7 @@ describe('CanvasTabsState: opening/activating file tabs', () => {
   it('open() on an already-open path activates the existing tab instead of duplicating it — the shared tab model across every entry point', () => {
     const tabs = new CanvasTabsState();
     tabs.open('src/foo.ts', []);
-    tabs.setViewer('src/foo.ts', { status: 'loaded', content: 'x', truncated: false });
+    tabs.setViewer('src/foo.ts', { status: 'loaded', content: 'x', truncated: false, hash: 'h1' });
     tabs.activate('transcript', []);
     expect(tabs.activeId).toBe('transcript');
 
@@ -81,6 +81,7 @@ describe('CanvasTabsState: opening/activating file tabs', () => {
       status: 'loaded',
       content: 'x',
       truncated: false,
+      hash: 'h1',
     });
   });
 

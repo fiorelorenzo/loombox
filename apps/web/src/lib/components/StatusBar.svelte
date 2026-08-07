@@ -40,7 +40,11 @@
    * one just because both cases happen to carry `undefined` upstream (see
    * `hasSelectedSession`'s own doc comment below).
    */
-  import { CONTEXT_NEAR_LIMIT_THRESHOLD, type UsageRecord } from '@loombox/providers-core/browser';
+  import {
+    CONTEXT_NEAR_LIMIT_THRESHOLD,
+    contextFillPercent,
+    type UsageRecord,
+  } from '@loombox/providers-core/browser';
   import type { SessionStatusV1 } from '@loombox/protocol';
   import type { ConnectionStatus } from '$lib/relay-client';
   import { SESSION_STATUS_TONES, sessionStatusLabelWithReason } from '$lib/session-status';
@@ -194,11 +198,7 @@
   // subagent-attributed update), and `cumulativeCostUsd` is the session's
   // running total, never summed here.
   // ------------------------------------------------------------------
-  const contextPercent = $derived(
-    usage && usage.tokensUsed !== undefined && usage.contextWindow
-      ? Math.min(100, Math.round((usage.tokensUsed / usage.contextWindow) * 100))
-      : undefined,
-  );
+  const contextPercent = $derived(contextFillPercent(usage));
 
   const contextTokens = $derived(
     contextPercent !== undefined && usage?.tokensUsed !== undefined && usage.contextWindow

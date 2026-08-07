@@ -1,11 +1,19 @@
 import { execFile } from 'node:child_process';
 import {
+  createHash,
   generateKeyPairSync,
   sign as cryptoSign,
   type KeyObject,
   type webcrypto,
 } from 'node:crypto';
-import { mkdir as fsMkdir, mkdtemp, rm, stat, writeFile as fsWriteFile } from 'node:fs/promises';
+import {
+  mkdir as fsMkdir,
+  mkdtemp,
+  readFile as fsReadFile,
+  rm,
+  stat,
+  writeFile as fsWriteFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path, { join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2149,12 +2157,14 @@ describe('NodeDaemon fs-read (read-only file viewer, issue #737)', () => {
       path?: string;
       content?: string;
       truncated?: boolean;
+      hash?: string;
     }>(session.id, response.envelope, key);
     expect(payload).toEqual({
       outcome: 'ok',
       path: 'src/index.ts',
       content: 'export {};\n',
       truncated: false,
+      hash: expect.any(String),
     });
   });
 
@@ -2312,6 +2322,339 @@ describe('NodeDaemon fs-read (read-only file viewer, issue #737)', () => {
     expect(payload.outcome).toBe('ok');
     expect(payload.truncated).toBe(true);
     expect(payload.content).toHaveLength(1_000_000);
+  });
+});
+
+describe('NodeDaemon fs-write (integrated editor, issue #205)', () => {
+  it("saves a local session's file content over the encrypted fs_write_request/fs_write_response pair, landing on disk", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-local';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-write-1',
+      deviceId: 'device-node-fs-write-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    await fsMkdir(pathJoin(session.worktreePath, 'src'));
+    await fsWriteFile(pathJoin(session.worktreePath, 'src', 'index.ts'), 'export {};\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-write-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    // Read first, exactly like the editor does, to get the real baseHash.
+    const readEnvelope = await phoneSeal(session.id, { path: 'src/index.ts' }, key);
+    phone.send({
+      type: 'fs_read_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-read-before-write',
+      envelope: readEnvelope,
+    });
+    const readResponse = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_read_response' &&
+        (m as { requestId?: string }).requestId === 'req-read-before-write',
+    )) as { type: 'fs_read_response'; envelope: EncryptedEnvelope };
+    const readPayload = await phoneOpen<{ outcome: string; hash?: string }>(
+      session.id,
+      readResponse.envelope,
+      key,
+    );
+    expect(readPayload.outcome).toBe('ok');
+    const baseHash = readPayload.hash!;
+
+    const writeEnvelope = await phoneSeal(
+      session.id,
+      { path: 'src/index.ts', content: 'export const x = 1;\n', baseHash },
+      key,
+    );
+    assertOpaque(writeEnvelope, ['export const x = 1;', session.worktreePath]);
+    phone.send({
+      type: 'fs_write_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-write',
+      envelope: writeEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_write_response' && (m as { requestId?: string }).requestId === 'req-write',
+    )) as { type: 'fs_write_response'; envelope: EncryptedEnvelope };
+    assertOpaque(response.envelope, ['export const x = 1;', session.worktreePath]);
+    const payload = await phoneOpen<{ outcome: string; path?: string; hash?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('ok');
+    expect(payload.path).toBe('src/index.ts');
+    expect(payload.hash).toEqual(expect.any(String));
+    expect(payload.hash).not.toBe(baseHash);
+
+    const onDisk = await fsReadFile(pathJoin(session.worktreePath, 'src', 'index.ts'), 'utf8');
+    expect(onDisk).toBe('export const x = 1;\n');
+  });
+
+  it("never overwrites blindly: refuses with a conflict outcome when the file changed underneath the edit (e.g. the session's own agent editing it mid-turn), leaving the on-disk change untouched", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-conflict';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-write-2',
+      deviceId: 'device-node-fs-write-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const filePath = pathJoin(session.worktreePath, 'notes.md');
+    await fsWriteFile(filePath, 'original\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-write-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    // The editor opened the file at this hash...
+    const staleHash = createHash('sha256').update('original\n', 'utf8').digest('hex');
+    // ...but something else (here: standing in for the session's own agent
+    // mid-turn) edits the real file on disk before the save lands.
+    await fsWriteFile(filePath, 'changed underneath\n');
+
+    const writeEnvelope = await phoneSeal(
+      session.id,
+      { path: 'notes.md', content: 'my stale edit\n', baseHash: staleHash },
+      key,
+    );
+    phone.send({
+      type: 'fs_write_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-conflict',
+      envelope: writeEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_write_response' &&
+        (m as { requestId?: string }).requestId === 'req-conflict',
+    )) as { type: 'fs_write_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{
+      outcome: string;
+      path?: string;
+      current?: { content: string; hash: string; truncated: boolean } | null;
+    }>(session.id, response.envelope, key);
+    expect(payload.outcome).toBe('conflict');
+    expect(payload.path).toBe('notes.md');
+    expect(payload.current?.content).toBe('changed underneath\n');
+
+    const onDisk = await fsReadFile(filePath, 'utf8');
+    expect(onDisk).toBe('changed underneath\n');
+  });
+
+  it('reports current: null when the file was deleted underneath the edit', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-deleted';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-write-3',
+      deviceId: 'device-node-fs-write-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const filePath = pathJoin(session.worktreePath, 'gone.md');
+    await fsWriteFile(filePath, 'original\n');
+    const staleHash = createHash('sha256').update('original\n', 'utf8').digest('hex');
+    await rm(filePath);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-write-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const writeEnvelope = await phoneSeal(
+      session.id,
+      { path: 'gone.md', content: 'my edit\n', baseHash: staleHash },
+      key,
+    );
+    phone.send({
+      type: 'fs_write_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-deleted',
+      envelope: writeEnvelope,
+    });
+
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_write_response' && (m as { requestId?: string }).requestId === 'req-deleted',
+    )) as { type: 'fs_write_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; current?: unknown }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('conflict');
+    expect(payload.current).toBeNull();
+  });
+
+  it('refuses a path that escapes the session project root, replying with an error outcome instead of writing anywhere', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-traversal';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-write-4',
+      deviceId: 'device-node-fs-write-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-write-4',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    for (const evilPath of ['../../../etc/passwd', '/etc/passwd']) {
+      const envelope = await phoneSeal(
+        session.id,
+        { path: evilPath, content: 'pwned', baseHash: null },
+        key,
+      );
+      const requestId = `req-evil-write-${evilPath}`;
+      phone.send({
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: session.id,
+        targetId: 'local',
+        requestId,
+        envelope,
+      });
+      const response = (await phone.waitFor(
+        (m) =>
+          m.type === 'fs_write_response' && (m as { requestId?: string }).requestId === requestId,
+      )) as { type: 'fs_write_response'; envelope: EncryptedEnvelope };
+      const payload = await phoneOpen<{ outcome: string; message?: string }>(
+        session.id,
+        response.envelope,
+        key,
+      );
+      expect(payload.outcome).toBe('error');
+    }
+  });
+
+  it("refuses content past the editor's own save byte cap, replying with an error outcome instead of writing a truncated file", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-fs-write-oversize';
+
+    node = createNode({
+      relayUrl: relay.url,
+      stateDir: nodeStateDir,
+      nodeId: 'node-fs-write-5',
+      deviceId: 'device-node-fs-write-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+      accountId,
+      amk,
+      supervisor: new AgentSupervisor({ providers: [echoProvider()] }),
+    });
+
+    const session = await node.createSession({ projectPath, provider: 'test-echo' });
+    const key = await derivePhoneSessionKey(amk, accountId, session.id);
+    const filePath = pathJoin(session.worktreePath, 'huge.txt');
+    await fsWriteFile(filePath, 'small\n');
+
+    phone = new TestPhone(relay.url, {
+      deviceId: 'device-phone-fs-write-5',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await phone.ready;
+    phone.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId: session.id });
+    await phone.waitFor((m) => m.type === 'session_announce');
+
+    const huge = 'x'.repeat(1_000_010);
+    const envelope = await phoneSeal(
+      session.id,
+      { path: 'huge.txt', content: huge, baseHash: null },
+      key,
+    );
+    phone.send({
+      type: 'fs_write_request',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      targetId: 'local',
+      requestId: 'req-oversize',
+      envelope,
+    });
+    const response = (await phone.waitFor(
+      (m) =>
+        m.type === 'fs_write_response' &&
+        (m as { requestId?: string }).requestId === 'req-oversize',
+    )) as { type: 'fs_write_response'; envelope: EncryptedEnvelope };
+    const payload = await phoneOpen<{ outcome: string; message?: string }>(
+      session.id,
+      response.envelope,
+      key,
+    );
+    expect(payload.outcome).toBe('error');
+
+    const onDisk = await fsReadFile(filePath, 'utf8');
+    expect(onDisk).toBe('small\n');
   });
 });
 

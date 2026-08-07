@@ -7,7 +7,14 @@ import {
   agentInstructionsSetRequest,
   agentInstructionsSetResponse,
 } from './agent-instructions';
-import { fsListRequest, fsListResponse, fsReadRequest, fsReadResponse } from './fs';
+import {
+  fsListRequest,
+  fsListResponse,
+  fsReadRequest,
+  fsReadResponse,
+  fsWriteRequest,
+  fsWriteResponse,
+} from './fs';
 import { gitDiffRequest, gitDiffResponse } from './git-diff';
 import { gitGraphRequest, gitGraphResponse } from './git-graph';
 import {
@@ -234,6 +241,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   mcpPromptGetResponse,
   fsReadRequest,
   fsReadResponse,
+  fsWriteRequest,
+  fsWriteResponse,
   targetFsListRequest,
   targetFsListResponse,
   customAgentProbeRequest,

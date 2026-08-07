@@ -177,13 +177,21 @@ export type FsReadRequestPayloadV1 = z.infer<typeof fsReadRequestPayloadV1>;
  * `true` when the node cut the file off at its own size cap
  * (`NodeDaemon`'s `MAX_FS_READ_BYTES`) — the viewer renders what it got
  * plus a visible "truncated" notice, never a silently incomplete file
- * that reads as whole.
+ * that reads as whole. `hash` is this file's own optimistic-concurrency
+ * token (issue #205's integrated editor; the same sha256-over-exact-
+ * bytes shape `agent-instructions.ts`'s `AgentInstructionsFileStateV1`
+ * already carries, computed over the FULL untruncated content even when
+ * `truncated` is `true` — a save always compares against the real file,
+ * never the possibly-partial slice the viewer rendered). The read-only
+ * viewer simply ignores this field; the editor forwards it back as
+ * `fs_write_request`'s own `baseHash`.
  */
 export const fsReadResultV1 = z.object({
   outcome: z.literal('ok'),
   path: z.string(),
   content: z.string(),
   truncated: z.boolean(),
+  hash: z.string().min(1),
 });
 export type FsReadResultV1 = z.infer<typeof fsReadResultV1>;
 
@@ -262,3 +270,137 @@ export const fsReadResponse = z.object({
   envelope: encryptedEnvelope,
 });
 export type FsReadResponse = z.infer<typeof fsReadResponse>;
+
+/**
+ * The integrated editor's own wire pair (SPEC §7.4's "light quick-edit";
+ * issue #205) — `fs_read_request`/`fs_read_response`'s write-side
+ * sibling, and optimistic-concurrency shaped exactly like
+ * `agent_instructions_set_request`/`_response` (`agent-instructions.ts`):
+ * `baseHash` must equal `path`'s CURRENT hash (`fsReadResultV1`'s own
+ * `hash`, from whichever `fs_read_response` the edit started from) or
+ * the node refuses the write with `outcome: 'conflict'` instead of
+ * clobbering whatever changed underneath — another device, a human
+ * editing on disk, or the session's own agent mid-turn. Same crypto/
+ * routing boundary as `fs_read_request`/`fs_read_response` — sealed
+ * under the session's derived key, enveloped on BOTH sides since both
+ * carry real file content, routed to the owning node by `sessionId`
+ * alone, fanned back out to every subscribed client.
+ *
+ * Deliberately narrow, matching SPEC §11's "not a full IDE" boundary:
+ * a whole-file replace, never a patch/diff-apply, and no path outside
+ * the session's own project root (the node's `resolveSessionRelativePath`
+ * guard — `fs_read_request`'s identical traversal refusal).
+ */
+
+/**
+ * The plaintext an `fs_write_request` envelope decrypts to: the file to
+ * save (relative to the session's project root, same traversal guard as
+ * `fs_read_request`'s `path`), its new full content, and the hash the
+ * edit started from (`null` only means "I have no prior read to compare
+ * against" — the editor never actually sends `null` today, since it only
+ * ever opens a file it just read via `fs_read_request`; a future "create
+ * a new file" entry point would).
+ */
+export const fsWriteRequestPayloadV1 = z.object({
+  path: z.string(),
+  content: z.string(),
+  baseHash: z.string().min(1).nullable(),
+});
+export type FsWriteRequestPayloadV1 = z.infer<typeof fsWriteRequestPayloadV1>;
+
+/** The successful outcome: the write applied. `hash` is the new post-write hash — a caller uses it as the next `baseHash`, exactly like `fsReadResultV1`'s own. */
+export const fsWriteResultV1 = z.object({
+  outcome: z.literal('ok'),
+  path: z.string(),
+  hash: z.string().min(1),
+});
+export type FsWriteResultV1 = z.infer<typeof fsWriteResultV1>;
+
+/**
+ * The file changed underneath this write (or was deleted) — `baseHash`
+ * no longer matches what's actually on disk. `current` is what is on
+ * disk RIGHT NOW (capped/truncated exactly like `fsReadResultV1`, so a
+ * huge on-disk file can't blow up this response either), `null` if
+ * `path` no longer exists at all. Never applied — this outcome IS the
+ * "never overwrite blindly" contract, not a failure.
+ */
+export const fsWriteConflictV1 = z.object({
+  outcome: z.literal('conflict'),
+  path: z.string(),
+  current: z
+    .object({ content: z.string(), hash: z.string().min(1), truncated: z.boolean() })
+    .nullable(),
+});
+export type FsWriteConflictV1 = z.infer<typeof fsWriteConflictV1>;
+
+/** A failed write (path traversal refused, a directory, content over the node's own write byte cap, a permission error, an `ssh:` transport failure, ...) — distinct from `'conflict'`, which is a legitimate business outcome, not a failure. */
+export const fsWriteErrorV1 = z.object({
+  outcome: z.literal('error'),
+  path: z.string(),
+  message: z.string().min(1),
+});
+export type FsWriteErrorV1 = z.infer<typeof fsWriteErrorV1>;
+
+/** The plaintext an `fs_write_response` envelope decrypts to. */
+export const fsWriteResponsePayloadV1 = z.discriminatedUnion('outcome', [
+  fsWriteResultV1,
+  fsWriteConflictV1,
+  fsWriteErrorV1,
+]);
+export type FsWriteResponsePayloadV1 = z.infer<typeof fsWriteResponsePayloadV1>;
+
+/** Parses and validates a decrypted `fs_write_request` payload, throwing on an invalid one. */
+export function parseFsWriteRequestPayloadV1(data: unknown): FsWriteRequestPayloadV1 {
+  return fsWriteRequestPayloadV1.parse(data);
+}
+
+/** Same as {@link parseFsWriteRequestPayloadV1} but never throws; returns zod's result. */
+export function safeParseFsWriteRequestPayloadV1(
+  data: unknown,
+): z.SafeParseReturnType<unknown, FsWriteRequestPayloadV1> {
+  return fsWriteRequestPayloadV1.safeParse(data);
+}
+
+/** Parses and validates a decrypted `fs_write_response` payload, throwing on an invalid one. */
+export function parseFsWriteResponsePayloadV1(data: unknown): FsWriteResponsePayloadV1 {
+  return fsWriteResponsePayloadV1.parse(data);
+}
+
+/** Same as {@link parseFsWriteResponsePayloadV1} but never throws; returns zod's result. */
+export function safeParseFsWriteResponsePayloadV1(
+  data: unknown,
+): z.SafeParseReturnType<unknown, FsWriteResponsePayloadV1> {
+  return fsWriteResponsePayloadV1.safeParse(data);
+}
+
+/**
+ * A client asks the owning node to save one file inside one of its
+ * sessions' projects (issue #205). Routed exactly like `fs_read_request`
+ * (`relay.ts`'s `routeToOwningNode`) — `sessionId` alone is enough to
+ * find the owning node; `targetId` rides along as clear routing
+ * metadata too, same convention.
+ */
+export const fsWriteRequest = z.object({
+  type: z.literal('fs_write_request'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  sessionId: z.string().min(1),
+  targetId: z.string().min(1),
+  requestId: z.string().min(1),
+  envelope: encryptedEnvelope,
+});
+export type FsWriteRequest = z.infer<typeof fsWriteRequest>;
+
+/**
+ * The owning node's reply. Fanned out to a session's subscribed clients
+ * exactly like `fs_read_response` — a requesting client filters on
+ * `requestId` to match its own pending request; any other subscribed
+ * client simply has no pending request with that id.
+ */
+export const fsWriteResponse = z.object({
+  type: z.literal('fs_write_response'),
+  protocolVersion: z.literal(PROTOCOL_V1),
+  sessionId: z.string().min(1),
+  requestId: z.string().min(1),
+  envelope: encryptedEnvelope,
+});
+export type FsWriteResponse = z.infer<typeof fsWriteResponse>;

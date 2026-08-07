@@ -31,6 +31,8 @@ import {
   type FsListResponse,
   type FsReadRequest,
   type FsReadResponse,
+  type FsWriteRequest,
+  type FsWriteResponse,
   type GitCommitDraftRequest,
   type GitCommitDraftResponse,
   type GitCommitRequest,
@@ -1663,6 +1665,117 @@ describe('relay v1', () => {
       send(node, response);
 
       const received = (await nextMessage(client)) as unknown as FsReadResponse;
+      expect(received).toEqual(response);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+      );
+    });
+  });
+
+  describe('fs_write_request/fs_write_response (issue #205) — routed and fanned out exactly like fs_read_request/fs_read_response, always blind, envelope on both request and response', () => {
+    it('routes a client fs_write_request to the node owning that session, byte-for-byte, never inspecting the envelope', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_write', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      const request: FsWriteRequest = {
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_write',
+        targetId: 'target_1',
+        requestId: 'req_1',
+        envelope: fakeEnvelope('src/index.ts'),
+      };
+      send(client, request);
+
+      const received = (await nextMessage(node)) as unknown as FsWriteRequest;
+      expect(received).toEqual(request);
+      expect(Object.keys(received).sort()).toEqual(
+        ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'targetId', 'type'].sort(),
+      );
+    });
+
+    it('ignores an fs_write_request for an unknown session instead of throwing', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'fs_write_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_nonexistent',
+        targetId: 'target_1',
+        requestId: 'req_orphan',
+        envelope: fakeEnvelope('some-path'),
+      } satisfies FsWriteRequest);
+
+      send(client, { type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+      const list = (await nextMessage(client)) as unknown as SessionListV1;
+      expect(list.type).toBe('session_list');
+    });
+
+    it("fans fs_write_response out to the session's subscribed client, byte-for-byte, never inspecting the envelope", async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { socket: node } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'node-device',
+        authToken: 'acct_1',
+      });
+      const meta = makeSessionMeta({ id: 'sess_fs_write_reply', accountId: 'acct_1' });
+      send(node, {
+        type: 'session_announce',
+        protocolVersion: PROTOCOL_V1,
+        session: meta,
+        privateEnvelope: fakeEnvelope('title'),
+      } satisfies SessionAnnounceV1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { socket: client } = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-device',
+        authToken: 'acct_1',
+      });
+      send(client, {
+        type: 'session_resume',
+        sessionId: 'sess_fs_write_reply',
+        protocolVersion: PROTOCOL_V1,
+      } satisfies SessionResume);
+      await nextMessage(client); // the session_announce reply from resume
+
+      const response: FsWriteResponse = {
+        type: 'fs_write_response',
+        protocolVersion: PROTOCOL_V1,
+        sessionId: 'sess_fs_write_reply',
+        requestId: 'req_2',
+        envelope: fakeEnvelope('{"outcome":"ok"}'),
+      };
+      send(node, response);
+
+      const received = (await nextMessage(client)) as unknown as FsWriteResponse;
       expect(received).toEqual(response);
       expect(Object.keys(received).sort()).toEqual(
         ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
