@@ -80,10 +80,11 @@ export function turnDiffSummary(
 export function latestTurnId(items: readonly TranscriptItem[]): string | undefined {
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const item = items[i]!;
-    // A resync gap (issue #729) carries no `turnId` of its own — treated
-    // exactly like a malformed tool call missing one: keep looking
-    // backward rather than stopping here.
-    const turnId = item.type === 'gap' ? undefined : item.turnId;
+    // A resync gap (issue #729) or a revival boundary marker (issue #706/
+    // #912) carries no `turnId` of its own — treated exactly like a
+    // malformed tool call missing one: keep looking backward rather than
+    // stopping here.
+    const turnId = item.type === 'message' || item.type === 'tool_call' ? item.turnId : undefined;
     if (turnId !== undefined) return turnId;
   }
   return undefined;

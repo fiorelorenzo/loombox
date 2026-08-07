@@ -197,6 +197,8 @@ export type {
   PermissionDecision,
   PermissionRequest,
   PermissionResponse,
+  PromptInjectResult,
+  PromptInjectSendResult,
   PromptInjectV1,
 } from './steering';
 export {
@@ -206,6 +208,8 @@ export {
   permissionDecision,
   permissionRequest,
   permissionResponse,
+  promptInjectResult,
+  promptInjectSendResult,
   promptInjectV1,
 } from './steering';
 
@@ -1413,6 +1417,7 @@ import {
   permissionDecision,
   permissionRequest,
   permissionResponse,
+  promptInjectResult,
   promptInjectV1,
 } from './steering';
 import {
@@ -1811,6 +1816,7 @@ export const schemasV1 = {
   mcpServerPromptsEntryV1,
   mcpServerPromptsEventV1,
   promptInjectV1,
+  promptInjectResult,
   permissionDecision,
   permissionRequest,
   permissionResponse,

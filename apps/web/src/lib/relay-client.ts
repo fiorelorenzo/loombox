@@ -184,6 +184,7 @@ import {
   type PrOpenPreviewResult,
   type PrOpenRequestPayloadV1,
   type PrOpenResult,
+  type PromptInjectResult,
   type ProvisionProgress,
   type ProvisionTargetHostInputV1,
   type ProvisionTargetResult,
@@ -805,6 +806,25 @@ export interface PermissionStaleNotice {
  */
 export interface ConfigOptionErrorNotice {
   readonly category: string;
+  readonly message: string;
+  readonly at: number;
+}
+
+/**
+ * A `prompt_inject` this client sent got `outcome: 'error'` back (issue
+ * #706/#912) — carries the node's own reason a prompt could not be
+ * delivered: a `'disconnected'` session's revival attempt failed, it is
+ * `'paused'` on a spend cap, or it has already `'ended'`. `message` is a
+ * node-side outcome string, never prompt content — same clear-not-
+ * encrypted boundary `PromptInjectResult`'s own wire schema doc comment
+ * describes. One slot per session, overwritten by the latest attempt,
+ * same "latest wins, no queue" shape as {@link ConfigOptionErrorNotice}.
+ * `promptId` lets a consumer correlate the notice back to the specific
+ * send it answers, though most UIs (this client's own composer) only
+ * ever need `message`.
+ */
+export interface PromptInjectErrorNotice {
+  readonly promptId: string;
   readonly message: string;
   readonly at: number;
 }
@@ -1494,6 +1514,13 @@ export class RelayClient {
   >();
   /** Categories with an outstanding `config_option` this client itself sent, per session (issue #718) — {@link handleConfigOptionResult}'s "is this reply to my own request" guard, the `category`-keyed counterpart of {@link pendingFsListRequests}'s `requestId`-keyed one (`config_option` carries no request id — see that schema's own doc comment for why category alone is the correlation key). */
   private readonly pendingConfigOptions = new Map<string, Set<string>>();
+  /** Backs {@link promptInjectErrorFor} (issue #706/#912) — one slot per session, overwritten by the latest failed `prompt_inject`, same shape as {@link staleNotices}. */
+  private readonly promptInjectErrors = new Map<
+    string,
+    Writable<PromptInjectErrorNotice | undefined>
+  >();
+  /** The `promptId` this client itself most recently dispatched for a session, still awaiting either a `prompt_inject_result` or being superseded by the next dispatch (issue #706/#912) — {@link handlePromptInjectResult}'s "is this reply to my own send" guard. A plain `Map<sessionId, promptId>`, not a `Set`, because this client's own send gating ({@link sendPrompt}'s `turnActive`/`alreadyQueued` check) already ensures at most one of THIS client's own prompts is ever in flight per session at a time — the same single-slot reasoning `pendingConfigOptions` needs a `Set` for (several categories can be mid-flight at once) simply doesn't apply here. */
+  private readonly pendingPromptInjects = new Map<string, string>();
   private readonly subscribed = new Set<string>();
   /** Backs {@link retrySessionResume}'s pending retry timer, one per session currently mid-retry (issue #730) — cleared the moment `handleSessionAnnounce` acks the subscribe, or on {@link close}. */
   private readonly pendingSessionResumeRetries = new Map<string, TimerHandle>();
@@ -4793,6 +4820,20 @@ export class RelayClient {
   }
 
   /**
+   * A `prompt_inject` this client itself sent that came back
+   * `outcome: 'error'` (issue #706/#912) — the disconnected-session-
+   * composer counterpart of {@link configOptionErrorFor}. Carries the
+   * node's own reason ({@link PromptInjectErrorNotice.message}), e.g.
+   * this session's revival failed, or it's paused on a spend cap, so the
+   * composer can show why the message did not land instead of it just
+   * silently vanishing. Overwritten by the next failed send for this
+   * session, not accumulated.
+   */
+  promptInjectErrorFor(sessionId: string): Readable<PromptInjectErrorNotice | undefined> {
+    return this.promptInjectErrorStoreFor(sessionId);
+  }
+
+  /**
    * The read-only file-tree panel's live state for one session (SPEC §7.4;
    * issue #171): a `Map` from directory path (relative to the session's
    * project root, `''` for the root) to that directory's
@@ -5893,10 +5934,17 @@ export class RelayClient {
    * transcript update, the real encrypt-and-send, marking this session's
    * turn active again (so a prompt queued right behind this one waits its
    * own turn), and — idempotently, a no-op if `item` was never queued —
-   * removing it from the local queue and the persisted outbox.
+   * removing it from the local queue and the persisted outbox. Also
+   * records `item.id` as {@link pendingPromptInjects}' entry for this
+   * session (issue #706/#912) — overwriting whatever was there, since a
+   * fresh dispatch always supersedes an earlier one this client's own
+   * single-flight gating already ensured has settled — so
+   * {@link handlePromptInjectResult} can later tell a real reply to THIS
+   * send apart from a sibling device's own.
    */
   private dispatchPrompt(item: QueuedPrompt): void {
     this.removeFromQueue(item.sessionId, item.id);
+    this.pendingPromptInjects.set(item.sessionId, item.id);
     this.applyUpdate(item.sessionId, {
       kind: 'user_message_chunk',
       turnId: item.id,
@@ -6509,6 +6557,51 @@ export class RelayClient {
     store.set({ category: message.category, message: message.result.message, at: Date.now() });
   }
 
+  private promptInjectErrorStoreFor(
+    sessionId: string,
+  ): Writable<PromptInjectErrorNotice | undefined> {
+    let store = this.promptInjectErrors.get(sessionId);
+    if (!store) {
+      store = writable<PromptInjectErrorNotice | undefined>(undefined);
+      this.promptInjectErrors.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /**
+   * The owning node's reply to one of this client's own `prompt_inject`
+   * sends (issue #706/#912). Fanned out to every client subscribed to the
+   * session, not addressed to the sender alone (`prompt_inject_result`'s
+   * own wire doc comment) — `promptId` not matching
+   * {@link pendingPromptInjects}' entry for this session means this reply
+   * is to a sibling device's own send (or one this client already
+   * dispatched a later prompt past), same "not pending means it isn't
+   * mine" guard {@link handleConfigOptionResult} applies via `category`.
+   *
+   * `outcome: 'ok'` clears the slot and publishes nothing — there is
+   * nothing to show for a delivery that worked. `outcome: 'error'`
+   * publishes a {@link PromptInjectErrorNotice} carrying the node's own
+   * reason, AND settles this client's turn-active idle gate right now
+   * (`settleTurnNow`, the exact "free to flush immediately instead of
+   * waiting out `turnIdleMs`" precedent {@link interruptTurn}'s own doc
+   * comment already established) — a definitive failure means no real
+   * turn is ever coming, so a retry the user sends right after reading
+   * the error must not still sit queued behind a turn that never started.
+   */
+  private handlePromptInjectResult(message: PromptInjectResult): void {
+    const pendingId = this.pendingPromptInjects.get(message.sessionId);
+    if (pendingId !== message.promptId) return;
+    this.pendingPromptInjects.delete(message.sessionId);
+
+    if (message.result.outcome === 'ok') return;
+    this.promptInjectErrorStoreFor(message.sessionId).set({
+      promptId: message.promptId,
+      message: message.result.message,
+      at: Date.now(),
+    });
+    this.settleTurnNow(message.sessionId);
+  }
+
   /**
    * The cross-device half of issue #131's stale-discard rule. v1's relay
    * never broadcasts a `permission_response` to sibling clients (only to
@@ -6586,6 +6679,9 @@ export class RelayClient {
         return;
       case 'config_option_result':
         this.handleConfigOptionResult(message);
+        return;
+      case 'prompt_inject_result':
+        this.handlePromptInjectResult(message);
         return;
       case 'fs_list_response':
         this.handleFsListResponse(message);

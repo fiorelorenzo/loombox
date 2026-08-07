@@ -69,22 +69,35 @@ export interface Session {
  * It is deliberately not `'ended'` — the session is still real (its
  * worktree/branch are still on disk, its row still belongs on the board)
  * and still needs to be listable and archivable so that worktree can
- * finally be cleaned up (the whole point of #515); it just cannot be
- * `pause`d/`resume`d back into life, since there is no agent behind it to
- * pause or resume — the only legal transition out of it is `end`, exactly
- * like `'ended'` itself already has none. A record already saved as
- * `'ended'` stays `'ended'` on reload: that state was already honest
- * regardless of the process that wrote it. See {@link assertValidTransition}
- * for the full transition table.
+ * finally be cleaned up (the whole point of #515). For a while its only
+ * legal transition out was `end`, exactly like `'ended'` itself — it
+ * could not be `pause`d/`resume`d back into life, since there was no
+ * agent behind it to pause or resume.
+ *
+ * Issue #706 adds the other legal way out: `revive`, back to `'running'`.
+ * Unlike `resume` (which only ever un-pauses an agent process that was
+ * alive the whole time), a revive is `NodeDaemon` spawning a genuinely
+ * NEW agent process into this session's still-on-disk worktree/branch —
+ * see `NodeDaemon.reviveSessionInternal`'s own doc comment for what that
+ * new process does and does not inherit from the one that died with the
+ * last node restart (the persisted transcript; never the old process's
+ * own conversational memory). `SessionManager` itself has no opinion on
+ * any of that — this transition only records that the attempt succeeded,
+ * exactly as coarse-grained as `createSession`'s own initial `'running'`
+ * already is.
+ *
+ * A record already saved as `'ended'` stays `'ended'` on reload: that
+ * state was already honest regardless of the process that wrote it. See
+ * {@link applyTransition} for the full transition table.
  */
 export type SessionLifecycleState = 'running' | 'paused' | 'ended' | 'disconnected';
 
-/** A lifecycle transition {@link SessionManager} rejects (e.g. resuming a session that was never paused, or any transition out of `'ended'`). */
+/** A lifecycle transition {@link SessionManager} rejects (e.g. resuming a session that was never paused, reviving one that isn't disconnected, or any transition out of `'ended'`). */
 export class InvalidSessionTransitionError extends Error {
   constructor(
     readonly sessionId: string,
     readonly from: SessionLifecycleState,
-    readonly action: 'pause' | 'resume' | 'end',
+    readonly action: 'pause' | 'resume' | 'end' | 'revive',
   ) {
     super(`SessionManager: cannot ${action} session ${sessionId}: it is currently "${from}"`);
     this.name = 'InvalidSessionTransitionError';
@@ -93,16 +106,16 @@ export class InvalidSessionTransitionError extends Error {
 
 const VALID_TRANSITIONS: Record<
   SessionLifecycleState,
-  Partial<Record<'pause' | 'resume' | 'end', SessionLifecycleState>>
+  Partial<Record<'pause' | 'resume' | 'end' | 'revive', SessionLifecycleState>>
 > = {
   running: { pause: 'paused', end: 'ended' },
   paused: { resume: 'running', end: 'ended' },
-  disconnected: { end: 'ended' },
+  disconnected: { end: 'ended', revive: 'running' },
   ended: {},
 };
 
 /** Validates and applies one lifecycle transition on `session` in place, or throws {@link InvalidSessionTransitionError}. The sole source of truth for which transitions are legal — see the module doc comment for the state diagram this encodes. */
-function applyTransition(session: Session, action: 'pause' | 'resume' | 'end'): void {
+function applyTransition(session: Session, action: 'pause' | 'resume' | 'end' | 'revive'): void {
   const next = VALID_TRANSITIONS[session.state][action];
   if (!next) {
     throw new InvalidSessionTransitionError(session.id, session.state, action);
@@ -554,6 +567,14 @@ export class SessionManager {
   resumeSession(id: string): Session {
     const session = this.requireSession(id);
     applyTransition(session, 'resume');
+    this.persist();
+    return session;
+  }
+
+  /** Transitions a `'disconnected'` session back to `'running'` (issue #706) — called once `NodeDaemon.reviveSessionInternal` has already actually spawned a new agent process for it, never before. Throws {@link InvalidSessionTransitionError} if it isn't currently `'disconnected'` (e.g. it's still live, already ended, or a second revive attempt raced this one and already won — see that method's own in-flight-coalescing doc comment for why the second case shouldn't normally reach here at all). */
+  reviveSession(id: string): Session {
+    const session = this.requireSession(id);
+    applyTransition(session, 'revive');
     this.persist();
     return session;
   }

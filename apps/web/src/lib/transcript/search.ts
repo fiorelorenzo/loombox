@@ -40,8 +40,10 @@ import type { TranscriptItem } from '@loombox/providers-core/browser';
  *     the tool's internal id).
  *   - Never searched: a tool call's `rawInput`/`content`/`diff.oldText`/
  *     `diff.newText` (arbitrary, often huge, non-prose payloads — see
- *     `ToolCallRow`'s own widgets for what actually renders them) and
- *     `gap` items (SPEC.md §7.16's resync marker; no text of their own).
+ *     `ToolCallRow`'s own widgets for what actually renders them),
+ *     `gap` items (SPEC.md §7.16's resync marker; no text of their own),
+ *     and `revival` items (issue #706/#912's revival boundary marker —
+ *     its own honesty disclosure, not user/agent prose worth matching).
  */
 export type TranscriptSearchField = 'message' | 'tool_title' | 'diff_path';
 
@@ -96,7 +98,7 @@ export function searchTranscript(
         pushOccurrences(matches, item.id, itemIndex, 'diff_path', item.diff.path, needle);
       }
     }
-    // `gap` items carry no searchable text — see the file doc comment.
+    // `gap`/`revival` items carry no searchable text — see the file doc comment.
   });
   return matches;
 }

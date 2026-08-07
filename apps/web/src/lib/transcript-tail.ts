@@ -49,11 +49,15 @@ export function transcriptTail(
   items: readonly TranscriptItem[],
   limit: number,
 ): TranscriptTailEntry[] {
-  // A resync gap (issue #729) has no speaker/text of its own — it never
-  // counts toward this preview, exactly like the "zero turns yet" empty
-  // case above: skip it rather than inventing a placeholder line for it.
+  // A resync gap (issue #729) or a revival boundary marker (issue #706/
+  // #912) has no speaker/text of its own — neither counts toward this
+  // preview, exactly like the "zero turns yet" empty case above: skip
+  // them rather than inventing a placeholder line for either.
   return items
-    .filter((item): item is TranscriptMessageItem | TranscriptToolCallItem => item.type !== 'gap')
+    .filter(
+      (item): item is TranscriptMessageItem | TranscriptToolCallItem =>
+        item.type === 'message' || item.type === 'tool_call',
+    )
     .slice(-limit)
     .map((item) =>
       item.type === 'message'

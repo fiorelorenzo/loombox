@@ -40,6 +40,7 @@
     type ConnectedAccount,
     type ConnectionStatus,
     type FileTreeDirectoryState,
+    type PromptInjectErrorNotice,
     type SnippetV1,
     type TargetListEntry,
   } from '$lib/relay-client';
@@ -1116,6 +1117,11 @@
   // Stale-approve/deny discard note for the selected session (SPEC §7.3;
   // issue #131) — `undefined` until one has happened.
   let staleNotice = $state<{ requestId: string; message: string } | undefined>(undefined);
+  // A prompt this client sent that came back `prompt_inject_result:
+  // {outcome: 'error'}` for the selected session (issue #706/#912) —
+  // `undefined` until one has happened, same "latest wins" shape as
+  // `staleNotice` above.
+  let promptInjectError = $state<PromptInjectErrorNotice | undefined>(undefined);
   // A plan's collapse state persists per session for as long as this tab
   // stays open (SPEC §7.24 "remembers collapse state during the session"),
   // keyed by session id so switching sessions and back preserves it.
@@ -1304,14 +1310,21 @@
    * #702's `'disconnected'`-only check (a session that survived a node
    * restart with no agent behind it, `session-manager.ts`'s
    * `SessionLifecycleState` doc comment) to every other `SessionStatusV1`
-   * that means the same thing for the composer: `'queued'`/`'starting'`
-   * (the agent hasn't spawned, or hasn't finished spawning, yet) and
-   * `'error'`/`'exited'` (the spawn failed, or the agent already
+   * that meant the same thing for the composer at the time: `'queued'`/
+   * `'starting'` (the agent hasn't spawned, or hasn't finished spawning,
+   * yet) and `'error'`/`'exited'` (the spawn failed, or the agent already
    * stopped). In every one of these a new prompt genuinely has nowhere to
-   * go (no agent process to hand it to, and `prompt_inject` has no reply
-   * channel to report that failure on), so the composer says so instead
-   * of looking ready and silently doing nothing — the same reasoning
-   * #702 already established, just for five states instead of one.
+   * go, so the composer says so instead of looking ready and silently
+   * doing nothing.
+   *
+   * `'disconnected'` itself moved back OUT of this list (issue #706/#912):
+   * sending into a disconnected session is no longer a dead end —
+   * `NodeDaemon.reviveSessionInternal` spawns a fresh agent process on
+   * demand the moment a prompt arrives, and `prompt_inject_result` (issue
+   * #706's new reply channel, `promptInjectErrorFor` below) reports back
+   * honestly if that revival fails. `'queued'`/`'starting'`/`'error'`/
+   * `'exited'` still belong here — none of those states has a revival
+   * path; the composer would still be handing a prompt to nothing.
    *
    * Deliberately does NOT include `undefined` (no `session_status` has
    * arrived yet): that is absence of information, not proof there is
@@ -1329,17 +1342,26 @@
    * the composer to match.
    */
   const selectedSessionAgentless = $derived(
-    selectedSessionStatus === 'disconnected' ||
-      selectedSessionStatus === 'queued' ||
+    selectedSessionStatus === 'queued' ||
       selectedSessionStatus === 'starting' ||
       selectedSessionStatus === 'error' ||
       selectedSessionStatus === 'exited',
   );
-  /** What the composer's disabled placeholder reads for {@link selectedSessionAgentless}'s current reason (issue #730) — `undefined` while a live agent could actually receive a prompt (including "status genuinely unknown"), so the composer keeps its ordinary placeholder. */
+  /**
+   * What the composer's placeholder reads for the current status (issue
+   * #730; issue #706/#912 for `'disconnected'`) — `undefined` while a live
+   * agent could actually receive a prompt with nothing worth flagging
+   * (including "status genuinely unknown"), so the composer keeps its
+   * ordinary placeholder. Every OTHER case here also feeds
+   * {@link selectedSessionAgentless}'s disabled-composer reason EXCEPT
+   * `'disconnected'`: that one is a hint on an otherwise-usable field, not
+   * a disable reason — sending genuinely works (it revives the agent), so
+   * this only sets honest expectations about what happens next.
+   */
   const composerUnavailableReason = $derived.by((): string | undefined => {
     switch (selectedSessionStatus) {
       case 'disconnected':
-        return "This session's agent isn't running — it disconnected when the node last restarted.";
+        return "Sending will restart this session's agent — it won't remember earlier turns.";
       case 'queued':
         return 'Waiting for a concurrency slot to free up before this session can start…';
       case 'starting':
@@ -1510,6 +1532,7 @@
   let unsubscribeQueuedPrompts: (() => void) | undefined;
   let unsubscribeAttentionInbox: (() => void) | undefined;
   let unsubscribeStaleNotice: (() => void) | undefined;
+  let unsubscribePromptInjectError: (() => void) | undefined;
   let unsubscribeFileTree: (() => void) | undefined;
   let unsubscribeRelayBuildIdentity: (() => void) | undefined;
   let unsubscribeViewState: (() => void) | undefined;
@@ -1652,6 +1675,7 @@
     unsubscribeAttachments?.();
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
+    unsubscribePromptInjectError?.();
     unsubscribeFileTree?.();
     unsubscribeViewState?.();
     transcript = undefined;
@@ -1665,6 +1689,7 @@
     attachments = [];
     queuedPrompts = [];
     staleNotice = undefined;
+    promptInjectError = undefined;
     fileTree = new Map();
     configControlsExpanded = false;
     // Issue #198: a new session starts with a clean canvas/composer, same
@@ -1708,6 +1733,9 @@
       .queuedPromptsFor(id)
       .subscribe((value) => (queuedPrompts = value));
     unsubscribeStaleNotice = client.staleNoticeFor(id).subscribe((value) => (staleNotice = value));
+    unsubscribePromptInjectError = client
+      .promptInjectErrorFor(id)
+      .subscribe((value) => (promptInjectError = value));
     // SPEC §7.4/issue #171: lazily loads the root directory the moment this
     // session is selected; deeper directories only load on an explicit
     // expand (file-tree panel click) or the @ mention picker's own bounded
@@ -2124,6 +2152,7 @@
     unsubscribeQueuedPrompts?.();
     unsubscribeAttentionInbox?.();
     unsubscribeStaleNotice?.();
+    unsubscribePromptInjectError?.();
     unsubscribeFileTree?.();
     unsubscribeRelayBuildIdentity?.();
     clearSessionStatusSubscriptions();
@@ -2142,6 +2171,7 @@
     queuedPrompts = [];
     attentionInboxItems = [];
     staleNotice = undefined;
+    promptInjectError = undefined;
     paletteOpen = false;
     fileTree = new Map();
     mentionPickerOpen = false;
@@ -4966,7 +4996,7 @@
                  just below, so the two surfaces never disagree. -->
               {#if selectedSessionAgentless}
                 <div class="workspace-notice" data-testid="session-agentless-notice">
-                  {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited' || selectedSessionStatus === 'disconnected'}
+                  {#if selectedSessionStatus === 'error' || selectedSessionStatus === 'exited'}
                     <ErrorNotice message={composerUnavailableReason ?? ''} />
                   {:else}
                     <Card elevation="raised" padding="sm">
@@ -5053,6 +5083,17 @@
                   <p class="stale-notice" role="status" data-testid="stale-permission-notice">
                     {staleNotice.message}
                   </p>
+                {/if}
+
+                <!-- Issue #706/#912: a prompt this client sent came back
+                   `prompt_inject_result: {outcome: 'error'}` — the
+                   revival-on-demand reply channel's one visible failure
+                   case (a revival attempt failed, or the session is
+                   paused on a spend cap). Same spot/shape as
+                   `staleNotice` just above: a real, readable message
+                   right where the send happened, never a console line. -->
+                {#if promptInjectError}
+                  <ErrorNotice message={promptInjectError.message} />
                 {/if}
 
                 <PermissionQueueBar

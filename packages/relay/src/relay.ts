@@ -1659,6 +1659,15 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // other subscribed client simply has no pending request for it.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'prompt_inject_result':
+        // The owning node's reply to a client's prompt_inject (issue
+        // #706) — fanned out to this session's subscribed clients exactly
+        // like config_option_result above; the relay never opens anything
+        // here (clear, not an envelope). A client matches its own
+        // pending request by `promptId`; any other subscribed client
+        // simply has no pending request for it.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'terminal_opened':
       case 'terminal_closed':
         // The owning node's terminal open reply/close notification (SPEC

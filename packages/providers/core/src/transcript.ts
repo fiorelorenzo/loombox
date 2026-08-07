@@ -127,7 +127,30 @@ export interface TranscriptGapItem {
   toSeq: number;
 }
 
-export type TranscriptItem = TranscriptMessageItem | TranscriptToolCallItem | TranscriptGapItem;
+/**
+ * A visible "this agent doesn't remember what's above" boundary marker
+ * (issue #706/#912). Inserted the instant a `'starting'` `session_status`
+ * event carries a `reason` — the one case that's ever true for
+ * (`NodeDaemon.reviveSessionInternal`'s own `startingReason`, SPEC §7.1
+ * "reconnected"): an ordinary session creation's identical `'starting'`
+ * push never carries one, so this can never fire for anything but a real
+ * revival. Renders inline, at the exact point in the timeline where the
+ * new agent process actually starts, so its first reply is never mistaken
+ * for a continuation of the conversation above — the persisted transcript
+ * survived the node restart intact, but the agent's own understanding of
+ * it did not, and issues #204/#249 already ruled out papering over that
+ * gap silently.
+ */
+export interface TranscriptRevivalItem {
+  type: 'revival';
+  /** `revival::${statusUpdatedAt}` — the pushing event's own timestamp, unique per real transition, so a resync replay of the identical `session_status` is idempotent (one row, not a duplicate) — mirrors {@link TranscriptGapItem.id}'s own range-keyed dedup. */
+  id: string;
+  /** The node's own disclosure, verbatim off the wire — never paraphrased client-side, so the words a user reads are exactly the ones the node chose to be honest about what a revival does and does not restore. */
+  reason: string;
+}
+
+export type TranscriptItem =
+  TranscriptMessageItem | TranscriptToolCallItem | TranscriptGapItem | TranscriptRevivalItem;
 
 /**
  * SPEC.md §7.9's live percentage meter warns once context fill crosses this
@@ -272,6 +295,10 @@ function messageItemId(kind: AcpMessageChunkKind, turnId: string, messageId: str
 
 function gapItemId(fromSeq: number, toSeq: number): string {
   return `gap::${fromSeq}::${toSeq}`;
+}
+
+function revivalItemId(statusUpdatedAt: string): string {
+  return `revival::${statusUpdatedAt}`;
 }
 
 function reduceMessageChunk(
@@ -522,13 +549,27 @@ export function reduceSessionEvent(
     case 'plan_update':
     case 'usage_update':
       return reduceTranscript(state, event, now);
-    case 'session_status':
-      return {
+    case 'session_status': {
+      const next = {
         ...state,
         status: event.status,
         statusUpdatedAt: event.updatedAt,
         statusReason: event.reason,
       };
+      // A revival's own honesty disclosure (issue #706/#912): the ONLY
+      // case a 'starting' session_status ever carries a `reason` (see
+      // TranscriptRevivalItem's own doc comment) — surfaced as a real,
+      // idempotent row in `items`, not just the ambient `statusReason`
+      // field, so the boundary is visible inline rather than only in a
+      // composer-adjacent hint that scrolls out of view.
+      if (event.status === 'starting' && event.reason !== undefined) {
+        const id = revivalItemId(event.updatedAt);
+        if (next.items.some((item) => item.type === 'revival' && item.id === id)) return next;
+        const item: TranscriptRevivalItem = { type: 'revival', id, reason: event.reason };
+        return { ...next, items: [...next.items, item] };
+      }
+      return next;
+    }
     case 'config_options':
     case 'config_option_update':
       return {
