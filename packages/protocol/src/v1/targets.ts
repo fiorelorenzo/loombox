@@ -27,6 +27,28 @@ export const targetDescriptor = z.object({
    * hardcoded `claude` on every target, including ones without it installed.
    */
   providers: z.array(z.string().min(1)),
+  /**
+   * This target's current per-target concurrency cap (SPEC §7.16's
+   * `SessionConcurrencyGate`, issue #252) — starting more sessions than
+   * this on it queues the excess instead of launching them. Optional
+   * purely for wire back-compat: a node that predates issue #255's
+   * load/concurrency-limits UI never sends it, and a client with no
+   * reading here just omits the limit rather than inventing one. Always
+   * present alongside {@link maxConcurrentSessionsSource}, absent exactly
+   * when that is.
+   */
+  maxConcurrentSessions: z.number().int().positive().optional(),
+  /**
+   * Whether {@link maxConcurrentSessions} came from an operator's own
+   * setting (`local`'s `LOOMBOX_LOCAL_MAX_CONCURRENT_SESSIONS`/
+   * `localMaxConcurrentSessions`, or an `ssh:` target's own
+   * `SshTargetConfig.maxConcurrentSessions`) or the node's own computed
+   * default (this host's core count for `local`,
+   * `DEFAULT_SSH_MAX_CONCURRENT_SESSIONS` for `ssh:`) — issue #255's "the
+   * limit's source is honest" requirement, so a client never presents a
+   * computed default as if an operator had chosen it.
+   */
+  maxConcurrentSessionsSource: z.enum(['configured', 'default']).optional(),
 });
 export type TargetDescriptor = z.infer<typeof targetDescriptor>;
 
@@ -153,8 +175,11 @@ export const targetListEntry = z.object({
   label: z.string().min(1),
   kind: targetKind,
   reachable: z.boolean(),
-  /** {@link targetDescriptor.providers} forwarded verbatim: what this target can actually spawn. The relay never invents or filters this - it is the node's own probe result, and a client picker reads it directly. */
   providers: z.array(z.string().min(1)),
+  /** {@link targetDescriptor.maxConcurrentSessions} forwarded verbatim (issue #255) — `undefined` for a node that predates it, exactly like `providers`' own doc comment. */
+  maxConcurrentSessions: z.number().int().positive().optional(),
+  /** {@link targetDescriptor.maxConcurrentSessionsSource} forwarded verbatim (issue #255). Always present alongside `maxConcurrentSessions`, absent exactly when that is. */
+  maxConcurrentSessionsSource: z.enum(['configured', 'default']).optional(),
   health: targetHealth.optional(),
   build: buildIdentityV1.optional(),
 });
