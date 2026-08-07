@@ -2,11 +2,11 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { createLocalInstallLayoutDriver, type InstallLayoutDriver } from '../install-layout';
+import { defaultBaseDirName, defaultUnitName, type NodeEnvironment } from '../node-environment';
 import { NODE_BUNDLE_ENTRY_FILE } from '../node-release';
 import { LocalProcessTransport } from '../ssh/local-process-transport';
 import { shQuote, type RemoteTransport } from '../ssh/remote-transport';
 import {
-  DEFAULT_UNIT_NAME,
   executeSystemdProvisioning,
   planSystemdProvisioning,
   resolveSystemdUnitDir,
@@ -67,12 +67,23 @@ import type {
  * `install()` was told.
  */
 export interface SystemdLocalSupervisorBackendOptions {
+  /**
+   * Which environment this resident node targets (issue #867; default
+   * `'production'`) — the input `unitName`/`baseDir`/`stateDir` defaults
+   * derive from, via `../node-environment.ts`, whenever those aren't given
+   * explicitly. A caller running a second, `'preview'`-targeted node on a
+   * machine that already has a `'production'` one MUST either set this or
+   * supply every one of `unitName`/`baseDir`/`stateDir` itself — leaving
+   * both unset for two backends on one machine is exactly the collision
+   * this field exists to make the operator no longer need to remember.
+   */
+  environment?: NodeEnvironment;
   unitName?: string;
   /** Overrides `~/.config/systemd/user`; resolved from the real home dir otherwise. */
   unitDir?: string;
-  /** Overrides `~/.loombox` (`../install-layout.ts`'s `baseDir` — the parent of `versions/` and `current`); resolved from the real home dir otherwise. */
+  /** Overrides `../node-environment.ts`'s `defaultBaseDirName(environment)` under the real home dir (`../install-layout.ts`'s `baseDir` — the parent of `versions/` and `current`); resolved from `environment` otherwise. */
   baseDir?: string;
-  /** Overrides `~/.loombox/node` (this node's own state dir — identity, session history; `uninstall()`'s "everything by default" target unless `keepData`); resolved from the real home dir otherwise. */
+  /** Overrides `<baseDir>/node` (this node's own state dir — identity, session history; `uninstall()`'s "everything by default" target unless `keepData`); resolved from the (possibly defaulted) `baseDir` otherwise. */
   stateDir?: string;
   description?: string;
   /** Injectable for tests; defaults to the real `node:fs`+`tar`-backed local driver. */
@@ -102,9 +113,10 @@ export function createSystemdLocalSupervisorBackend(
   options: SystemdLocalSupervisorBackendOptions,
   transport: RemoteTransport = new LocalProcessTransport(),
 ): SupervisorBackend {
-  const unitName = options.unitName ?? DEFAULT_UNIT_NAME;
-  const baseDir = options.baseDir ?? path.join(homedir(), '.loombox');
-  const stateDir = options.stateDir ?? path.join(homedir(), '.loombox', 'node');
+  const environment = options.environment ?? 'production';
+  const unitName = options.unitName ?? defaultUnitName(environment);
+  const baseDir = options.baseDir ?? path.join(homedir(), defaultBaseDirName(environment));
+  const stateDir = options.stateDir ?? path.join(baseDir, 'node');
   const driver = options.installLayoutDriver ?? createLocalInstallLayoutDriver();
 
   const resolveUnitPath = async (): Promise<string> => {

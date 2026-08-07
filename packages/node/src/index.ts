@@ -407,6 +407,20 @@ export type {
 } from './local/provision-local-node';
 export { provisionLocalNode } from './local/provision-local-node';
 
+// v2: the environment concept the local supervisor-backend seam and
+// `provisionLocalNode` accept (issue #867, epic #863) — one place a
+// caller running a second, non-production node on a machine that already
+// has one turns "which environment is this for" into collision-free unit
+// name / launchd label / install root / node id defaults, rather than
+// having to remember to vary each of those by hand.
+export type { NodeEnvironment } from './node-environment';
+export {
+  collisionFreeNodeId,
+  defaultBaseDirName,
+  defaultLaunchdLabel,
+  defaultUnitName,
+} from './node-environment';
+
 // v1: uninstall on the supervisor-backend seam (issue #814, decision
 // E1-3) — the missing caller-level counterpart to `provisionLocalNode`
 // just above: revokes this node's own device on the relay, delegates

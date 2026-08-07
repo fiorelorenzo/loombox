@@ -1,6 +1,7 @@
 import { exportPublicKeyRaw, generateEcdhKeyPair } from '@loombox/crypto';
 
 import { NodeIdentityStore, type NodeIdentity } from '../identity';
+import { collisionFreeNodeId, type NodeEnvironment } from '../node-environment';
 import {
   DEFAULT_WRAPPED_AMK_HANDOFF_FILENAME,
   writeWrappedAmkHandoff,
@@ -93,7 +94,7 @@ export interface LocalProvisionOptions {
   amk: Uint8Array;
   /** This caller's own currently-adopted AMK epoch; defaults to `@loombox/crypto`'s `AMK_HANDOFF_DEFAULT_EPOCH` (0) via `writeWrappedAmkHandoff` itself. */
   amkEpoch?: number;
-  /** The nodeId the new resident node connects/announces as. */
+  /** The nodeId the new resident node connects/announces as — collision-free per `environment` via `../node-environment.ts`'s `collisionFreeNodeId` (issue #867): a `'preview'` call gets `-preview` appended unless already present, so an operator who reuses the same id across environments still ends up with two distinguishable rows in the account's node list. */
   nodeId: string;
   /** The new resident's own device id; defaults to `nodeId`. */
   deviceId?: string;
@@ -101,7 +102,16 @@ export interface LocalProvisionOptions {
   tokenLabel?: string;
   /** Passed straight to `CLAUDE_CODE_OAUTH_TOKEN` on the resident node (`ResidentNodeConfig.claudeCodeOAuthToken`); omit to leave that credential to be configured separately. */
   claudeCodeOAuthToken?: string;
-  /** Overrides this node's own state dir (identity, the one-shot AMK-handoff file); defaults to `../ssh/verify-and-persist.ts`'s `defaultNodeStateDir()` (`~/.loombox/node`). Tests MUST override this — `defaultNodeStateDir()` refuses to run under Vitest (see its own doc comment). */
+  /**
+   * Which environment this resident node targets (issue #867; default
+   * `'production'`). Feeds both the collision-free `nodeId` above and the
+   * `stateDir` default immediately below — never the `SupervisorBackend`
+   * itself, which resolves its own `unitName`/`baseDir`/`stateDir`
+   * defaults from its own `environment` option; a caller running a second
+   * node on one machine MUST set this the same way on both.
+   */
+  environment?: NodeEnvironment;
+  /** Overrides this node's own state dir (identity, the one-shot AMK-handoff file); defaults to `../ssh/verify-and-persist.ts`'s `defaultNodeStateDir(environment)` (`~/.loombox/node` for `'production'`). Tests MUST override this — `defaultNodeStateDir()` refuses to run under Vitest (see its own doc comment). */
   stateDir?: string;
   /** The node-bundle version {@link SupervisorBackend.install} stages and activates. */
   version: string;
@@ -132,13 +142,14 @@ export async function provisionLocalNode(
   options: LocalProvisionOptions,
 ): Promise<LocalProvisionResult> {
   const mintNodeTokenImpl = options.mintNodeToken ?? defaultMintNodeToken;
+  const environment = options.environment ?? 'production';
   // Issue #876: this machine IS the node being provisioned, so defaulting
   // into its own `~/.loombox/node` when `options.stateDir` is omitted is
   // the deliberate, intended behavior here — not the accident the guard
   // exists to catch.
   allowLiveNodeStateDir();
-  const stateDir = options.stateDir ?? defaultNodeStateDir();
-  const nodeId = options.nodeId;
+  const stateDir = options.stateDir ?? defaultNodeStateDir(environment);
+  const nodeId = collisionFreeNodeId(options.nodeId, environment);
   const deviceId = options.deviceId ?? nodeId;
 
   const progress: LocalProvisionProgress[] = [];

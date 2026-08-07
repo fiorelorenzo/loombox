@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+import { defaultBaseDirName, type NodeEnvironment } from '../node-environment';
 import type { SshTargetConfig } from '../target';
 import { RemoteProcessRunner } from './remote-process-runner';
 import type { RemoteTransport } from './remote-transport';
@@ -33,6 +34,14 @@ export function allowLiveNodeStateDir(): void {
  * Mirrors `@loombox/supervisor`'s `defaultStateDir()` convention, under this
  * package's own subdirectory.
  *
+ * `environment` (issue #867; default `'production'`) only changes what this
+ * function falls back to when NEITHER `LOOMBOX_NODE_STATE_DIR` nor
+ * `XDG_STATE_HOME` is set — `'preview'` lands under `./node-environment.ts`'s
+ * `defaultBaseDirName('preview')` (`~/.loombox-preview/node`) instead of
+ * `~/.loombox/node`, so a caller that resolves this node's own state dir
+ * without ever mentioning environment (every existing caller, today) keeps
+ * landing on exactly the same path it always has.
+ *
  * **Refuses to answer under Vitest.** These stores used to be read-mostly, so
  * a test that forgot to inject a `stateDir` was harmless. Session persistence
  * changed that: `NodeDaemon` now defaults to a persisting `SessionManager`, so
@@ -53,7 +62,7 @@ export function allowLiveNodeStateDir(): void {
  * regardless of entry-point status, exactly like `main.ts`'s own config
  * loading already does for a real node.
  */
-export function defaultNodeStateDir(): string {
+export function defaultNodeStateDir(environment: NodeEnvironment = 'production'): string {
   if (process.env.VITEST) {
     throw new Error(
       'defaultNodeStateDir(): refusing to use the real node state directory from a test. ' +
@@ -75,10 +84,16 @@ export function defaultNodeStateDir(): string {
     );
   }
   const xdgStateHome = process.env.XDG_STATE_HOME;
+  // A single `node` leaf either way — `environment` is already fully
+  // represented by the directory ABOVE it (`loombox`/`loombox-<env>` under
+  // XDG_STATE_HOME, `defaultBaseDirName(environment)` under the plain
+  // home-dir fallback); qualifying both levels would just double it up
+  // (`.loombox-preview/node-preview`, not the intended `.loombox-preview/node`).
   if (xdgStateHome && xdgStateHome.trim() !== '') {
-    return path.join(xdgStateHome, 'loombox', 'node');
+    const xdgDirName = environment === 'production' ? 'loombox' : `loombox-${environment}`;
+    return path.join(xdgStateHome, xdgDirName, 'node');
   }
-  return path.join(homedir(), '.loombox', 'node');
+  return path.join(homedir(), defaultBaseDirName(environment), 'node');
 }
 
 /**

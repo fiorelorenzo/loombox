@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -83,6 +83,40 @@ describe('defaultNodeStateDir', () => {
       else process.env.XDG_STATE_HOME = xdg;
       if (override === undefined) delete process.env.LOOMBOX_NODE_STATE_DIR;
       else process.env.LOOMBOX_NODE_STATE_DIR = override;
+    }
+  });
+
+  it('resolves a distinct default path per environment (issue #867), both under XDG_STATE_HOME and the plain home-dir fallback', () => {
+    const vitest = process.env.VITEST;
+    const xdg = process.env.XDG_STATE_HOME;
+    // Same "opt out of the two test-only guards for the length of this
+    // assertion" shape the sibling test above uses — this test is itself
+    // proving what a genuine node entry point resolves to, not what a test
+    // should ever land on.
+    delete process.env.VITEST;
+    try {
+      allowLiveNodeStateDir();
+
+      process.env.XDG_STATE_HOME = '/tmp/xdg-env-probe';
+      expect(defaultNodeStateDir('production')).toBe(
+        path.join('/tmp/xdg-env-probe', 'loombox', 'node'),
+      );
+      expect(defaultNodeStateDir('preview')).toBe(
+        path.join('/tmp/xdg-env-probe', 'loombox-preview', 'node'),
+      );
+      expect(defaultNodeStateDir('production')).not.toBe(defaultNodeStateDir('preview'));
+
+      delete process.env.XDG_STATE_HOME;
+      // Omitting `environment` still means 'production' — no behavior change
+      // for every existing caller that has never heard of this parameter.
+      expect(defaultNodeStateDir()).toBe(defaultNodeStateDir('production'));
+      expect(defaultNodeStateDir('production')).toBe(path.join(homedir(), '.loombox', 'node'));
+      expect(defaultNodeStateDir('preview')).toBe(path.join(homedir(), '.loombox-preview', 'node'));
+    } finally {
+      if (vitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = vitest;
+      if (xdg === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = xdg;
     }
   });
 });

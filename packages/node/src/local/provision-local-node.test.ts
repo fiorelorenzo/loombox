@@ -145,6 +145,40 @@ describe('provisionLocalNode (issue #654)', () => {
     expect(Buffer.from(unwrapped)).toEqual(Buffer.from(amk));
   });
 
+  it('applies a collision-free nodeId/deviceId when environment is preview, leaving production untouched (issue #867)', async () => {
+    const backend = fakeBackend();
+    const mintNodeToken = async (): Promise<MintNodeTokenResult> => ({
+      id: 'tok-id',
+      token: 'minted-token-preview',
+    });
+
+    const result = await provisionLocalNode({
+      relayUrl: 'wss://preview-relay.loombox.dev',
+      accountId: 'acct-1',
+      actingAuthToken: 'session-token',
+      amk: generateAmk(),
+      nodeId: 'mac-local-1',
+      environment: 'preview',
+      version: '1.0.0',
+      fetchArchive: async () => new Uint8Array(),
+      backend,
+      runtime: { skip: true },
+      stateDir,
+      transport: new LocalProcessTransport(),
+      identityStore: new NodeIdentityStore({ stateDir, osKeyringBackendFactory: noOsKeyring }),
+      mintNodeToken,
+    });
+
+    expect(result.ok).toBe(true);
+    // The exact "two rows both called devbox-node-1" collision issue #867
+    // names — a caller that reuses the same nodeId for both environments
+    // still gets a distinguishable id for the preview one.
+    expect(result.nodeId).toBe('mac-local-1-preview');
+    expect(result.deviceId).toBe('mac-local-1-preview');
+    expect(backend.installCalls[0]?.environment.LOOMBOX_NODE_ID).toBe('mac-local-1-preview');
+    expect(backend.installCalls[0]?.environment.LOOMBOX_DEVICE_ID).toBe('mac-local-1-preview');
+  });
+
   it('stops at mint_node_token and never calls the backend when minting fails', async () => {
     const backend = fakeBackend();
     const result = await provisionLocalNode({
