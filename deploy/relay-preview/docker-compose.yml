@@ -1,0 +1,107 @@
+# loombox relay - prodbox PREVIEW deployment (#864, epic #863).
+#
+# Same shape as ../relay/docker-compose.yml (production), on purpose - the
+# whole point of a preview environment is that it behaves identically to
+# prod, not that it's a simplified stand-in. Every difference from the
+# production file below exists only to keep preview from sharing a single
+# byte with it: its own container names (project name below), its own
+# named volume, its own loopback port, its own Postgres user/db, its own
+# public hostnames as the env defaults. See docs/deploy-relay.md's
+# "Preview environment" section for the full runbook, including the two
+# steps that cannot be done from this file: the GitHub OAuth App (OAuth
+# Apps have no API) and, on prodbox, this box's DNS record.
+#
+# Run from this directory (deploy/relay-preview/) so `.env` is picked up:
+#   docker compose up -d --build
+# The relay self-migrates on boot; there is no separate migrate step, and
+# preview starts from a genuinely empty database - never seeded or copied
+# from production's.
+#
+# .env (chmod 600, never committed) must define: POSTGRES_PASSWORD,
+# BETTER_AUTH_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET - all four are
+# required with no default, so `docker compose up` refuses to start (with a
+# named "required variable X is missing a value" error, before creating any
+# container) until every one of them is a real, preview-specific value.
+# See .env.example for where each one comes from. Never point these at
+# production's GitHub OAuth App or reuse production's secrets: production's
+# OAuth App's callback is registered for relay.loombox.dev only, and a
+# shared BETTER_AUTH_SECRET would make a production session token valid on
+# preview.
+#
+# Redis fan-out (#97) is intentionally omitted here: preview is always a
+# single instance, so there is nothing to fan out between.
+
+name: loombox-relay-preview
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loombox_preview
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: loombox_preview
+    volumes:
+      - loombox-preview-pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U loombox_preview -d loombox_preview']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  relay:
+    build:
+      # context is the repo root so pnpm can resolve the workspace - same
+      # Dockerfile production uses, no preview-specific image.
+      context: ../..
+      dockerfile: packages/relay/Dockerfile
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATABASE_URL: postgresql://loombox_preview:${POSTGRES_PASSWORD}@postgres:5432/loombox_preview
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-https://preview-relay.loombox.dev}
+      # The preview web app's origin only (#864) - never production's
+      # app.loombox.dev, or a preview bug could write a session a
+      # production-trusted origin would accept.
+      LOOMBOX_TRUSTED_ORIGINS: ${LOOMBOX_TRUSTED_ORIGINS:-https://preview.loombox.dev}
+      # Device-authorization verification_uri host (#387) - the preview web
+      # app, not production's.
+      LOOMBOX_APP_URL: ${LOOMBOX_APP_URL:-https://preview.loombox.dev}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      # Preview's own GitHub OAuth App (#864) - see docs/deploy-relay.md's
+      # "Preview environment" runbook. No default: an unset value here is
+      # exactly what makes `docker compose up` refuse to start rather than
+      # booting with a dead or, worse, production-shaped login button.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?set GITHUB_CLIENT_ID in .env - see docs/deploy-relay.md Preview environment}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?set GITHUB_CLIENT_SECRET in .env - see docs/deploy-relay.md Preview environment}
+      # Google OAuth: optional on prod, left off entirely on preview - one
+      # fewer OAuth App to provision for an environment nobody but Lorenzo
+      # uses. Add GOOGLE_CLIENT_ID/SECRET here the same way if that changes.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Issue #655: this deploy's git commit, so `/health` and the relay's
+      # own boot log announce a build identity - same mechanism as prod,
+      # see build-identity.ts. Unset until preview has its own deploy
+      # script; falls back to a real `git rev-parse HEAD` when this runs
+      # from a real checkout instead of a stripped rsync target.
+      LOOMBOX_BUILD_COMMIT: ${LOOMBOX_BUILD_COMMIT:-}
+    ports:
+      # loopback-only publish, same UFW/Docker reasoning as production's
+      # 5185 - a 0.0.0.0 publish would bypass UFW. 5185/5186/5190/5191 are
+      # taken (prod relay/web, loombox-landing, pitchbox-preview's web) -
+      # see docs/deploy-relay.md's port table.
+      - '127.0.0.1:5187:8787'
+    volumes:
+      # No automated nightly backup for preview (unlike production's
+      # relay-backup.sh/timer) - it holds no data worth a DR story, only a
+      # bind mount so an ad-hoc `docker compose exec relay pnpm --filter
+      # @loombox/relay backup` is available if ever needed by hand.
+      - ./backups:/app/backups
+    restart: unless-stopped
+
+volumes:
+  loombox-preview-pg-data:
