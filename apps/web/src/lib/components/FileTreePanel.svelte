@@ -62,9 +62,8 @@
   import { joinTreePath, sortEntries } from '../file-tree';
   import type { FileTreeDirectoryState } from '../relay-client';
   import { Icon } from './icons';
-  import WovenLoader from './WovenLoader.svelte';
-  import EmptyState from './ui/EmptyState.svelte';
-  import ErrorNotice from './ui/ErrorNotice.svelte';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
+  import { timeoutMessage, type AsyncPanelState } from '$lib/async-panel';
 
   interface Props {
     tree: Map<string, FileTreeDirectoryState>;
@@ -163,79 +162,101 @@
     if (!dirState || dirState.status !== 'loaded') return [];
     return [...dirState.entries].sort(sortEntries);
   }
+
+  /**
+   * One tagged value per path, not the four independent branches the
+   * markup used to check in sequence (issue #650) — `undefined` (not a
+   * member of `AsyncPanelState`, by the type's own design: see its doc
+   * comment) means this path has never been requested yet, the recursive
+   * equivalent of `DirectoryPicker`'s own pre-mount-effect `'idle'` tick;
+   * the template below simply never mounts `AsyncPanel` for it, same as
+   * that component. A timed-out path (this panel's own bounded wait,
+   * issue #582) takes priority over whatever `tree` itself currently
+   * reports for it — `tree`'s own late `'loading'` is stale the instant
+   * this panel's timer fires. `timeoutMessage('This folder')` is `#582`/
+   * `#505`'s exact established sentence, the same one `DirectoryPicker`
+   * renders verbatim for its own transport timeout.
+   */
+  function panelStateFor(path: string): AsyncPanelState<FsEntryV1[]> | undefined {
+    if (timedOutPaths.has(path)) {
+      return { status: 'error', message: timeoutMessage('This folder'), retryable: true };
+    }
+    const dirState = tree.get(path);
+    if (dirState === undefined) return undefined;
+    if (dirState.status === 'loading') return { status: 'loading' };
+    if (dirState.status === 'error') {
+      return { status: 'error', message: dirState.error ?? 'Failed to load this directory.' };
+    }
+    const entries = entriesFor(path);
+    if (entries.length === 0) {
+      return {
+        status: 'empty',
+        message: path === '' ? 'This project has no files yet.' : 'This directory is empty.',
+      };
+    }
+    return { status: 'loaded', data: entries };
+  }
 </script>
 
 {#snippet dirContents(path: string)}
-  {@const dirState = tree.get(path)}
-  {@const entries = entriesFor(path)}
-  {#if timedOutPaths.has(path)}
-    <div class="tree-error" data-testid="file-tree-error">
-      <ErrorNotice
-        message="This folder didn't answer in time. The node may be asleep, offline, or on an older relay."
-        retryable
-        onRetry={() => retryDirectory(path)}
-      />
-    </div>
-  {:else if dirState?.status === 'loading'}
-    <p class="tree-status tree-status-loading" data-testid="file-tree-loading">
-      <WovenLoader size="sm" label="Loading directory" />
-      Loading…
-    </p>
-  {:else if dirState?.status === 'error'}
-    <div class="tree-error" data-testid="file-tree-error">
-      <ErrorNotice message={dirState.error ?? 'Failed to load this directory.'} />
-    </div>
-  {:else if dirState?.status === 'loaded' && entries.length === 0}
-    <EmptyState
-      message={path === '' ? 'This project has no files yet.' : 'This directory is empty.'}
-    />
-  {/if}
-  {#if !(dirState?.status === 'loaded' && entries.length === 0)}
-    <ul class="tree-entries">
-      {#each entries as entry (entry.name)}
-        {@const entryPath = joinTreePath(path, entry.name)}
-        <li>
-          {#if entry.kind === 'dir'}
-            <button
-              type="button"
-              class="tree-row tree-row-dir"
-              onclick={() => toggle(entryPath)}
-              aria-expanded={expandedPaths.has(entryPath)}
-              data-testid="file-tree-dir"
-            >
-              <span
-                class="tree-chevron"
-                class:tree-chevron-open={expandedPaths.has(entryPath)}
-                aria-hidden="true"
-              >
-                <Icon name="collapse-chevron" size="100%" />
-              </span>
-              <span class="tree-icon" aria-hidden="true">
-                <Icon name="folder" size="100%" />
-              </span>
-              <span class="name">{entry.name}</span>
-            </button>
-            {#if expandedPaths.has(entryPath)}
-              <div class="tree-children">
-                {@render dirContents(entryPath)}
-              </div>
-            {/if}
-          {:else}
-            <button
-              type="button"
-              class="tree-row tree-row-file"
-              onclick={() => onSelectFile?.(entryPath)}
-              data-testid="file-tree-file"
-            >
-              <span class="tree-icon" aria-hidden="true">
-                <Icon name="file" size="100%" />
-              </span>
-              <span class="name">{entry.name}</span>
-            </button>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+  {@const panelState = panelStateFor(path)}
+  {#if panelState}
+    <AsyncPanel
+      state={panelState}
+      loadingLabel="Loading directory"
+      loadingTestId="file-tree-loading"
+      loadingText="Loading…"
+      errorTestId="file-tree-error"
+      onRetry={() => retryDirectory(path)}
+    >
+      {#snippet content(entries)}
+        <ul class="tree-entries">
+          {#each entries as entry (entry.name)}
+            {@const entryPath = joinTreePath(path, entry.name)}
+            <li>
+              {#if entry.kind === 'dir'}
+                <button
+                  type="button"
+                  class="tree-row tree-row-dir"
+                  onclick={() => toggle(entryPath)}
+                  aria-expanded={expandedPaths.has(entryPath)}
+                  data-testid="file-tree-dir"
+                >
+                  <span
+                    class="tree-chevron"
+                    class:tree-chevron-open={expandedPaths.has(entryPath)}
+                    aria-hidden="true"
+                  >
+                    <Icon name="collapse-chevron" size="100%" />
+                  </span>
+                  <span class="tree-icon" aria-hidden="true">
+                    <Icon name="folder" size="100%" />
+                  </span>
+                  <span class="name">{entry.name}</span>
+                </button>
+                {#if expandedPaths.has(entryPath)}
+                  <div class="tree-children">
+                    {@render dirContents(entryPath)}
+                  </div>
+                {/if}
+              {:else}
+                <button
+                  type="button"
+                  class="tree-row tree-row-file"
+                  onclick={() => onSelectFile?.(entryPath)}
+                  data-testid="file-tree-file"
+                >
+                  <span class="tree-icon" aria-hidden="true">
+                    <Icon name="file" size="100%" />
+                  </span>
+                  <span class="name">{entry.name}</span>
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/snippet}
+    </AsyncPanel>
   {/if}
 {/snippet}
 
@@ -250,17 +271,18 @@
     overflow-y: auto;
   }
 
-  .tree-status {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
+  /* `AsyncPanel`'s own `.ui-async-panel-loading` (issue #650) already gives
+     `display:flex;align-items:center;gap:xs;margin:0;font-size:small`;
+     this restates only the two deltas this panel's own loading row always
+     had (padding, and secondary rather than muted text) — scoped by
+     testid, not class, since the element now renders inside
+     `AsyncPanel.svelte`'s own template. */
+  :global([data-testid='file-tree-loading']) {
     padding: var(--space-2xs) var(--space-xs);
     color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
   }
 
-  .tree-error {
+  :global([data-testid='file-tree-error']) {
     padding: var(--space-2xs) 0;
   }
 
