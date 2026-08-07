@@ -68,6 +68,15 @@ const ciFailureItem: AttentionInboxItem = {
   waitingSince: 4,
 };
 
+const runFailureItem: AttentionInboxItem = {
+  kind: 'run_failure',
+  sessionId: 'sess-h',
+  sessionTitle: 'Fix the failing test',
+  projectPath: '/proj-h',
+  nodeId: 'node-h',
+  waitingSince: 4.5,
+};
+
 const trackerUnreachableItem: AttentionInboxItem = {
   kind: 'tracker_failure',
   sessionId: 'sess-h',
@@ -650,5 +659,58 @@ describe('AttentionInbox: keyboard-first triage (E3-1, issue #671)', () => {
     });
     await fireEvent.click(screen.getAllByTestId('attention-inbox-open')[1]);
     expect(onOpenSession).toHaveBeenCalledWith('sess-a');
+  });
+});
+
+describe("AttentionInbox: run_failure is live (issue #247), sharing ci_failure's own shape", () => {
+  it('renders its own badge and needs-attention label, and an Open action, with no permission card or reply composer', async () => {
+    const onOpenSession = vi.fn();
+    render(AttentionInbox, {
+      props: {
+        items: [runFailureItem],
+        onResolve: vi.fn(),
+        onOpenSession,
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(rows).toHaveLength(1);
+
+    expect(rows[0].dataset.kind).toBe('run_failure');
+    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Run');
+    expect(within(rows[0]).getByText('Local run failed')).toBeTruthy();
+
+    expect(screen.queryAllByTestId('permission-card')).toHaveLength(0);
+    expect(screen.queryAllByTestId('attention-inbox-reply')).toHaveLength(0);
+
+    await fireEvent.click(within(rows[0]).getByTestId('attention-inbox-open'));
+    expect(onOpenSession).toHaveBeenCalledWith('sess-h');
+  });
+
+  it('names the failing run kind(s) in the row body instead of a bare "Local run failed"', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [{ ...runFailureItem, failingRuns: ['test', 'lint'] }],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    expect(screen.getByText('Local run failed: test, lint')).toBeTruthy();
+  });
+
+  it('renders alongside a ci_failure item as two distinct rows, in the given order, each with its own badge — neither one hides the other', () => {
+    render(AttentionInbox, {
+      props: {
+        items: [runFailureItem, ciFailureItem],
+        onResolve: vi.fn(),
+        onOpenSession: vi.fn(),
+        onReply: vi.fn(),
+      },
+    });
+    const rows = screen.getAllByTestId('attention-inbox-item');
+    expect(rows.map((row) => row.dataset.kind)).toEqual(['run_failure', 'ci_failure']);
+    expect(within(rows[0]).getByTestId('attention-inbox-kind-badge').textContent).toBe('Run');
+    expect(within(rows[1]).getByTestId('attention-inbox-kind-badge').textContent).toBe('CI');
   });
 });

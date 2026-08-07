@@ -243,6 +243,7 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   tracker_connectivity_status: { routed: 'node' },
   ci_auto_iterate_status: { routed: 'node' },
   ci_auto_iterate_stop: { routed: 'client' },
+  run_status: { routed: 'node' },
   ping: { routed: 'device' },
   pong: {
     routed: 'not-routed',

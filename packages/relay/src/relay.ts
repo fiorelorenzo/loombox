@@ -1614,6 +1614,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // loop stopped.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'run_status':
+        // The owning node's latest durable per-kind run status for a
+        // session (SPEC §7.14/§7.15; issue #247) — fanned out exactly
+        // like ci_check_status/run_exit above; the relay never opens the
+        // envelope, so it never sees which kind ran, its outcome, or why.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'lease_request':
         // SPEC §9; issues #82/#104: a session is owned by a node, never a
         // client — only a node connection ever sends this.
