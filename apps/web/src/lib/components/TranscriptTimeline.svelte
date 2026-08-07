@@ -101,6 +101,8 @@
     searchQuery?: string;
     /** The item id of the search match the reader is currently navigated to, if any (`+page.svelte`'s active match) — painted with the stronger of the two named highlights. Meaningless without `searchQuery`. */
     activeSearchItemId?: string;
+    /** Fires (issue #198's own reading-position capture) whenever the item at the TOP of the currently mounted window changes — the id of whatever the reader is currently looking at while detached from the live tail, `undefined` while pinned to it (following the tail has no fixed "current item", by design). Never fired for every scroll pixel; only on an actual top-item change. Omitted does nothing (no reading-position tracking is required of every caller — `+page.svelte` is the only one that currently cares). */
+    onViewportItemChange?: (itemId: string | undefined) => void;
   }
 
   const {
@@ -116,6 +118,7 @@
     onOpenFile,
     searchQuery = '',
     activeSearchItemId,
+    onViewportItemChange,
   }: Props = $props();
 
   /**
@@ -329,6 +332,30 @@
     }
     previousLeadPx = range.leadPx;
     previousScrollInput = scrollInput;
+  });
+
+  /**
+   * Reports the item at the top of the currently mounted window (issue
+   * #198's own reading-position capture) — `undefined` while `following`
+   * (pinned to the live tail has no fixed "current item"; a caller
+   * restoring a saved position later should land back at the tail, the
+   * same default a session with no saved position has always had).
+   * `win.range.start` indexes into the FULL `items` array (not the
+   * windowed `visibleItems` slice), same convention `jumpTarget`'s own
+   * effect above uses. Guarded on an actual id change, not `win.range`
+   * itself — `win.range` recomputes on every sub-pixel scroll tick and
+   * `$effect` already dedupes a same-value dependency read, but the
+   * explicit guard keeps this reads-as-a-callback contract obvious rather
+   * than relying on that.
+   */
+  let previousViewportItemId: string | undefined;
+  let hasReportedViewportItem = false;
+  $effect(() => {
+    const topItemId = following ? undefined : items[win.range.start]?.id;
+    if (hasReportedViewportItem && topItemId === previousViewportItemId) return;
+    hasReportedViewportItem = true;
+    previousViewportItemId = topItemId;
+    onViewportItemChange?.(topItemId);
   });
 
   function measureContainer(node: HTMLElement): { destroy(): void } {

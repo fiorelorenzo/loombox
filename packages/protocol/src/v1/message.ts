@@ -153,6 +153,11 @@ import {
 } from './rewind';
 import { keymapGetRequest, keymapResult, keymapSetRequest } from './keymap';
 import {
+  sessionViewStateGetRequest,
+  sessionViewStateResult,
+  sessionViewStateSet,
+} from './session-view-state';
+import {
   agentProfileListGet,
   agentProfileListResult,
   agentProfileListSet,
@@ -323,6 +328,9 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   keymapGetRequest,
   keymapSetRequest,
   keymapResult,
+  sessionViewStateGetRequest,
+  sessionViewStateSet,
+  sessionViewStateResult,
   agentProfileListGet,
   agentProfileListSet,
   agentProfileListResult,

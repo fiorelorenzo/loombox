@@ -23,6 +23,7 @@ import {
   type SessionArchiveResponse,
   type SessionForkResponse,
   type SessionListV1,
+  type SessionViewStateResult,
   type SessionUpdateEnvelopeV1,
   type TargetList,
   type TargetListEntry,
@@ -1503,6 +1504,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // no longer exists.
         if (message.result.outcome === 'ok') {
           await store.sessions.deleteSession(message.sessionId);
+          await store.sessionViewStates.delete(message.sessionId);
         }
         // Published to every client of the account, not only the
         // requester — exactly like presence's own account-wide client
@@ -2208,6 +2210,65 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // winning state immediately too, so a losing tab's UI corrects
         // itself instead of silently drifting stale — mirrors
         // `hasLiveClientConnection`'s own `registry.clients` scan above.
+        for (const client of registry.clients) {
+          if (client.accountId === connection.accountId && client !== connection) {
+            sendDirect(client, response);
+          }
+        }
+        return;
+      }
+      case 'session_view_state_get_request': {
+        // Same ownership guard `session_resume` below applies — a session
+        // view state is never readable by anyone but its own session's
+        // account, and there is no view state at all for a session that
+        // doesn't exist (or was archived out from under a stale request).
+        const record = await store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: view-state request for unknown/foreign session',
+          );
+          return;
+        }
+        const saved = await store.sessionViewStates.get(message.sessionId);
+        const response: SessionViewStateResult = {
+          type: 'session_view_state_result',
+          protocolVersion: PROTOCOL_V1,
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          envelope: saved?.envelope ?? null,
+          revision: saved?.revision ?? 0,
+        };
+        sendDirect(connection, response);
+        return;
+      }
+      case 'session_view_state_set': {
+        const record = await store.sessions.get(message.sessionId);
+        if (!record || record.meta.accountId !== connection.accountId) {
+          app.log.warn(
+            { sessionId: message.sessionId },
+            'relay: view-state save for unknown/foreign session',
+          );
+          return;
+        }
+        await store.sessionViewStates.set(message.sessionId, {
+          envelope: message.envelope,
+          revision: message.revision,
+        });
+        const response: SessionViewStateResult = {
+          type: 'session_view_state_result',
+          protocolVersion: PROTOCOL_V1,
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          envelope: message.envelope,
+          revision: message.revision,
+        };
+        sendDirect(connection, response);
+        // Mirrors `keymap_set_request`'s own cross-tab/cross-device push
+        // (issue #760) — a device live right now on this session sees the
+        // new draft/panel/position immediately, not only on its own next
+        // reconnect (issue #198's own "resumes at a sensible point" bar
+        // applies just as much to a device that never disconnected).
         for (const client of registry.clients) {
           if (client.accountId === connection.accountId && client !== connection) {
             sendDirect(client, response);

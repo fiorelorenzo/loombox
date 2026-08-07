@@ -23,7 +23,10 @@
     GitHunkV1,
     KeymapV1,
     SessionStatusV1,
+    SessionViewStatePanelV1,
+    SessionViewStatePayloadV1,
   } from '@loombox/protocol';
+  import { invalidateStaleViewState } from '$lib/session-view-state';
   import { copyToClipboard, exportTranscriptText } from '$lib/copy';
   import { transcriptTail } from '$lib/transcript-tail';
   import {
@@ -742,6 +745,10 @@
   let targetStatusPollHandle: ReturnType<typeof setInterval> | undefined;
   /** How often target status re-polls `listTargets()` while connected (issue #269's "refreshed on a regular interval"). */
   const TARGET_STATUS_POLL_MS = 10_000;
+  /** Issue #198's own restore-vs-live-push race window: how long after `selectSession` a cached or freshly-fetched view state may still apply before this device's own edits are trusted over a later push from another device (`RelayClient.DEFAULT_TURN_IDLE_MS` — the closest existing "how long is a round trip allowed to take" constant in this codebase — sets the scale). */
+  const VIEW_STATE_SETTLE_MS = 1500;
+  /** How long an idle beat after the LAST `draft`/panel/`viewedItemId` change before persisting it (issue #198) — long enough that a fast typist or a quick tab-to-tab click never fires one `session_view_state_set` per keystroke/click, short enough that a genuine device switch a few seconds later still finds a recent save. */
+  const VIEW_STATE_PERSIST_DEBOUNCE_MS = 800;
 
   let status = $state<ConnectionStatus>('idle');
   let sessions = $state<ClientSessionMeta[]>([]);
@@ -776,6 +783,36 @@
   let transcript = $state<TranscriptState | undefined>(undefined);
   /** Bumped by `jumpToTranscriptItem` below on every jump click, including a repeat click on an already-visible row — see `TranscriptJumpTarget`'s own doc comment for why a bare id can't re-trigger the effect that consumes it. */
   let transcriptJumpTarget = $state<TranscriptJumpTarget | undefined>(undefined);
+  /**
+   * Device-switch state preservation (issue #198, epic #6). `viewedItemId`
+   * mirrors `TranscriptTimeline`'s own `onViewportItemChange` (`undefined`
+   * while pinned to the live tail — see that prop's own doc comment).
+   * `pendingViewStateJumpTarget` is a RAW, not-yet-validated
+   * `lastViewedItemId` restored from another device — kept separate from
+   * `transcriptJumpTarget` (which actually drives `TranscriptTimeline`)
+   * because whether it still resolves depends on THIS device's own
+   * transcript resync, which can still be in flight the moment the saved
+   * view state itself arrives; the `$effect` below re-checks it against
+   * `transcript.items` on every change until it resolves (jumps once, then
+   * clears itself) or the session is left with the live-tail default
+   * forever if it never does — issue #198's own "invalidate a stale
+   * cached view" story, `$lib/session-view-state.ts`'s own doc comment
+   * has the full design rationale. `viewStateRestoreSettled` gates
+   * `selectSession`'s own subscribe callback below (apply live updates
+   * while unsettled — covers both an instantly-available cached store and
+   * a fresh relay round trip) and the persist effect further down (never
+   * re-save what was just restored, and never save over a still-in-flight
+   * restore — `viewStateBaseline` is the last-applied-or-fetched payload
+   * the persist effect diffs against, so settling with nothing genuinely
+   * changed sends nothing).
+   */
+  let viewedItemId = $state<string | undefined>(undefined);
+  let pendingViewStateJumpTarget = $state<string | undefined>(undefined);
+  let viewStateRestoreSettled = $state(false);
+  let viewStateSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  let viewStatePersistTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The last view-state payload this device either restored or itself persisted (issue #198) — the persist effect's own diff baseline, so `viewStateRestoreSettled` flipping true never by itself fires a same-value re-save of what was just fetched. `undefined` only before the very first restore/persist for the currently selected session settles. */
+  let viewStateBaseline: SessionViewStatePayloadV1 | undefined;
   /**
    * In-transcript search (SPEC.md §7.19; issues #262/#263). `searchTranscript`
    * (`$lib/transcript/search.ts`) runs over `transcript.items`'s FULL
@@ -1009,10 +1046,13 @@
    * The composer's removable `@`-mention pills (issue #742, decisions doc
    * C2-3) — a separate list, never characters spliced into `draft`, so
    * editing the surrounding prose can never corrupt or silently drop one.
-   * Persists across a session switch the same way `draft` itself already
-   * does (v1 has no per-session composer state beyond what the node
-   * tracks, e.g. `attachments`); cleared only on send and on full
-   * disconnect.
+   * Deliberately out of scope for issue #198's device-switch view state
+   * (device-local picker state, re-resolved by re-typing `@` rather than
+   * trusting a foreign device's resolved list): unlike `draft` itself,
+   * which `selectSession` below now resets and restores per session,
+   * `mentions` still just persists across a session switch exactly like
+   * before v1 had any per-session composer state; cleared only on send
+   * and on full disconnect.
    */
   let mentions = $state<MentionRef[]>([]);
   let slashPickerOpen = $state(false);
@@ -1481,6 +1521,7 @@
   let unsubscribeStaleNotice: (() => void) | undefined;
   let unsubscribeFileTree: (() => void) | undefined;
   let unsubscribeRelayBuildIdentity: (() => void) | undefined;
+  let unsubscribeViewState: (() => void) | undefined;
 
   // #164: "tapping/clicking a notification opens directly to the relevant
   // session" — the service worker's `notificationclick` handler
@@ -1621,6 +1662,7 @@
     unsubscribeQueuedPrompts?.();
     unsubscribeStaleNotice?.();
     unsubscribeFileTree?.();
+    unsubscribeViewState?.();
     transcript = undefined;
     permissionQueue = createPermissionQueueState();
     configOptions = [];
@@ -1634,6 +1676,26 @@
     staleNotice = undefined;
     fileTree = new Map();
     configControlsExpanded = false;
+    // Issue #198: a new session starts with a clean canvas/composer, same
+    // "starts clean" convention `TranscriptTimeline`'s own `sessionKey`
+    // reset already uses — done here, synchronously, rather than in a
+    // reactive `$effect` keyed on `selectedSessionId`: the view-state
+    // restore below (which re-opens whatever tab/draft was saved) runs in
+    // this SAME synchronous call when a cached store already has this
+    // session's state, and a separately-scheduled effect would race it,
+    // resetting the canvas right back out from under a restore that
+    // already landed. `canvasTabs.reset()` for the OTHER way a session
+    // becomes unselected (archived out from under this device, or the
+    // last one closed) still lives in its own narrower `$effect` further
+    // down, since neither of those paths goes through this function.
+    clearTimeout(viewStateSettleTimer);
+    clearTimeout(viewStatePersistTimer);
+    draft = '';
+    viewedItemId = undefined;
+    pendingViewStateJumpTarget = undefined;
+    viewStateRestoreSettled = false;
+    viewStateBaseline = undefined;
+    canvasTabs.reset();
     if (!client) return;
     unsubscribeTranscript = client.transcriptFor(id).subscribe((value) => (transcript = value));
     unsubscribePermissionQueue = client.permissionQueueFor(id).subscribe((value) => {
@@ -1660,6 +1722,39 @@
     // expand (file-tree panel click) or the @ mention picker's own bounded
     // opportunistic walk (`MentionPicker.svelte`).
     unsubscribeFileTree = client.fileTreeFor(id).subscribe((value) => (fileTree = value));
+    // Issue #198: restores this session's saved draft/panel/reading
+    // position — `sessionViewStateFor` fires its own initial
+    // `session_view_state_get_request` on first access and updates the
+    // SAME store in place on every later live push, so this one
+    // subscription covers both "the round trip lands a moment from now"
+    // and "another device saves while this device already has the
+    // session open". Gated on `viewStateRestoreSettled` (armed for
+    // `VIEW_STATE_SETTLE_MS` below): applying a push after that window
+    // would silently overwrite whatever the user has already typed or
+    // navigated to since opening this session. `value: undefined` (no
+    // envelope has ever been saved for this session) still needs a
+    // baseline — the same all-default shape `draft`/`canvasTabs.reset()`
+    // above already left this session in — so the persist effect knows
+    // "nothing to restore" isn't itself something worth writing back.
+    unsubscribeViewState = client.sessionViewStateFor(id).subscribe((value) => {
+      if (viewStateRestoreSettled) return;
+      if (value) {
+        draft = value.payload.draft;
+        applyRestoredPanel(value.payload.panel);
+        pendingViewStateJumpTarget = value.payload.lastViewedItemId;
+        viewStateBaseline = value.payload;
+      } else {
+        viewStateBaseline = {
+          draft: '',
+          panel: { kind: 'transcript' },
+          lastViewedItemId: undefined,
+        };
+      }
+    });
+    viewStateSettleTimer = setTimeout(() => {
+      viewStateRestoreSettled = true;
+      viewStateSettleTimer = undefined;
+    }, VIEW_STATE_SETTLE_MS);
   }
 
   /** Wired to both `FileTreePanel`'s and `MentionPicker`'s `onExpand` (SPEC §7.4; issue #171). */
@@ -2489,16 +2584,22 @@
 
   /**
    * The canvas tab strip's own state (issue #737, settled pick B2-2): one
-   * `CanvasTabsState` instance for as long as a session is selected — the
-   * `$effect` below resets it to just the transcript tab whenever
-   * `selectedSessionId` changes, the same "a new session starts clean"
-   * convention `TranscriptTimeline`'s own `sessionKey` reset already uses.
+   * `CanvasTabsState` instance for as long as a session is selected.
+   * Reset to just the transcript tab happens in two places, not one:
+   * `selectSession` above does it synchronously, in the SAME call that
+   * may go on to restore a saved panel (issue #198) — a reactive
+   * `$effect` keyed on `selectedSessionId` would run on its own schedule
+   * and could reset right back out from under a restore that already
+   * landed synchronously (a cached view-state store, revisiting a
+   * session already opened once this browser tab). The `$effect` below
+   * covers the other way a session becomes unselected — archived out
+   * from under this device, or the last remaining session closed —
+   * neither of which goes through `selectSession` at all.
    */
   const canvasTabs = new CanvasTabsState();
 
   $effect(() => {
-    void selectedSessionId;
-    canvasTabs.reset();
+    if (selectedSessionId === undefined) canvasTabs.reset();
   });
 
   /** A new session's transcript has nothing to do with whatever the previous one's search bar was showing (same "a new session starts clean" convention `canvasTabs.reset()` above and `TranscriptTimeline`'s own `sessionKey` reset already use) — closes the bar rather than leaving it open against the wrong session's content. */
@@ -2690,6 +2791,120 @@
     mainView = 'session';
     void loadCommitGraph();
   }
+
+  /**
+   * Bridges a restored `SessionViewStatePanelV1` (issue #198) onto this
+   * session's own `CanvasTabsState` — opens/activates the matching tab,
+   * exactly what a user clicking that same tab would do (a file/diff/
+   * graph tab's own content is always re-fetched fresh on open, never
+   * trusted from the saving device, the same as opening it from scratch
+   * on THIS device already does). A `'file'` panel whose path no longer
+   * exists on this project resolves via the exact same `readFile` error
+   * path any stale file-tab open already takes — nothing special-cased
+   * here. The `'transcript'` case is a deliberate no-op beyond
+   * activation: `selectSession` already leaves a freshly reset
+   * `canvasTabs` on the transcript tab, so restoring it is inherently a
+   * match for the default.
+   */
+  function applyRestoredPanel(panel: SessionViewStatePanelV1): void {
+    switch (panel.kind) {
+      case 'file':
+        openFileTab(panel.path);
+        break;
+      case 'diff':
+        openWorktreeDiffTab();
+        break;
+      case 'graph':
+        openCommitGraphTab();
+        break;
+      case 'transcript':
+        canvasTabs.activate('transcript', transcript?.items ?? []);
+        break;
+    }
+  }
+
+  /** The inverse of {@link applyRestoredPanel} — this device's own currently active canvas tab, narrowed down to the wire's `SessionViewStatePanelV1` shape (issue #198), the persist effect's own read side. */
+  function currentViewStatePanel(): SessionViewStatePanelV1 {
+    const tab = canvasTabs.activeTab;
+    return tab.kind === 'file' ? { kind: 'file', path: tab.path } : { kind: tab.kind };
+  }
+
+  /** Structural equality over a `SessionViewStatePayloadV1` (issue #198) — the persist effect's own "is there actually anything new to save" check against {@link viewStateBaseline}: re-sending the exact value this device just restored (or just itself persisted) on every reactive tick would needlessly write to the relay and fan a same-value push out to every other live device on the account. */
+  function viewStatePayloadsEqual(
+    a: SessionViewStatePayloadV1,
+    b: SessionViewStatePayloadV1,
+  ): boolean {
+    const panelsEqual =
+      a.panel.kind === 'file' && b.panel.kind === 'file'
+        ? a.panel.path === b.panel.path
+        : a.panel.kind === b.panel.kind;
+    return a.draft === b.draft && a.lastViewedItemId === b.lastViewedItemId && panelsEqual;
+  }
+
+  /**
+   * Resolves a restored `pendingViewStateJumpTarget` (issue #198) against
+   * THIS device's own currently-synced transcript, feeding the exact
+   * same `transcriptJumpTarget`/`jumpToTranscriptItem` mechanism issue
+   * #740 shipped for "jump to this file's diff" — re-runs on every
+   * `transcript.items` change (a resync still in flight the moment the
+   * saved position first arrives is the expected case, not an edge one)
+   * until `invalidateStaleViewState` (`$lib/session-view-state.ts`)
+   * reports the anchor resolves, at which point it jumps once and clears
+   * the pending target so this never re-fires for it. An anchor that
+   * never resolves — evicted by the relay's bounded resync ring (SPEC
+   * §7.16), or simply never part of this device's own synced history —
+   * is never explicitly cleared either; it just never jumps, which IS
+   * the invalidate outcome issue #198 calls for: the reader is left at
+   * the live-tail default, same as a session with no saved position ever
+   * had.
+   */
+  $effect(() => {
+    const target = pendingViewStateJumpTarget;
+    if (!target) return;
+    const items = transcript?.items ?? [];
+    const checked = invalidateStaleViewState(
+      { draft: '', panel: { kind: 'transcript' }, lastViewedItemId: target },
+      items,
+    );
+    if (checked.lastViewedItemId === undefined) return;
+    jumpToTranscriptItem(target);
+    pendingViewStateJumpTarget = undefined;
+  });
+
+  /**
+   * Debounced persist of this session's view state (issue #198) —
+   * `draft`, the active canvas tab, and `viewedItemId` (this device's
+   * OWN current reading position, from `TranscriptTimeline`'s
+   * `onViewportItemChange` below) are exactly the three fields
+   * `SessionViewStatePayloadV1` carries. Gated on
+   * `viewStateRestoreSettled` (armed by `selectSession`): unsettled means
+   * a restore may still be landing, and saving now could either fight it
+   * or redundantly persist a value about to be overwritten anyway.
+   * `viewStatePayloadsEqual` against `viewStateBaseline` is what actually
+   * stops `viewStateRestoreSettled` flipping true, by itself, from
+   * re-saving the exact value this device just restored (or had nothing
+   * to restore, its own all-default baseline) — only a genuine local
+   * change past that point schedules a real write. `client` is read
+   * fresh inside the timer callback, not captured, so a disconnect mid-
+   * debounce quietly drops the save rather than firing on a closed
+   * client.
+   */
+  $effect(() => {
+    const payload: SessionViewStatePayloadV1 = {
+      draft,
+      panel: currentViewStatePanel(),
+      lastViewedItemId: viewedItemId,
+    };
+    const sessionId = selectedSessionId;
+    const settled = viewStateRestoreSettled;
+    clearTimeout(viewStatePersistTimer);
+    if (!client || !sessionId || !settled) return;
+    if (viewStateBaseline && viewStatePayloadsEqual(viewStateBaseline, payload)) return;
+    viewStatePersistTimer = setTimeout(() => {
+      viewStateBaseline = payload;
+      void client?.setSessionViewState(sessionId, payload);
+    }, VIEW_STATE_PERSIST_DEBOUNCE_MS);
+  });
 
   /** Stages or unstages one hunk (issue #232) — applies immediately, no confirmation (unlike discard, which is destructive and routed to `DiscardHunkDialog` instead). Re-fetches both {@link loadHunkDiff} and {@link loadWorktreeDiff} afterward, mirroring `DiscardHunkDialog`'s own `onDiscarded` contract: the staging view needs a fresh hunk breakdown, and re-fetching the plain diff too keeps both surfaces honest rather than one trusting a now-stale snapshot. Errors surface via a fresh `hunkViewer` `'error'` state — there is no separate toast for a stage/unstage failure, the staging view itself becomes the error surface, same as a failed initial load. */
   async function applyHunkAction(
@@ -4816,6 +5031,7 @@
                 onOpenFile={openFileTab}
                 searchQuery={transcriptSearchQuery}
                 activeSearchItemId={transcriptSearchMatches[transcriptSearchActiveIndex]?.itemId}
+                onViewportItemChange={(id) => (viewedItemId = id)}
               />
 
               <div class="canvas-footer">

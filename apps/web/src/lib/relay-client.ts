@@ -211,6 +211,9 @@ import {
   type SessionTemplateListSetPayloadV1,
   type SessionTemplateV1,
   type SessionUpdateEnvelopeV1,
+  type SessionViewStatePayloadV1,
+  type SessionViewStateResult,
+  parseSessionViewStatePayloadV1,
   type SnippetListResult,
   type SnippetListSetPayloadV1,
   type SnippetV1,
@@ -490,6 +493,12 @@ function parseSessionWireEvent(raw: unknown): AcpSessionWireEvent {
 
 /** `SessionMetaPublic`'s clear routing fields plus the title/projectPath decrypted from its paired private envelope. */
 export type ClientSessionMeta = SessionMetaPublic & SessionPrivateMeta;
+
+/** One session's live device-switch view state (issue #198) — {@link RelayClient.sessionViewStateFor}'s own element type. `revision` is the WRITING device's own high-water mark at save time (`@loombox/protocol`'s `session-view-state.ts` doc comment), never this reading device's own `lastAppliedSeqBySession`. */
+export interface ClientSessionViewState {
+  payload: SessionViewStatePayloadV1;
+  revision: number;
+}
 
 /**
  * One directory's fs-list state for the read-only file-tree panel (SPEC
@@ -6089,6 +6098,16 @@ export class RelayClient {
   private resubscribeSessionsOnReconnect(): void {
     for (const sessionId of this.subscribed) {
       this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+      // Issue #198: a device that was disconnected while another device
+      // saved a new draft/panel/position needs to re-fetch, not just
+      // resubscribe to the transcript — `session_view_state_result` is
+      // never replayed by resync (it isn't part of the transcript ring at
+      // all), so only an explicit re-request recovers what this device
+      // missed. Only for sessions someone has actually shown interest in
+      // ({@link sessionViewStateFor} having been called at least once) —
+      // never for a session this device merely keeps subscribed for its
+      // transcript/inbox tracking.
+      if (this.sessionViewStates.has(sessionId)) this.requestSessionViewState(sessionId);
     }
   }
 
@@ -6545,6 +6564,9 @@ export class RelayClient {
         return;
       case 'session_archive_response':
         this.handleSessionArchiveResponse(message);
+        return;
+      case 'session_view_state_result':
+        this.handleSessionViewStateResult(message);
         return;
       case 'session_fork_response':
         this.handleSessionForkResponse(message);
@@ -9569,6 +9591,128 @@ export class RelayClient {
       this.reviewCommentStatuses.set(sessionId, store);
     }
     return store;
+  }
+
+  // ---------------------------------------------------------------------
+  // Device-switch view state (issue #198, epic #6) — composer draft, open
+  // canvas tab, last-viewed transcript item. Session-scoped (unlike
+  // `keymap.ts`'s account-scoped sibling), sealed under the exact same
+  // `deriveSessionKey` every other session-scoped envelope in this class
+  // uses. See `@loombox/protocol`'s `session-view-state.ts` for the full
+  // design doc comment (what's preserved, why, and the invalidate story).
+  // ---------------------------------------------------------------------
+
+  /** `sessionId` -> {@link sessionViewStateFor}'s own live store, lazily created on first access (which also fires that session's initial `session_view_state_get_request`, see {@link sessionViewStateStoreFor}). Never created speculatively by an unsolicited push ({@link handleSessionViewStateResult} looks up, never creates) — a session this device has shown no interest in fetches fresh whenever it eventually does. */
+  private readonly sessionViewStates = new Map<
+    string,
+    Writable<ClientSessionViewState | undefined>
+  >();
+
+  /**
+   * One session's saved device-switch view state (issue #198) — `undefined`
+   * covers BOTH "nothing saved yet" and "not fetched from the relay yet";
+   * a caller can't tell the two apart from the store alone, and doesn't
+   * need to, since both render identically (empty draft, transcript tab,
+   * live tail) — the same default a session with no saved view state has
+   * always had. Lazily activated: the first call sends
+   * `session_view_state_get_request`; every later live push (another
+   * device saving, or this device's own {@link setSessionViewState})
+   * updates the same store in place, and every reconnect re-fetches
+   * ({@link resubscribeSessionsOnReconnect}) so a device that was
+   * disconnected while another advanced picks up the winning state.
+   */
+  sessionViewStateFor(sessionId: string): Readable<ClientSessionViewState | undefined> {
+    const store = this.sessionViewStateStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return store;
+  }
+
+  /**
+   * Saves (fully replaces — never a partial patch) `sessionId`'s view
+   * state, sealed client-side under this session's own `deriveSessionKey`
+   * before it ever reaches the relay, exactly like a prompt or any other
+   * session-scoped payload this class seals (`this.envelopeCrypto.seal(
+   * 'session', sessionId, sessionId, …)`) — the draft inside `payload` is
+   * user-authored content and must never leave this device unsealed, the
+   * same boundary `sendPrompt` already holds. `revision` is this device's
+   * own {@link lastAppliedSeqBySession} value for the session at save
+   * time (`0` if this device hasn't applied any `session_update` for it
+   * yet — a fresh device saving only a composer draft before the
+   * transcript itself has even resynced). Updates this device's own store
+   * immediately, optimistically: the relay's ack, once it lands, is a
+   * same-value no-op through {@link handleSessionViewStateResult}.
+   */
+  async setSessionViewState(sessionId: string, payload: SessionViewStatePayloadV1): Promise<void> {
+    const revision = this.lastAppliedSeqBySession.get(sessionId) ?? 0;
+    this.sessionViewStateStoreFor(sessionId).set({ payload, revision });
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    this.send({
+      type: 'session_view_state_set',
+      protocolVersion: PROTOCOL_V1,
+      requestId: generateId('viewstateset'),
+      sessionId,
+      envelope,
+      revision,
+    });
+  }
+
+  /** `sessionId` -> {@link sessionViewStates}'s backing store, created on first access — unlike every other lazy-map accessor in this class, creation ALSO fires this session's initial `session_view_state_get_request` ({@link requestSessionViewState}), since a view-state store starting at `undefined` is indistinguishable from "still loading" and there is no separate loaded/loading flag to gate on. */
+  private sessionViewStateStoreFor(
+    sessionId: string,
+  ): Writable<ClientSessionViewState | undefined> {
+    let store = this.sessionViewStates.get(sessionId);
+    if (!store) {
+      store = writable<ClientSessionViewState | undefined>(undefined);
+      this.sessionViewStates.set(sessionId, store);
+      this.requestSessionViewState(sessionId);
+    }
+    return store;
+  }
+
+  /** Sends `session_view_state_get_request` for `sessionId` — {@link sessionViewStateStoreFor}'s first-access fetch and {@link resubscribeSessionsOnReconnect}'s every-reconnect refresh both call this, never construct the request inline. */
+  private requestSessionViewState(sessionId: string): void {
+    this.send({
+      type: 'session_view_state_get_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: generateId('viewstateget'),
+      sessionId,
+    });
+  }
+
+  /**
+   * A `session_view_state_result` — the reply to this device's own
+   * `session_view_state_get_request`/`session_view_state_set` AND an
+   * unsolicited live push from another device's save arrive as the exact
+   * same message shape (`relay.ts` sends one either way; see that
+   * schema's own doc comment) — this handler makes no distinction between
+   * them. Looks up {@link sessionViewStates} rather than going through
+   * {@link sessionViewStateStoreFor}: a push for a session this device
+   * has shown no interest in yet must never speculatively create a store
+   * (which would re-trigger its own fetch and race this exact reply).
+   * `envelope: null` (nothing saved for this session, ever, or an
+   * account's last save was since cleared) clears this device's own store
+   * rather than leaving a stale value in place.
+   */
+  private handleSessionViewStateResult(message: SessionViewStateResult): void {
+    const store = this.sessionViewStates.get(message.sessionId);
+    if (!store) return;
+    if (message.envelope === null) {
+      store.set(undefined);
+      return;
+    }
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        store.set({
+          payload: parseSessionViewStatePayloadV1(decrypted),
+          revision: message.revision,
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt session_view_state_result for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
   }
 
   /**

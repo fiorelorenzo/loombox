@@ -310,6 +310,8 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
+    sessionViewStateFor: () => makeStore(undefined),
+    setSessionViewState: vi.fn().mockResolvedValue(undefined),
     getTestRunnerConfig: vi.fn().mockResolvedValue({}),
     getPermissionPolicy: vi
       .fn()

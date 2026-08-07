@@ -60,7 +60,10 @@ async function pruneExpired(
   for (const meta of sessions) {
     if (meta.createdAt < cutoff) {
       report.expiredSessions += 1;
-      if (!dryRun) await store.sessions.deleteSession(meta.id);
+      if (!dryRun) {
+        await store.sessions.deleteSession(meta.id);
+        await store.sessionViewStates.delete(meta.id);
+      }
     }
   }
 

@@ -71,6 +71,7 @@ interface TranscriptTimelineTestProps {
   jumpTarget: TranscriptJumpTarget | undefined;
   searchQuery?: string;
   activeSearchItemId?: string;
+  onViewportItemChange?: (itemId: string | undefined) => void;
 }
 
 function propsFor(items: TranscriptItem[], sessionKey: string): TranscriptTimelineTestProps {
@@ -307,6 +308,48 @@ describe('TranscriptTimeline: follow/pin-to-bottom (issue #508, extended by #755
     });
     await fireEvent.scroll(container);
     expect(furtherScroll.scrollTop).toBe(50);
+  });
+});
+
+describe('TranscriptTimeline: reports the current reading position (issue #198)', () => {
+  it('reports undefined while pinned to the live tail — no fixed "current item" while following', () => {
+    const onViewportItemChange = vi.fn();
+    renderTimeline(toolCalls(30), 'sess_1', { onViewportItemChange });
+    expect(onViewportItemChange).toHaveBeenCalledWith(undefined);
+    onViewportItemChange.mockClear();
+
+    // Following never fires again for a mere item count change — the
+    // reported value (undefined) hasn't changed, only the tail has.
+    expect(onViewportItemChange).not.toHaveBeenCalled();
+  });
+
+  it('reports the top mounted item\u2019s id once the reader scrolls away and detaches', async () => {
+    const onViewportItemChange = vi.fn();
+    const items = toolCalls(30);
+    renderTimeline(items, 'sess_1', { onViewportItemChange });
+    onViewportItemChange.mockClear();
+
+    const container = screen.getByTestId('transcript-items');
+    stubScrollGeometry(container, { scrollHeight: 900, clientHeight: 400, scrollTop: 100 });
+    await fireEvent.scroll(container);
+
+    expect(onViewportItemChange).toHaveBeenCalled();
+    const reported = onViewportItemChange.mock.calls.at(-1)?.[0] as string | undefined;
+    expect(reported).toBeDefined();
+    expect(items.some((item) => item.id === reported)).toBe(true);
+  });
+
+  it('reports undefined again once "Jump to latest" re-attaches to the tail', async () => {
+    const onViewportItemChange = vi.fn();
+    renderTimeline(toolCalls(30), 'sess_1', { onViewportItemChange });
+    const container = screen.getByTestId('transcript-items');
+    stubScrollGeometry(container, { scrollHeight: 900, clientHeight: 400, scrollTop: 100 });
+    await fireEvent.scroll(container);
+    expect(onViewportItemChange.mock.calls.at(-1)?.[0]).toBeDefined();
+
+    await fireEvent.click(screen.getByTestId('transcript-jump-latest'));
+
+    expect(onViewportItemChange.mock.calls.at(-1)?.[0]).toBeUndefined();
   });
 });
 

@@ -68,6 +68,25 @@ describe.each(cases)('relay data retention pruning (#102) — %s', (_label, make
     expect(await store.sessions.get('sess_new')).toBeDefined();
   });
 
+  it('TTL-pruning a session also purges its saved device-switch view state (issue #198) — nothing left for it to describe once the session itself is gone', async () => {
+    const store = await makeStore();
+    const now = Date.now();
+    await store.sessions.announce({
+      meta: makeSessionMeta({ id: 'sess_view_state_old', createdAt: now - 10_000 }),
+      privateEnvelope: fakeEnvelope('old-title'),
+    });
+    await store.sessionViewStates.set('sess_view_state_old', {
+      envelope: fakeEnvelope('old-view-state', 'sess_view_state_old'),
+      revision: 3,
+    });
+    expect(await store.sessionViewStates.get('sess_view_state_old')).toBeDefined();
+
+    await prune(store, { retentionMs: 5_000, now: () => now });
+
+    expect(await store.sessions.get('sess_view_state_old')).toBeUndefined();
+    expect(await store.sessionViewStates.get('sess_view_state_old')).toBeUndefined();
+  });
+
   it('TTL-prunes a blob older than the retention window, keeps one within it', async () => {
     const store = await makeStore();
 

@@ -333,4 +333,32 @@ export const migrations: readonly Migration[] = [
     `,
     down: `DROP TABLE IF EXISTS keymaps;`,
   },
+  {
+    // Device-switch state preservation (issue #198, epic #6): one opaque
+    // view-state envelope per SESSION (not account, unlike `keymaps` above)
+    // — the composer draft, open canvas tab, and last-viewed transcript
+    // item a device had, so switching devices mid-session resumes at a
+    // sensible point instead of a cold reload to the top. Same envelope
+    // column convention as `keymaps`/`amk_rotation_pending`, plus
+    // `revision`, the writing device's own `session_update.seq` high-water
+    // mark at write time (`@loombox/protocol`'s `session-view-state.ts` own
+    // doc comment covers what it's for). No `ON DELETE CASCADE` FK to
+    // `sessions`: `SessionStore.deleteSession` never actually deletes that
+    // table's own row (see its own doc comment), so `relay.ts`/`prune.ts`
+    // delete this table's row explicitly wherever they call
+    // `deleteSession`.
+    id: '0013_session_view_state',
+    up: `
+      CREATE TABLE session_view_state (
+        session_id TEXT PRIMARY KEY,
+        envelope_resource_id TEXT NOT NULL,
+        envelope_iv TEXT NOT NULL,
+        envelope_ciphertext TEXT NOT NULL,
+        envelope_alg TEXT NOT NULL,
+        revision BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+    `,
+    down: `DROP TABLE IF EXISTS session_view_state;`,
+  },
 ];
