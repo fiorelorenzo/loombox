@@ -357,6 +357,8 @@ export {
 } from './linux-sandbox';
 export type { ResolveSessionSandboxOptions, SessionSandboxResolution } from './session-sandbox';
 export { resolveSessionSandbox } from './session-sandbox';
+export type { ResolveNpmCacheDirOptions } from './npm-cache';
+export { resetNpmCacheDirCacheForTests, resolveNpmCacheDir } from './npm-cache';
 
 // v2: the supervisor-backend seam (issue #654, epic #653) — one
 // install/start/stop/status/uninstall/survivesReboot vocabulary, no

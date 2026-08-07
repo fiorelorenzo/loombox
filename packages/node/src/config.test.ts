@@ -273,6 +273,32 @@ describe('loadNodeConfig', () => {
       const env = { ...BASE_ENV, LOOMBOX_SANDBOX: 'disabled' };
       expect(() => loadNodeConfig({ env, argv: [] })).toThrow(/sandbox.*"on" or "off"/);
     });
+
+    it('sandboxNpmCacheEnabled defaults to true (issue #831) when LOOMBOX_SANDBOX_NPM_CACHE is unset', () => {
+      const config = loadNodeConfig({ env: BASE_ENV, argv: [] });
+      expect(config.sandboxNpmCacheEnabled).toBe(true);
+    });
+
+    it('LOOMBOX_SANDBOX_NPM_CACHE=off is the operator kill switch (issue #831)', () => {
+      const config = loadNodeConfig({
+        env: { ...BASE_ENV, LOOMBOX_SANDBOX_NPM_CACHE: 'off' },
+        argv: [],
+      });
+      expect(config.sandboxNpmCacheEnabled).toBe(false);
+    });
+
+    it('LOOMBOX_SANDBOX_NPM_CACHE is case-insensitive and trims surrounding whitespace', () => {
+      const config = loadNodeConfig({
+        env: { ...BASE_ENV, LOOMBOX_SANDBOX_NPM_CACHE: ' OFF ' },
+        argv: [],
+      });
+      expect(config.sandboxNpmCacheEnabled).toBe(false);
+    });
+
+    it('rejects a LOOMBOX_SANDBOX_NPM_CACHE value that is neither "on" nor "off" rather than silently picking a side', () => {
+      const env = { ...BASE_ENV, LOOMBOX_SANDBOX_NPM_CACHE: 'nope' };
+      expect(() => loadNodeConfig({ env, argv: [] })).toThrow(/sandbox npm cache.*"on" or "off"/);
+    });
   });
 
   describe('from a config file', () => {
@@ -411,6 +437,35 @@ describe('loadNodeConfig', () => {
         argv: [],
       });
       expect(config.sandboxEnabled).toBe(true);
+    });
+
+    it('loads sandboxNpmCacheEnabled: false from the config file (issue #831)', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        sandboxNpmCacheEnabled: false,
+      });
+
+      const config = loadNodeConfig({ env: {}, argv: ['--config', filePath] });
+      expect(config.sandboxNpmCacheEnabled).toBe(false);
+    });
+
+    it('lets LOOMBOX_SANDBOX_NPM_CACHE override sandboxNpmCacheEnabled set in the config file', async () => {
+      const filePath = await writeConfigFile({
+        relayUrl: 'ws://127.0.0.1:8787',
+        nodeId: 'file-node',
+        authToken: 'file-token',
+        amk: amkBase64(3),
+        sandboxNpmCacheEnabled: false,
+      });
+
+      const config = loadNodeConfig({
+        env: { LOOMBOX_NODE_CONFIG: filePath, LOOMBOX_SANDBOX_NPM_CACHE: 'on' },
+        argv: [],
+      });
+      expect(config.sandboxNpmCacheEnabled).toBe(true);
     });
 
     it('lets an env var override the same field set in the config file', async () => {

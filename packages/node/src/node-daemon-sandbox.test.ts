@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,7 @@ import { AgentSupervisor } from '@loombox/supervisor';
 
 import { createNode, type NodeDaemon } from './node-daemon';
 import { detectSandboxCapability, resetSandboxCapabilityCacheForTests } from './linux-sandbox';
+import { resetNpmCacheDirCacheForTests } from './npm-cache';
 
 const execFileAsync = promisify(execFile);
 
@@ -63,6 +64,39 @@ function sandboxedEchoProvider(): AcpProvider {
   };
 }
 
+/**
+ * A provider whose fixture script probes a caller-supplied "npm cache"
+ * directory BEFORE running the normal ACP handshake (issue #831): if the
+ * marker this same script writes on its first run isn't there yet, it
+ * writes it (standing in for "npx downloaded the package"); if it IS
+ * there, it writes a second, distinct witness file into ITS OWN session
+ * worktree (standing in for "npx found it in cache — reused, not
+ * re-downloaded"). Two sessions sharing the same real, host-visible
+ * `npmCacheDir` prove `NodeDaemon` really threads `resolveNpmCacheDir()`
+ * into `resolveSessionSandbox()`'s `extraReadWriteMounts` for a genuine
+ * local session — not just that the lower-level primitives support it in
+ * isolation (see `session-sandbox.test.ts`'s own npm-cache describe block
+ * for that, including the real elapsed-time reuse measurement).
+ */
+function npmCacheProbeProvider(npmCacheDir: string): AcpProvider {
+  return {
+    id: 'test-npm-cache-probe',
+    spawnConfig: ({ cwd }) => {
+      const fixturePath = path.join(cwd, '_npm-cache-probe-fixture.mjs');
+      const markerPath = path.join(npmCacheDir, 'downloaded-marker');
+      const witnessPath = path.join(cwd, 'reused-cache-witness.txt');
+      const probe =
+        `import { existsSync, writeFileSync } from 'node:fs';\n` +
+        `const marker = ${JSON.stringify(markerPath)};\n` +
+        `if (existsSync(marker)) { writeFileSync(${JSON.stringify(witnessPath)}, 'reused'); } ` +
+        `else { writeFileSync(marker, 'downloaded'); }\n`;
+      writeFileSync(fixturePath, `${ECHO_FIXTURE_SOURCE}\n${probe}`);
+      return { command: process.execPath, args: [fixturePath], cwd };
+    },
+    enrich: (update) => update,
+  };
+}
+
 let relay: StartedRelay;
 let projectPath: string;
 let nodeStateDir: string;
@@ -103,6 +137,7 @@ afterEach(async () => {
   await rm(projectPath, { recursive: true, force: true });
   await rm(nodeStateDir, { recursive: true, force: true });
   await relay.close();
+  resetNpmCacheDirCacheForTests();
 });
 
 describe.skipIf(!realCapability.available)(
@@ -120,12 +155,68 @@ describe.skipIf(!realCapability.available)(
         accountId: 'acct-sandbox',
         amk,
         supervisor: new AgentSupervisor({ providers: [sandboxedEchoProvider()] }),
-        sessionSandbox: { enabled: true },
+        sessionSandbox: { enabled: true, npmCacheEnabled: false },
       });
 
       const session = await node.createSession({ projectPath, provider: 'test-sandboxed-echo' });
 
       expect(session.id).toBeTruthy();
+    });
+  },
+);
+
+describe.skipIf(!realCapability.available)(
+  'NodeDaemon + sessionSandbox: enabled — npm/npx cache mount really wired through a real local session (issue #831)',
+  () => {
+    afterEach(() => {
+      resetNpmCacheDirCacheForTests();
+    });
+
+    it('a second local session on the same node sees what the first session wrote into the shared cache mount — proof the daemon actually threads resolveNpmCacheDir() into the sandbox, not just that the primitive supports it in isolation', async () => {
+      const npmCacheDir = await mkdtemp(path.join(tmpdir(), 'loombox-node-daemon-npm-cache-'));
+      const originalCacheEnv = process.env.NPM_CONFIG_CACHE;
+      // Deterministic and hermetic: this test's own tmp dir, never this
+      // dev box's real `~/.npm` (`resolveNpmCacheDir()` honors
+      // `NPM_CONFIG_CACHE` first, before ever probing `npm`/falling back
+      // to `$HOME/.npm` — see that module's own doc comment).
+      process.env.NPM_CONFIG_CACHE = npmCacheDir;
+      resetNpmCacheDirCacheForTests();
+      try {
+        const amk = generateAmk();
+        node = createNode({
+          relayUrl: relay.url,
+          stateDir: nodeStateDir,
+          nodeId: 'node-sandbox-npm-cache',
+          deviceId: 'device-sandbox-npm-cache',
+          devicePublicKey: 'unused-in-this-test',
+          authToken: 'acct-sandbox-npm-cache',
+          accountId: 'acct-sandbox-npm-cache',
+          amk,
+          supervisor: new AgentSupervisor({ providers: [npmCacheProbeProvider(npmCacheDir)] }),
+          sessionSandbox: { enabled: true, npmCacheEnabled: true },
+        });
+
+        const sessionA = await node.createSession({
+          projectPath,
+          provider: 'test-npm-cache-probe',
+        });
+        expect(existsSync(path.join(npmCacheDir, 'downloaded-marker'))).toBe(true);
+
+        const sessionB = await node.createSession({
+          projectPath,
+          provider: 'test-npm-cache-probe',
+        });
+        expect(sessionB.worktreePath).not.toBe(sessionA.worktreePath);
+        const witness = await readFile(
+          path.join(sessionB.worktreePath, 'reused-cache-witness.txt'),
+          'utf8',
+        );
+        expect(witness).toBe('reused');
+      } finally {
+        if (originalCacheEnv === undefined) delete process.env.NPM_CONFIG_CACHE;
+        else process.env.NPM_CONFIG_CACHE = originalCacheEnv;
+        await rm(npmCacheDir, { recursive: true, force: true });
+      }
     });
   },
 );
@@ -163,7 +254,7 @@ describe('NodeDaemon + sessionSandbox: enabled — fail-closed (issue #257 non-n
         accountId: 'acct-sandbox-2',
         amk,
         supervisor: new AgentSupervisor({ providers: [sandboxedEchoProvider()] }),
-        sessionSandbox: { enabled: true },
+        sessionSandbox: { enabled: true, npmCacheEnabled: false },
       });
 
       await expect(
