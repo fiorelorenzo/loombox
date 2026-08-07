@@ -575,19 +575,21 @@
 </div>
 
 <style>
-  /* Takes the row's spare width so `.meter`'s `margin-left: auto` right-aligns
-     the figures against the send controls, instead of the whole bar shrinking
-     to its content and leaving the meter jammed against the last picker.
-
-     Deliberately NOT `min-width: 0`: that let the bar shrink below its own
-     min-content on a phone, and the meter — which must not break a figure
-     across lines — overflowed straight over the Send button (caught in a 390px
-     capture, where "$1.74" was painted through "Send"). At `auto` the row wraps
-     Send onto its own line instead, which is what a flex row is for. */
+  /* Issue #578: the meter that used to force this bar to wrap (`$1.74`
+     painting through "Send" on a 390px capture) left the row entirely in
+     #736 — it lives on `StatusBar` now, which has the full window width a
+     composer control strip never had. Nothing left in `.config-bar` is
+     allowed to wrap onto a second line: `nowrap` plus `min-width: 0` makes
+     the bar shrink below its own min-content instead, so `.agent` and the
+     trigger truncate (see both below) rather than stacking. A stale
+     wrap-tolerant rule here is exactly the bug #578 filed against — a
+     narrow window silently turning one control row into two mismatched
+     ones — so this is deliberate, not an oversight. */
   .config-bar {
     flex: 1;
+    min-width: 0;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     gap: var(--space-sm);
     font-size: var(--text-small-size);
@@ -603,17 +605,98 @@
     color: var(--color-text-secondary);
   }
 
-  /* The agent answering, not a control: same secondary register as a picker's
-     label, but in the app's own voice rather than uppercase chrome. */
+  /* Issue #578: one control language means nothing in this row is bare
+     text — every element is a chip or a button at the same height and
+     corner radius, whether or not it responds to a click. The agent name
+     is still not a control (same secondary register as a picker's label,
+     same non-interactive semantics: no border, no hover, no focus ring),
+     but it now sits in the same rounded, padded chip family as the
+     trigger beside it rather than floating as plain inline text next to
+     one. `--color-fill-subtle` (a recessed fill, not `.config-trigger`'s
+     outlined `--color-surface`) is what keeps "readout" visually distinct
+     from "opens a popover" without falling back to no chrome at all.
+     Truncates instead of wrapping (`.config-bar`'s own `nowrap` above) and
+     yields width to the trigger first — `flex-shrink: 2` against the
+     trigger root's `1` below — because the trigger is what a user tapped
+     "More composer options" to reach; the agent name is a fact they
+     already know, not what they came for.
+
+     `min-height: var(--space-2xl)` (issue #578, "one control language"
+     stated as a rule rather than a per-element nudge): every non-CTA
+     control on the composer's row — this chip, `.config-trigger` below,
+     and `+page.svelte`'s `IconButton`s either side — rests at the exact
+     same `2rem` footprint, because that IS the app's own standard
+     icon-action hit target already (`IconButton`'s own `.ui-icon-button-md`
+     rule, `width`/`height: 2rem`, unchanged): reusing that value through
+     the token that already equals it, not inventing a fifth number
+     (#580's whole point). `min-height`, not `height`: it only raises a
+     shorter box to the floor, never clips a taller one — this chip's own
+     content sits comfortably under it, so in practice it just adds the
+     couple of px `--space-2xs`'s vertical padding alone left short.
+     `Send`/`Stop` (`+page.svelte`'s `.composer-actions`, routed through
+     the shared `Button` primitive) are the one deliberate exception: #577
+     already settled Send as the row's one visually primary action, and
+     `Button`'s own scoped size rules are exactly the kind of primitive
+     internals a call site must never fight with a louder selector (see
+     `.config-trigger-chevron`'s own note below, guarded by
+     `primitive-override-scope.test.ts`) — so the CTA keeps its own
+     primitive's height rather than being forced onto this one. */
   .agent {
+    flex: 0 2 auto;
+    min-width: 2.5rem;
+    min-height: var(--space-2xl);
+    overflow: hidden;
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    background: var(--color-fill-subtle);
     color: var(--color-text-secondary);
     white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   /* Anchors the popover the same way `Select.svelte`'s own `.ui-select` root
-     does — a `position: relative` box the popover floats against. */
+     does — a `position: relative` box the popover floats against.
+     `flex: 0 1 auto` + `min-width: 0` (issue #578) is the other half of
+     `.agent`'s shrink priority above: this yields width more slowly than
+     the agent chip does, so a tight row keeps the actionable trigger
+     legible longest. `.config-trigger-value`'s own ellipsis (below) is
+     what lets this shrink at all instead of forcing `.config-bar` to wrap. */
   .config-trigger-root {
     position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .config-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    max-width: 14rem;
+    min-height: var(--space-2xl);
+    padding: var(--space-2xs) var(--space-md);
+    background: var(--color-surface);
+    color: inherit;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font: inherit;
+    font-size: var(--text-small-size);
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-beat),
+      background-color var(--duration-fast) var(--ease-beat);
+  }
+
+  /* Anchors the popover the same way `Select.svelte`'s own `.ui-select` root
+     does — a `position: relative` box the popover floats against.
+     `flex: 0 1 auto` + `min-width: 0` (issue #578) is the other half of
+     `.agent`'s shrink priority above: this yields width more slowly than
+     the agent chip does, so a tight row keeps the actionable trigger
+     legible longest. `.config-trigger-value`'s own ellipsis (below) is
+     what lets this shrink at all instead of forcing `.config-bar` to wrap. */
+  .config-trigger-root {
+    position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   .config-trigger {
