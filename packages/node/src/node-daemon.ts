@@ -13,6 +13,7 @@ import {
   ProjectEnvVarMissingError,
   type AcpMcpServerConfig,
   type AcpPermissionOption,
+  type AcpPermissionOutcome,
   type AcpProvider,
   type AcpPromptContentBlock,
   type AcpSessionWireEvent,
@@ -25,6 +26,7 @@ import {
   type InlineImageHandoffFailureReason,
   type McpServerConfig,
   type McpServerPromptsResult,
+  type PermissionResolveResult,
   type ProjectEnvVarDecl,
 } from '@loombox/providers-core';
 import {
@@ -452,6 +454,8 @@ import {
   type LiveTrackerProvider,
 } from './tracker-live-bridge';
 import { LiveTrackerPrLinkageWriter } from './tracker-pr-linkage-live';
+import { TrackerMcpHost, type TrackerWritePermissionResult } from './tracker-mcp-host';
+import type { TrackerMcpToolName } from './tracker-mcp-tools';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -860,6 +864,15 @@ export interface NodeDaemonOptions {
    */
   nativeTrackerStore?: NativeTrackerStore;
   /**
+   * The node-side MCP host that actually serves the five `tracker_*`
+   * tools an agent session calls against {@link nativeTrackerStore}
+   * (issue #627, completing #211/#212's tool contract). Injectable for
+   * tests; defaults to a fresh `TrackerMcpHost()` — see
+   * `./tracker-mcp-host.ts`'s own doc comment for why this hosts a real
+   * MCP server in-process rather than declaring an external one.
+   */
+  trackerMcpHost?: TrackerMcpHost;
+  /**
    * Passed straight through to `discoverSshTargets` (SPEC §7.23 step 1;
    * redesign v2 §3.2; issue #475) when this node handles an
    * `ssh_discovery_request` — the add-target wizard's candidate-card picker
@@ -1111,6 +1124,42 @@ function isPermissionRequestDetail(detail: unknown): detail is { requestId: stri
     detail !== null &&
     typeof (detail as { requestId?: unknown }).requestId === 'string'
   );
+}
+
+/**
+ * A short, human-readable summary of a `tracker_create`/`tracker_update`/
+ * `tracker_link_session` call's raw MCP arguments, folded into the
+ * synthetic permission request's `toolCall.title` ({@link
+ * NodeDaemon.requestTrackerWritePermission}) — the same text a human sees
+ * on the approval card the relay's `permission_request` renders. Never
+ * throws on a shape that doesn't match what the tool's own Zod schema
+ * would accept (that's `tracker-mcp-tools.ts`'s job, downstream of this
+ * approval); this is display-only, so an unexpected shape just falls back
+ * to `JSON.stringify`, still useful to a human deciding allow/deny.
+ */
+function describeTrackerWriteInput(rawInput: unknown): string {
+  if (typeof rawInput !== 'object' || rawInput === null) return JSON.stringify(rawInput);
+  const input = rawInput as Record<string, unknown>;
+  if (typeof input.primaryType === 'string') {
+    const fieldsTitle =
+      typeof input.fields === 'object' && input.fields !== null
+        ? (input.fields as Record<string, unknown>).title
+        : undefined;
+    return typeof fieldsTitle === 'string'
+      ? `${input.primaryType} "${fieldsTitle}"`
+      : input.primaryType;
+  }
+  if (typeof input.id === 'string') return `record ${input.id}`;
+  return JSON.stringify(rawInput);
+}
+
+/** Translates a resolved `session/request_permission` outcome into {@link TrackerWritePermissionResult} — the one place ACP's `optionId`/`kind`/`outcome` wire vocabulary crosses into `tracker-mcp-host.ts`'s own, deliberately ACP-agnostic result shape (see that module's doc comment). Only the `optionId: 'allow'` option `requestTrackerWritePermission` itself offers counts as approval; anything else (the `'deny'` option, a profile's own substituted `reject_once`/`reject_always` option, or the request being cancelled outright) refuses. */
+function trackerWritePermissionFromOutcome(
+  outcome: AcpPermissionOutcome,
+): TrackerWritePermissionResult {
+  if (outcome.outcome === 'selected' && outcome.optionId === 'allow') return { allowed: true };
+  if (outcome.outcome === 'cancelled') return { allowed: false, reason: 'cancelled' };
+  return { allowed: false, reason: 'denied' };
 }
 
 /**
@@ -1700,6 +1749,8 @@ export class NodeDaemon extends EventEmitter {
   private readonly testRunnerConfigStore: TestRunnerConfigStore;
   /** SPEC §7.10; issue #212 — see `NodeDaemonOptions.nativeTrackerStore`'s doc comment. */
   private readonly nativeTrackerStore: NativeTrackerStore;
+  /** SPEC §7.10; issue #627 — see `NodeDaemonOptions.trackerMcpHost`'s doc comment. */
+  private readonly trackerMcpHost: TrackerMcpHost;
   /**
    * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
    * sessions — a separate instance from `SessionManager`'s own guard
@@ -1892,6 +1943,7 @@ export class NodeDaemon extends EventEmitter {
       options.testRunnerConfigStore ?? new TestRunnerConfigStore({ stateDir: options.stateDir });
     this.nativeTrackerStore =
       options.nativeTrackerStore ?? new NativeTrackerStore({ stateDir: options.stateDir });
+    this.trackerMcpHost = options.trackerMcpHost ?? new TrackerMcpHost();
     this.sshDiscoveryOptions = options.sshDiscoveryOptions;
     this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
     this.sshTargetStore =
@@ -2129,6 +2181,7 @@ export class NodeDaemon extends EventEmitter {
     this.targetHealthSampler.stop();
     this.ciCheckWatcher.stop();
     this.trackerConnectivityWatcher.stop();
+    this.trackerMcpHost.close().catch(() => {});
     this.selfUpdateMonitor?.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
@@ -2330,7 +2383,11 @@ export class NodeDaemon extends EventEmitter {
     try {
       const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
       mcpServers = filterMcpServersForProfile(
-        await this.resolveMcpServers(opts.projectPath, opts.mcpServerConfigs ?? []),
+        await this.resolveMcpServersWithTracker(
+          sessionId,
+          opts.projectPath,
+          opts.mcpServerConfigs ?? [],
+        ),
         profile,
       );
       projectEnv = await this.projectEnvManager.resolveForSession(
@@ -2669,6 +2726,102 @@ export class NodeDaemon extends EventEmitter {
     const effective = mergeMcpServerConfigLists(nodeStoreServers, clientDeclared);
     if (effective.length === 0) return [];
     return this.mcpSecretManager.resolveForSession(projectPath, effective);
+  }
+
+  /**
+   * {@link resolveMcpServers}, plus this project's tracker MCP server —
+   * SPEC §7.10; issue #627. Wraps rather than folds into
+   * `resolveMcpServers` itself so that method's own two other callers
+   * (nothing to do with a live session — see its own call sites) stay
+   * exactly as before. Appends only when `projectPath`'s `TrackerMode` is
+   * `{kind:'native'}` (the same `?? {kind:'native'}` default
+   * `resolveTrackerDispatch`/the PR-linkage bridge already use — see
+   * `./tracker-mcp-host.ts`'s own doc comment's "Tool-list honesty"
+   * section for why a `live`-mode project never gets this server at
+   * all): `tracker_*` reads and writes `nativeTrackerStore` directly, so
+   * a `live`-mode session's agent must never even see these tools in its
+   * own `tools/list`, let alone call one and have it silently fail.
+   */
+  private async resolveMcpServersWithTracker(
+    sessionId: string,
+    projectPath: string,
+    clientDeclared: readonly McpServerConfig[],
+  ): Promise<AcpMcpServerConfig[]> {
+    const resolved = await this.resolveMcpServers(projectPath, clientDeclared);
+    const mode = this.trackerModeStore.get(projectPath) ?? { kind: 'native' as const };
+    if (mode.kind !== 'native') return resolved;
+
+    const trackerServer = await this.trackerMcpHost.register({
+      store: this.nativeTrackerStore,
+      projectPath,
+      authorId: this.accountId,
+      sessionId,
+      requestWritePermission: (toolName, rawInput) =>
+        this.requestTrackerWritePermission(sessionId, toolName, rawInput),
+    });
+    return [...resolved, trackerServer];
+  }
+
+  /**
+   * {@link TrackerMcpSessionContext.requestWritePermission}'s real
+   * implementation (issue #627's "writes go through the same permission
+   * path as every other mutating tool call"): enqueues a synthetic
+   * tool-call permission request onto `sessionId`'s own live
+   * `AgentSession.permissions` FIFO queue — the exact queue a REAL
+   * incoming `session/request_permission` from the connected agent
+   * enqueues onto — so the SAME D3-4 profile gate
+   * (`AgentSession`'s own `client.on('permission_request', ...)`
+   * listener, wired from this session's `evaluateToolProfile` at spawn
+   * time) and the SAME relay-visible `permission_request`
+   * (`sendPermissionRequest`, fired off this session's own `'attention'`
+   * listener the moment `setAttention('permission_required', ...)` runs)
+   * apply to a tracker write with zero new code in either place. A
+   * profile denial resolves this synchronously, inside `enqueue()`
+   * itself, before this method's own `enqueue()` call even returns — the
+   * `resolved` listener registered below catches that exactly like a
+   * slower, human-driven resolution.
+   *
+   * Refuses immediately, with no queue entry at all, when this session
+   * has no live agent to attribute the request to (a replay-only/
+   * disconnected session, or a race with the agent process exiting
+   * mid-call) — there is nothing for a human to answer against.
+   */
+  private requestTrackerWritePermission(
+    sessionId: string,
+    toolName: TrackerMcpToolName,
+    rawInput: unknown,
+  ): Promise<TrackerWritePermissionResult> {
+    const bridge = this.bridges.get(sessionId);
+    if (!bridge?.agentSession.isLive) {
+      return Promise.resolve({
+        allowed: false,
+        reason: 'session has no live agent to approve this against',
+      });
+    }
+    const queue = bridge.agentSession.permissions;
+    const requestId = `tracker:${randomUUID()}`;
+    const toolCall: AcpToolCallUpdate = {
+      kind: 'tool_call',
+      id: requestId,
+      title: `${toolName}: ${describeTrackerWriteInput(rawInput)}`,
+      toolKind: 'edit',
+      status: 'pending',
+      rawInput,
+    };
+    const options: AcpPermissionOption[] = [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+    ];
+
+    const { promise, resolve } = Promise.withResolvers<TrackerWritePermissionResult>();
+    const onResolved = (result: PermissionResolveResult) => {
+      if (result.status !== 'resolved' || result.requestId !== requestId) return;
+      queue.off('resolved', onResolved);
+      resolve(trackerWritePermissionFromOutcome(result.outcome));
+    };
+    queue.on('resolved', onResolved);
+    queue.enqueue({ requestId, sessionId: bridge.agentSession.id, toolCall, options });
+    return promise;
   }
 
   /**
@@ -3482,6 +3635,13 @@ export class NodeDaemon extends EventEmitter {
       // set has no reason to outlive the bridge that launched it — see
       // {@link mcpServersBySession}'s own doc comment.
       this.mcpServersBySession.delete(bridge.session.id);
+      // Issue #627: this session's tracker MCP endpoint (if any — only
+      // native-mode projects ever get one) has no reason to outlive the
+      // bridge that launched it either, same reasoning as
+      // `mcpServersBySession` right above. A no-op for a session that
+      // never got one (a `live`-mode project, or one whose spawn failed
+      // before `resolveMcpServersWithTracker` ever ran).
+      this.trackerMcpHost.unregister(bridge.session.id);
     });
   }
 
@@ -4842,7 +5002,11 @@ export class NodeDaemon extends EventEmitter {
     // records apply; a future fork-time client declaration would thread
     // through here identically to `createSessionInternal`'s own
     // `opts.mcpServerConfigs`/`opts.projectEnvDecls`.
-    const mcpServers = await this.resolveMcpServers(opts.projectPath, []);
+    const mcpServers = await this.resolveMcpServersWithTracker(
+      opts.sessionId,
+      opts.projectPath,
+      [],
+    );
     const projectEnv = await this.projectEnvManager.resolveForSession(opts.projectPath, []);
 
     let session: Session;
