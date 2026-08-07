@@ -8,6 +8,7 @@ import type {
   GitBranchMergeAbortResponsePayloadV1,
   GitBranchMergeResponsePayloadV1,
   GitBranchSwitchResponsePayloadV1,
+  GitPushResponsePayloadV1,
   GitStashDropResponsePayloadV1,
   GitStashListResponsePayloadV1,
   GitStashPopResponsePayloadV1,
@@ -41,6 +42,12 @@ function fakeClient(overrides: Partial<GitBranchPanelClient> = {}): GitBranchPan
     abortBranchMerge: vi
       .fn()
       .mockResolvedValue({ outcome: 'ok' } satisfies GitBranchMergeAbortResponsePayloadV1),
+    pushBranch: vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      branch: 'unused',
+      setUpstream: false,
+      forced: false,
+    } satisfies GitPushResponsePayloadV1),
     saveStash: vi
       .fn()
       .mockResolvedValue({ outcome: 'ok', created: true } satisfies GitStashSaveResponsePayloadV1),
@@ -398,5 +405,96 @@ describe('GitBranchPanel: stash (SPEC §7.6; issue #234)', () => {
 
     expect(dropStash).toHaveBeenCalledWith('sess-1', { index: 0 });
     await vi.waitFor(() => expect(requestStashes).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('GitBranchPanel: push (SPEC §7.6/§7.14; issue #235)', () => {
+  it('pushes and renders the ok outcome, noting upstream tracking on a first push — never fires onChanged (a push changes the remote, not this worktree)', async () => {
+    const pushBranch = vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      branch: 'feature',
+      setUpstream: true,
+      forced: false,
+    } satisfies GitPushResponsePayloadV1);
+    const onChanged = vi.fn();
+    const client = fakeClient({ pushBranch });
+    render(GitBranchPanel, { props: { sessionId: 'sess-1', client, onChanged } });
+    await screen.findByTestId('git-branch-list');
+
+    await fireEvent.click(screen.getByTestId('git-branch-push-submit'));
+
+    expect(pushBranch).toHaveBeenCalledWith('sess-1', { force: false });
+    const success = await screen.findByTestId('git-branch-push-success');
+    expect(success.textContent).toContain('origin/feature');
+    expect(success.textContent).toContain('upstream tracking set');
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('a rejected_non_fast_forward outcome renders the real message and a Push (force) action, distinct from a generic failure', async () => {
+    const pushBranch = vi.fn().mockResolvedValue({
+      outcome: 'rejected_non_fast_forward',
+      message: 'origin/feature has commits this branch does not have',
+    } satisfies GitPushResponsePayloadV1);
+    const client = fakeClient({ pushBranch });
+    render(GitBranchPanel, { props: { sessionId: 'sess-1', client } });
+    await screen.findByTestId('git-branch-list');
+
+    await fireEvent.click(screen.getByTestId('git-branch-push-submit'));
+
+    const banner = await screen.findByTestId('git-branch-push-rejected');
+    expect(
+      within(banner).getByText('origin/feature has commits this branch does not have'),
+    ).toBeTruthy();
+    expect(within(banner).getByTestId('git-branch-push-force')).toBeTruthy();
+  });
+
+  it('a rejected_stale_lease outcome explains the stale lease distinctly from an ordinary rejection, and Push (force) retries with force: true', async () => {
+    const pushBranch = vi.fn().mockResolvedValue({
+      outcome: 'rejected_stale_lease',
+      message: "this worktree's view of origin/feature is stale",
+    } satisfies GitPushResponsePayloadV1);
+    const client = fakeClient({ pushBranch });
+    render(GitBranchPanel, { props: { sessionId: 'sess-1', client } });
+    await screen.findByTestId('git-branch-list');
+
+    await fireEvent.click(screen.getByTestId('git-branch-push-submit'));
+    const banner = await screen.findByTestId('git-branch-push-rejected');
+    expect(within(banner).getByText(/out of date/)).toBeTruthy();
+
+    await fireEvent.click(within(banner).getByTestId('git-branch-push-force'));
+
+    expect(pushBranch).toHaveBeenLastCalledWith('sess-1', { force: true });
+  });
+
+  it('a no_branch outcome (detached HEAD) is reported distinctly, never as a generic error', async () => {
+    const pushBranch = vi.fn().mockResolvedValue({
+      outcome: 'no_branch',
+      message: 'This session has no named branch to push (detached HEAD, or not a git repository).',
+    } satisfies GitPushResponsePayloadV1);
+    const client = fakeClient({ pushBranch });
+    render(GitBranchPanel, { props: { sessionId: 'sess-1', client } });
+    await screen.findByTestId('git-branch-list');
+
+    await fireEvent.click(screen.getByTestId('git-branch-push-submit'));
+
+    expect(
+      await screen.findByText(
+        'This session has no named branch to push (detached HEAD, or not a git repository).',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('an auth_failed outcome is reported distinctly from a generic error', async () => {
+    const pushBranch = vi.fn().mockResolvedValue({
+      outcome: 'auth_failed',
+      message: 'git push could not authenticate with the remote: Permission denied (publickey).',
+    } satisfies GitPushResponsePayloadV1);
+    const client = fakeClient({ pushBranch });
+    render(GitBranchPanel, { props: { sessionId: 'sess-1', client } });
+    await screen.findByTestId('git-branch-list');
+
+    await fireEvent.click(screen.getByTestId('git-branch-push-submit'));
+
+    expect(await screen.findByText(/could not authenticate with the remote/)).toBeTruthy();
   });
 });

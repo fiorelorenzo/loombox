@@ -116,6 +116,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   git_stash_pop_response: { routed: 'node' },
   git_stash_drop_request: { routed: 'client' },
   git_stash_drop_response: { routed: 'node' },
+  git_push_request: { routed: 'client' },
+  git_push_response: { routed: 'node' },
   git_commit_draft_request: { routed: 'client' },
   git_commit_draft_response: { routed: 'node' },
   git_commit_request: { routed: 'client' },

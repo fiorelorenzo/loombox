@@ -388,6 +388,23 @@ export {
 } from './git-branch';
 
 export type {
+  GitPushRequest,
+  GitPushRequestPayloadV1,
+  GitPushResponse,
+  GitPushResponsePayloadV1,
+} from './git-push';
+export {
+  gitPushRequest,
+  gitPushRequestPayloadV1,
+  gitPushResponse,
+  gitPushResponsePayloadV1,
+  parseGitPushRequestPayloadV1,
+  parseGitPushResponsePayloadV1,
+  safeParseGitPushRequestPayloadV1,
+  safeParseGitPushResponsePayloadV1,
+} from './git-push';
+
+export type {
   GitStashDropRequest,
   GitStashDropRequestPayloadV1,
   GitStashDropResponse,

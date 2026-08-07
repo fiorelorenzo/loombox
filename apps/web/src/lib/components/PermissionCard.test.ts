@@ -96,6 +96,51 @@ describe('PermissionCard: rendering', () => {
   });
 });
 
+describe('PermissionCard: real provider-shaped option labels (issue #820)', () => {
+  it('names real Codex permission options exactly as Codex itself labels them ("Allow Once"/"Allow for Session"/"Reject"), never the guessed "Yes"/"Stop, and explain" text', () => {
+    // Real shapes from `@agentclientprotocol/codex-acp@1.1.10`'s
+    // `CodexApprovalHandler` (docs/research/codex-acp-completeness.md §4).
+    const codexRequest: PendingPermissionRequest = {
+      ...request,
+      options: [
+        { optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' },
+        { optionId: 'allow_always', name: 'Allow for Session', kind: 'allow_always' },
+        { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+      ],
+    };
+    render(PermissionCard, {
+      props: { request: codexRequest, actionable: true, onResolve: vi.fn() },
+    });
+    expect(screen.getByRole('button', { name: 'Allow Once' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow for Session' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Yes$/ })).toBeNull();
+    expect(screen.queryByText(/Stop, and explain/)).toBeNull();
+  });
+
+  it("keeps naming Claude Code's own five-verb labels correctly, unaffected by the Codex fix", () => {
+    // Claude's real verb set (packages/providers/claude/src/permissions.ts).
+    const claudeRequest: PendingPermissionRequest = {
+      ...request,
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'allow-all-edits', name: 'Allow all edits', kind: 'allow_always' },
+        { optionId: 'bypass-everything', name: 'Bypass everything', kind: 'allow_always' },
+        { optionId: 'allow-for-session', name: 'Allow for session', kind: 'allow_always' },
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+      ],
+    };
+    render(PermissionCard, {
+      props: { request: claudeRequest, actionable: true, onResolve: vi.fn() },
+    });
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow all edits' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Bypass everything' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow for session' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy();
+  });
+});
+
 describe('PermissionCard: the deliberate exception to the shared card language (design spec v5 §4)', () => {
   it('never carries the shared flat .tool-card class every other tool surface converges on — interrupting is its own, heavier job', () => {
     render(PermissionCard, { props: { request, actionable: true, onResolve: vi.fn() } });

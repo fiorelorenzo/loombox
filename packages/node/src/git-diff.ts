@@ -850,3 +850,115 @@ export async function stashDrop(
     );
   }
 }
+
+/**
+ * Pushes a session's own branch to `origin` (SPEC §7.6/§7.14; issue #235)
+ * — the last step of this file's own create/switch/merge/stash chain, and
+ * the FIRST one that talks to a remote at all. `NodeDaemon.pushBranchForBridge`
+ * resolves `branch` via `./session-branch.ts`'s `resolveSessionBranch`
+ * before calling this, exactly like `pr-open.ts`'s `openPr` resolves it
+ * for its own (unrelated) push — this function itself stays a plain
+ * `(target, worktreePath, branch)` triple, this file's own established
+ * shape, rather than importing `Session`/`resolveSessionBranch` here.
+ *
+ * Always passes `--set-upstream origin <branch>`: harmless and idempotent
+ * when an upstream already exists (git just re-confirms it — see
+ * `pr-open.ts`'s `openPr`, which already relies on the same idempotence),
+ * and exactly what a branch's first-ever push needs (issue #235's own
+ * acceptance bar: "Push sets upstream tracking on first push of a new
+ * branch") — so there is no separate "does it have an upstream yet"
+ * branch in this function at all, only in {@link PushBranchResult.setUpstream}'s
+ * own before/after probe, purely for a caller to report which happened.
+ *
+ * `options.force` is `--force-with-lease`, never plain `--force`: lease
+ * mode still refuses when this worktree's own knowledge of the remote
+ * ref is stale (someone else's commit landed there since this worktree
+ * last saw it — {@link GitPushStaleLeaseError}), so a force push here can
+ * never silently discard a commit this worktree never observed. Plain
+ * `--force` has no such check and is deliberately never offered — the
+ * one blunt tool this feature doesn't hand out.
+ *
+ * Throws {@link GitPushNonFastForwardError} for an ordinary (non-`force`)
+ * push the remote rejects because it has commits this branch doesn't yet
+ * have, {@link GitPushStaleLeaseError} for the `force`-with-stale-lease
+ * case above, {@link GitPushAuthenticationError} when the remote refuses
+ * the connection or the credentials themselves, {@link GitBranchActionError}
+ * for any other push failure (no `origin` remote configured, `git`
+ * missing from the target's `PATH`, ...) — never a bare, unclassified
+ * throw, matching every other action in this file.
+ */
+export class GitPushNonFastForwardError extends GitBranchActionError {}
+
+/** {@link pushBranch}'s own `force: true` path only — the exact scenario `--force-with-lease` exists to catch (see {@link pushBranch}'s doc comment): this worktree's remote-tracking ref is stale, so git refuses to blindly overwrite whatever is actually on the remote now. A caller resolves by fetching (which re-syncs the lease) and retrying. */
+export class GitPushStaleLeaseError extends GitBranchActionError {}
+
+/** {@link pushBranch} when the remote refuses the connection or the credentials themselves — SSH `Permission denied`, HTTPS `could not read Username`/`Authentication failed`, or GitHub's own indistinguishable-from-missing `Repository not found` for a private repo this credential can't see. */
+export class GitPushAuthenticationError extends GitBranchActionError {}
+
+export interface PushBranchOptions {
+  /** `--force-with-lease` when true — see {@link pushBranch}'s own doc comment for why this is never plain `--force`. Defaults to `false`. */
+  force?: boolean;
+}
+
+export interface PushBranchResult {
+  /** Whether `branch` had no upstream configured before this push — i.e. this was its first push. Informational only: {@link pushBranch} always passes `--set-upstream`, so the push itself behaves identically either way. */
+  setUpstream: boolean;
+  /** Whether this push used `--force-with-lease`, echoing {@link PushBranchOptions.force} back for a caller that only kept the result. */
+  forced: boolean;
+}
+
+/** Real `git push`'s own `[rejected] ... (fetch first)`/`(non-fast-forward)` line — the remote has commits this branch doesn't. */
+const NON_FAST_FORWARD_RE = /\[rejected\][^\n]*\((?:non-fast-forward|fetch first)\)/;
+
+/** Real `git push --force-with-lease`'s own `[rejected] ... (stale info)` line — this worktree's knowledge of the remote ref is out of date. */
+const STALE_LEASE_RE = /\[rejected\][^\n]*\(stale info\)/;
+
+/** Every real-git shape this module has observed for "the remote refused the credentials themselves" — SSH's own `Permission denied (publickey)`, HTTPS's own `could not read Username`/`Authentication failed`, and GitHub's deliberately-indistinguishable-from-missing `Repository not found` for a private repo this credential can't see. Deliberately excludes git's generic `Could not read from remote repository` wrapper line: that one also fires for a missing/misnamed remote (no credential problem at all), so it is too broad a signal on its own — this regex only matches lines that name a credential/access problem specifically. */
+const AUTH_FAILURE_RE =
+  /Permission denied \(publickey\)|fatal: [Aa]uthentication failed|fatal: could not read Username|remote: Invalid username or password|remote: Repository not found|fatal: repository .* not found/;
+
+export async function pushBranch(
+  target: ExecutionTarget,
+  worktreePath: string,
+  branch: string,
+  options: PushBranchOptions = {},
+): Promise<PushBranchResult> {
+  const forced = options.force ?? false;
+
+  const upstreamCheck = await target.exec('git', [
+    '-C',
+    worktreePath,
+    'rev-parse',
+    '--abbrev-ref',
+    `${branch}@{u}`,
+  ]);
+  const setUpstream = upstreamCheck.exitCode !== 0;
+
+  const args = ['-C', worktreePath, 'push', '--set-upstream'];
+  if (forced) args.push('--force-with-lease');
+  args.push('origin', branch);
+
+  const push = await target.exec('git', args);
+  if (push.exitCode === 0) {
+    return { setUpstream, forced };
+  }
+
+  const detail = `${push.stdout}\n${push.stderr}`;
+  const message = push.stderr.trim() || push.stdout.trim();
+  if (STALE_LEASE_RE.test(detail)) {
+    throw new GitPushStaleLeaseError(
+      `git push --force-with-lease refused: this worktree's own view of "origin/${branch}" is out of date — fetch and retry. (${message})`,
+    );
+  }
+  if (NON_FAST_FORWARD_RE.test(detail)) {
+    throw new GitPushNonFastForwardError(
+      `git push rejected: "origin/${branch}" has commits this branch doesn't have — fetch and merge or rebase, or push again with force. (${message})`,
+    );
+  }
+  if (AUTH_FAILURE_RE.test(detail)) {
+    throw new GitPushAuthenticationError(
+      `git push could not authenticate with the remote: ${message}`,
+    );
+  }
+  throw new GitBranchActionError(`git push failed: ${message}`);
+}
