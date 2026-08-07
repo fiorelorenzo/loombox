@@ -171,7 +171,6 @@ import {
   type PrMergeOutcome,
   type PrMergeRequestPayloadV1,
   type PrMergeResult,
-  type PrMergeResultPayloadV1,
   type PrOpenOutcome,
   type PrOpenPreviewOutcome,
   type PrOpenPreviewResult,
@@ -181,10 +180,8 @@ import {
   type ProvisionTargetHostInputV1,
   type ProvisionTargetResult,
   type ResyncMarker,
-  type ReviewCommentOverallStateV1,
   type ReviewCommentStateV1,
   type ReviewCommentStatus,
-  type ReviewCommentStatusPayloadV1,
   type ReviewCommentThreadV1,
   type RunExit,
   type RunExitOutcomeV1,
@@ -4247,11 +4244,13 @@ export class RelayClient {
    *   PR's latest `ci_check_status` (issue #239) aggregates to `'failing'`
    *   (issue #243) — a session can be idle/finished AND have a failing
    *   check on its open PR at the same time, so this is never mutually
-   *   exclusive with the status item above.
-   *
-   * `'review_request'` is NOT produced here — see
-   * {@link AttentionInboxItem}'s doc comment for why that one class is
-   * still only a modeled extension point, not live yet.
+   *   exclusive with the status item above;
+   * - AND, independently yet again, a `'review_request'` item while that
+   *   same PR's latest `review_comment_status` (issue #240) has at least
+   *   one unresolved thread — a session can have a red check AND an
+   *   unresolved review comment on the same PR at once, two unrelated
+   *   facts about it, so this is never mutually exclusive with
+   *   `'ci_failure'` either.
    *
    * Reads straight off the exact same `permissionQueueStoreFor`/
    * `transcriptStoreFor` stores {@link permissionQueueFor}/{@link statusFor}
