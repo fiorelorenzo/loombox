@@ -8,7 +8,7 @@ import type {
   SupervisorBackendActionResult,
   SupervisorBackendUninstallOptions,
 } from './supervisor-backend';
-import { defaultNodeStateDir } from './ssh/verify-and-persist';
+import { allowLiveNodeStateDir, defaultNodeStateDir } from './ssh/verify-and-persist';
 
 /**
  * Uninstall on the supervisor-backend seam (issue #814, epic #653; decision
@@ -214,6 +214,11 @@ export async function uninstallNode(options: NodeUninstallOptions): Promise<Node
 
   let keyringCleared = false;
   if (!options.keepData) {
+    // Issue #876: this call is uninstalling THIS machine's own resident
+    // node, so the default `~/.loombox/node` is exactly what it means —
+    // opt in explicitly rather than inherit whatever the last caller in
+    // this process happened to allow.
+    allowLiveNodeStateDir();
     const identityStore = options.identityStore ?? new NodeIdentityStore();
     await identityStore.forgetOsKeyringEntry();
     keyringCleared = true;
@@ -246,6 +251,10 @@ export async function resolveNodeUninstallRelayOptions(options: {
   stateDir?: string;
   webSocketImpl?: WebSocketConstructor;
 }): Promise<NodeUninstallRelayOptions | undefined> {
+  // Issue #876: same rationale as `uninstallNode()` above — this reads
+  // THIS machine's own resident node's identity, so the live default is
+  // the intended target, not an accident.
+  allowLiveNodeStateDir();
   const stateDir = options.stateDir ?? defaultNodeStateDir();
   const identity = await new NodeIdentityStore({ stateDir }).load();
   const authToken = new DeviceTokenFileStore({ stateDir }).load();
