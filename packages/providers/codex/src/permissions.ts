@@ -1,21 +1,35 @@
 import type { AcpPermissionOption } from '@loombox/providers-core';
 
 /**
- * Codex's real permission verb set (SPEC.md §7.24: "Codex's Yes / Yes-for-
- * session / Stop-and-explain (an abort, not a deny)"), as opposed to Claude's
- * five-verb set (`@loombox/providers-claude`'s `mapClaudePermissionOptions`)
- * or the generic tier's plain Allow/Deny(+always) pair. Three verbs from the
- * same four ACP `PermissionOptionKind` values Claude and the generic tier
- * read (`allow_once`/`allow_always`/`reject_once`/`reject_always`) means the
- * *kind* alone can distinguish "Yes" from "Yes, for this session", but both
- * `reject_once` and `reject_always` collapse onto the single
- * `stop_and_explain` verb — classification below reads the agent's own
- * `optionId`/`name` text first and only falls back to the raw `kind` when
- * nothing recognizable matches, same rule as Claude's mapper, so an
- * unrecognized/future Codex option still renders as *something* sane rather
- * than being dropped.
+ * Codex's real permission verb set. As opposed to Claude's five-verb set
+ * (`@loombox/providers-claude`'s `mapClaudePermissionOptions`) or the
+ * generic tier's plain Allow/Deny(+always) pair, Codex collapses onto
+ * three: the same four ACP `PermissionOptionKind` values Claude and the
+ * generic tier read (`allow_once`/`allow_always`/`reject_once`/
+ * `reject_always`) mean *kind* alone can distinguish a one-time allow from
+ * a for-session one, but both reject kinds collapse onto a single `reject`
+ * verb — Codex never offers a separate "reject forever" button.
+ *
+ * SPEC.md §7.24 used to describe this set as "Yes / Yes-for-session /
+ * Stop-and-explain (an abort, not a deny)". Issue #820 (spike #182, against
+ * `@agentclientprotocol/codex-acp@1.1.10`'s real source — see
+ * `docs/research/codex-acp-completeness.md` §4) found neither claim true:
+ * the real `CodexApprovalHandler` labels its buttons "Allow Once" / "Allow
+ * for Session" (or "Allow Host/Root for Session") / "Reject", and nothing
+ * in that source distinguishes a reject from a plain deny — Codex's reject
+ * option is exactly as ordinary as Claude's or the generic tier's. The
+ * verb names below and the text patterns that classify them were corrected
+ * to match; only the shape (three verbs, kind-based fallback for anything
+ * the text doesn't recognize, e.g. an execpolicy/network-policy amendment
+ * option) carries over.
+ *
+ * Classification below reads the agent's own `optionId`/`name` text first,
+ * matched against the real label vocabulary the citation above found, and
+ * only falls back to the raw `kind` when nothing recognizable matches, same
+ * rule as Claude's mapper, so an unrecognized/future Codex option still
+ * renders as *something* sane rather than being dropped.
  */
-export type CodexPermissionVerb = 'yes' | 'yes_for_session' | 'stop_and_explain';
+export type CodexPermissionVerb = 'allow_once' | 'allow_for_session' | 'reject';
 
 export interface CodexPermissionButton {
   optionId: string;
@@ -25,32 +39,40 @@ export interface CodexPermissionButton {
 }
 
 /**
- * Ordered most-specific-first: "stop"/"explain" must be checked before the
- * more general "session" pattern, or e.g. "Stop and explain for this
- * session" would misclassify as `yes_for_session`.
+ * Matched against real Codex button text only ("Reject", "Allow for
+ * Session"/"Allow Host for Session"/"Allow Root for Session", "Allow
+ * Once") — deliberately narrower than a bare `/allow/i`, which would also
+ * catch an execpolicy amendment's "Allow Commands Starting With `git
+ * ...`" or a network-policy amendment's "Allow <host> in the Future" text
+ * and misclassify a persistent (`allow_always`-kind) grant as a one-time
+ * `allow_once`; those fall through to the kind-based fallback instead,
+ * same as any other unrecognized option. Ordered most-specific-first:
+ * "session" is checked before the bare "allow once" pattern, or e.g. a
+ * hypothetical "Allow Once for Session" would misclassify as
+ * `allow_once`.
  */
 const OPTION_TEXT_VERB_PATTERNS: ReadonlyArray<readonly [RegExp, CodexPermissionVerb]> = [
-  [/stop|explain|abort|cancel/i, 'stop_and_explain'],
-  [/session/i, 'yes_for_session'],
-  [/yes|allow|approve/i, 'yes'],
+  [/reject/i, 'reject'],
+  [/session/i, 'allow_for_session'],
+  [/allow once/i, 'allow_once'],
 ];
 
 function classify(option: AcpPermissionOption): CodexPermissionVerb {
   for (const [pattern, verb] of OPTION_TEXT_VERB_PATTERNS) {
     if (pattern.test(option.optionId) || pattern.test(option.name)) return verb;
   }
-  // No recognizable Codex-specific text: fall back to the raw ACP kind, same
-  // rule the Claude/generic tiers use, so nothing is ever left unclassified.
-  // Both reject kinds map onto the single abort verb — Codex's own
-  // Stop-and-explain is not a plain deny (SPEC.md §7.24).
+  // No recognizable Codex-specific text (e.g. an execpolicy/network-policy
+  // amendment option, or a future/unrecognized Codex option): fall back to
+  // the raw ACP kind, same rule the Claude/generic tiers use, so nothing is
+  // ever left unclassified.
   switch (option.kind) {
     case 'allow_once':
-      return 'yes';
+      return 'allow_once';
     case 'allow_always':
-      return 'yes_for_session';
+      return 'allow_for_session';
     case 'reject_once':
     case 'reject_always':
-      return 'stop_and_explain';
+      return 'reject';
   }
 }
 

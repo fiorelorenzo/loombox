@@ -788,8 +788,11 @@ across providers rather than needing a bespoke per-provider transcript format.
   stop the user from watching another. Button set and verbs are provider-
   adapted through the same adapter module that owns the `enrich` hook (§5.5):
   e.g. Claude's Allow-once / Allow-all-edits / Bypass-everything / Allow-for-
-  session / Deny versus Codex's Yes / Yes-for-session / Stop-and-explain (an
-  abort, not a deny) — the generic ACP tier maps the protocol's own
+  session / Deny versus Codex's Allow Once / Allow for Session / Reject
+  (issue #820; `docs/research/codex-acp-completeness.md` §4, verified
+  against `@agentclientprotocol/codex-acp`'s real source — Codex's reject
+  option is ordinary, not the "Stop, and explain" abort this section used
+  to claim) — the generic ACP tier maps the protocol's own
   `options[]`/`kind` vocabulary (`allow_once`/`allow_always`/`reject_once`/
   `reject_always`) onto a plain Allow/Deny (+ "always") pair. Render fields off the
   request's `toolCall` (a `ToolCallUpdate` — title, rawInput, content, locations; ACP

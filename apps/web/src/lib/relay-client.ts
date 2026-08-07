@@ -7,7 +7,7 @@ import {
   unwrapAmkWithRecoveryCode,
   type EcdhKeyPair,
 } from '@loombox/crypto';
-import { isFailingCiConclusion } from '@loombox/shared';
+import { isFailingCiConclusion, isFailingRunOutcome } from '@loombox/shared';
 import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import {
   acpPermissionRequestPayloadSchema,
@@ -45,7 +45,6 @@ import {
   newDeviceBootstrapResponse,
   parseAgentProfileListResultPayloadV1,
   parseAgentProfileSessionPayloadV1,
-  parseSessionTemplateListResultPayloadV1,
   parseCheckpointListResultPayloadV1,
   parseCheckpointRestorePreviewResultPayloadV1,
   parseCheckpointRestoreResultPayloadV1,
@@ -55,8 +54,11 @@ import {
   parsePermissionPolicyViolationPayloadV1,
   parsePrOpenPreviewResultPayloadV1,
   parsePrOpenResultPayloadV1,
+  parseRunStatusPayloadV1,
+  parseSessionTemplateListResultPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
+  parseTrackerConnectivityStatusPayloadV1,
   PROTOCOL_V1,
   safeParseSessionLifecycleEventV1,
   safeParseWireMessageV1,
@@ -132,6 +134,9 @@ import {
   type GitHunkActionResponsePayloadV1,
   type GitHunkDiffResponse,
   type GitHunkDiffResponsePayloadV1,
+  type GitPushRequestPayloadV1,
+  type GitPushResponse,
+  type GitPushResponsePayloadV1,
   type GitStashDropRequestPayloadV1,
   type GitStashDropResponse,
   type GitStashDropResponsePayloadV1,
@@ -174,6 +179,8 @@ import {
   type RunStarted,
   type RunStartedResultPayloadV1,
   type RunStartPayloadV1,
+  type RunStatus,
+  type RunStatusStateV1,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
   type SessionForkResponse,
@@ -208,6 +215,8 @@ import {
   type TestRunnerConfigSetPayloadV1,
   type TestRunnerKindV1,
   type TrackerBackendResolutionErrorV1,
+  type TrackerConnectivityStateV1,
+  type TrackerConnectivityStatus,
   type TrackerMode,
   type TrackerRecordV1,
   type TrackerRoleV1,
@@ -234,13 +243,13 @@ export type {
   BuildIdentityV1,
   TargetHealth,
   TargetListEntry,
+  SessionTemplateV1,
 } from '@loombox/protocol';
 export type {
   PermissionPolicyV1,
   PermissionRuleSetV1,
   ToolRefusalReasonV1,
   AgentProfileV1,
-  SessionTemplateV1,
 } from '@loombox/protocol';
 export { buildIdentityMismatch };
 export type {
@@ -562,7 +571,7 @@ export interface RunClientState {
 
 /**
  * One row of the cross-project, cross-node attention inbox (SPEC §7.13;
- * issues #167/#168/#169). `kind` discriminates the four classes SPEC §7.13
+ * issues #167/#168/#169). `kind` discriminates the classes SPEC §7.13
  * names:
  * - `'permission'` — a session's actionable FIFO-head permission request.
  * - `'awaiting_input'` — a session whose live status is `awaiting_input`.
@@ -572,26 +581,55 @@ export interface RunClientState {
  *   `ci_check_status` (`packages/node/src/ci-check-watcher.ts`, issue #239)
  *   aggregates to `'failing'`; see `prUrl`/`prNumber`/`failingChecks`
  *   (issue #243).
+ * - `'run_failure'` — a session whose latest `run_status`
+ *   (`packages/node/src/run-status-tracker.ts`, issue #247) aggregates to
+ *   `'failing'`: at least one configured test/lint/build kind's latest
+ *   completed run did not pass; see `failingRuns`. The exact sibling of
+ *   `'ci_failure'` — same shape, same "durable until it clears" lifecycle
+ *   — so a local runner failure and a remote CI failure read as one
+ *   story rather than two (issue #247's own acceptance).
+ * - `'tracker_failure'` — a session whose project's live tracker
+ *   (GitHub/Jira) is unreachable or its credential was rejected
+ *   (`packages/node/src/tracker-connectivity-watcher.ts`, issue #219); see
+ *   `trackerProvider`/`trackerConnectivityState`.
  * - `'review_request'` — declared here as an extension point ONLY: SPEC
  *   §7.14 says a review request lands in this same inbox too, but it has
- *   no live event source in this client yet (that needs the tracker
- *   integration work, v2). `RelayClient` never constructs one of these in
- *   v1; it exists in the union (and `AttentionInbox.svelte` already
- *   renders it distinctly) purely so wiring a real source later is
- *   additive, not a rendering/type rework.
+ *   no live event source in this client yet. `RelayClient` never
  *
- * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'` are
- * the four "needs the user now" classes this client actually wires to live
- * data. See {@link RelayClient.attentionInbox}'s doc comment for why a
- * session with a queue of several pending requests only ever contributes
- * its head as one item, why a session contributes at most one of
- * `awaiting_input`/`session_outcome` (its live status is one or the other,
- * never both), and why `ci_failure` is independent of both (a session can
- * be idle/finished AND have a failing check on its open PR at once).
+ *   constructs one of these in  v1; it exists in the union (and
+ *
+ *   `AttentionInbox.svelte` already  renders it distinctly) purely so
+ *
+ *   wiring a real source later is  additive, not a rendering/type rework.
+ *
+ * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'`/
+ * `'run_failure'` are the five "needs the user now" classes this client
+ * actually wires to live data. See {@link RelayClient.attentionInbox}'s
+ * doc comment for why a session with a queue of several pending requests
+ * only ever contributes its head as one item, why a session contributes
+ * at most one of `awaiting_input`/`session_outcome` (its live status is
+ * one or the other, never both), and why `ci_failure`/`run_failure` are
+ * each independent of both AND of each other (a session can be
+ * idle/finished, have a failing check on its open PR, AND have a failing
+ * local run, all at once — three unrelated facts about that session).
+ * `'tracker_failure'` are the five "needs the user now" classes this
+ * client actually wires to live data. See {@link RelayClient.attentionInbox}'s
+ * doc comment for why a session with a queue of several pending requests
+ * only ever contributes its head as one item, why a session contributes
+ * at most one of `awaiting_input`/`session_outcome` (its live status is
+ * one or the other, never both), and why `ci_failure`/`tracker_failure`
+ * are independent of both (a session can be idle/finished AND have a
+ * failing check on its open PR, or a broken project tracker, at once).
  */
 export interface AttentionInboxItem {
   readonly kind:
-    'permission' | 'awaiting_input' | 'session_outcome' | 'ci_failure' | 'review_request';
+    | 'permission'
+    | 'awaiting_input'
+    | 'session_outcome'
+    | 'ci_failure'
+    | 'run_failure'
+    | 'tracker_failure'
+    | 'review_request';
   readonly sessionId: string;
   readonly sessionTitle: string;
   readonly projectPath: string;
@@ -635,6 +673,29 @@ export interface AttentionInboxItem {
    * that exact set (issue #243).
    */
   readonly failingChecks?: readonly string[];
+  /**
+   * Set only for a `'run_failure'` item: the configured kinds
+   * (`TestRunnerKindV1` — `'test'`/`'lint'`/`'build'`) whose latest
+   * completed run did not pass (`RunStatusStateV1.entries`, filtered
+   * through `@loombox/shared`'s `isFailingRunOutcome` — the exact same
+   * judgment `NodeDaemon`'s own runner auto-iterate hook feeds back to
+   * the agent, never a second guess in the browser). Never empty when
+   * `kind` is `'run_failure'`: the node's own aggregate `state` only
+   * reaches `'failing'` when at least one entry's outcome matches that
+   * exact set (issue #247). The `'ci_failure'` sibling of `failingChecks`.
+   */
+  readonly failingRuns?: readonly string[];
+  /**
+   * Set only for a `'tracker_failure'` item: which live tracker provider
+   * this session's project uses, and which of the two failure states
+   * `TrackerConnectivityWatcher` observed (SPEC §7.10; issue #219) —
+   * `'unreachable'` (transient, nothing to reconfigure) or `'authFailed'`
+   * (the credential was rejected; reconnect the account). Never
+   * `'reachable'`: a healthy tracker never raises an inbox item at all,
+   * see {@link recomputeAttentionInbox}.
+   */
+  readonly trackerProvider?: 'github' | 'jira';
+  readonly trackerConnectivityState?: 'unreachable' | 'authFailed';
 }
 
 /**
@@ -1426,6 +1487,13 @@ export class RelayClient {
   private readonly inboxTrackedSessions = new Set<string>();
   /** `sessionId` -> this session's latest known CI check state (SPEC §7.14; issue #243) — backs the attention inbox's `'ci_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleCiCheckStatus}. `undefined` (no entry yet) until the node's first `ci_check_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. */
   private readonly ciCheckStatuses = new Map<string, Writable<CiCheckStateV1 | undefined>>();
+  /** `sessionId` -> this session's latest known durable run status (SPEC §7.15; issue #247) — backs the attention inbox's `'run_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleRunStatus}. `undefined` (no entry yet) until the node's first `run_status` push for a session arrives: a session where no configured run has ever completed yet. */
+  private readonly runStatuses = new Map<string, Writable<RunStatusStateV1 | undefined>>();
+  /** `sessionId` -> this session's project's latest known live-tracker connectivity reading (SPEC §7.10; issue #219) — backs the attention inbox's `'tracker_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleTrackerConnectivityStatus}. `undefined` (no entry yet) until the node's first `tracker_connectivity_status` push for a session arrives: a native-mode project, or a live-mode one whose watcher hasn't completed its first poll yet. Mirrors {@link ciCheckStatuses} exactly. */
+  private readonly trackerConnectivityStatuses = new Map<
+    string,
+    Writable<TrackerConnectivityStateV1 | undefined>
+  >();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -1878,6 +1946,23 @@ export class RelayClient {
     string,
     {
       resolve: (payload: AgentInstructionsSetResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  /**
+   * requestId -> the pending {@link listSessionTemplates}/
+   * {@link saveSessionTemplates} call it belongs to (issue #259) — the
+   * session-template counterpart of {@link pendingCustomAgentProbeRequests},
+   * same shape and same reason: one caller, one answer, resolved directly
+   * rather than through a reactive store, keyed by `targetId` for the
+   * eventual reply's `'target'`-keyed decrypt.
+   */
+  private readonly pendingSessionTemplateListRequests = new Map<
+    string,
+    {
+      targetId: string;
+      resolve: (templates: SessionTemplateV1[]) => void;
       reject: (error: Error) => void;
     }
   >();
@@ -4058,6 +4143,24 @@ export class RelayClient {
   }
 
   /**
+   * The ISO timestamp {@link statusFor}'s current value transitioned at
+   * (mirrors `event.updatedAt`, `@loombox/node`'s `sendSessionStatus`) —
+   * `undefined` before any status has arrived at all. Issue #255's
+   * queued-session position: with no server-provided queue position, a
+   * client can still rank a `'queued'` session among its target-mates by
+   * whichever one transitioned to `'queued'` earliest, using nothing this
+   * store didn't already carry. A second `derived` over the exact same
+   * store {@link statusFor}/{@link statusReasonFor} already subscribe to
+   * (see this class's own doc comment), not a heavier separate
+   * subscription.
+   */
+  statusUpdatedAtFor(sessionId: string): Readable<string | undefined> {
+    const store = this.transcriptStoreFor(sessionId);
+    this.ensureSubscribed(sessionId);
+    return derived(store, (state) => state.statusUpdatedAt);
+  }
+
+  /**
    * The session-scoped permission FIFO queue store (SPEC §7.24, issues
    * #144/#145/#146/#147) — the single client-side source of truth a
    * session's permission-card UI and (once it exists) the cross-project
@@ -5811,11 +5914,12 @@ export class RelayClient {
 
   /**
    * Wires one session into the attention inbox: subscribes it (so its
-   * `permission_request`/`session_update`/`ci_check_status` traffic
-   * actually reaches this client, see `ensureSubscribed`) and recomputes
-   * the inbox whenever its transcript (status), permission queue, or CI
-   * check state changes. Idempotent per session id, and a no-op before
-   * {@link attentionInbox} has ever been called (see `syncInboxTracking`).
+   * `permission_request`/`session_update`/`ci_check_status`/`run_status`
+   * traffic actually reaches this client, see `ensureSubscribed`) and
+   * recomputes the inbox whenever its transcript (status), permission
+   * queue, CI check state, or run status changes. Idempotent per session
+   * id, and a no-op before {@link attentionInbox} has ever been called
+   * (see `syncInboxTracking`).
    */
   private trackSessionForInbox(sessionId: string): void {
     if (this.inboxTrackedSessions.has(sessionId)) return;
@@ -5824,6 +5928,10 @@ export class RelayClient {
     this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.ciCheckStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.runStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.trackerConnectivityStatusStoreFor(sessionId).subscribe(() =>
+      this.recomputeAttentionInbox(),
+    );
   }
 
   /** Tracks every session in `sessions` for the inbox — a no-op until {@link attentionInbox} has been called at least once, and per-session idempotent thereafter (see `trackSessionForInbox`). Called whenever the session list gains an entry. */
@@ -5901,6 +6009,34 @@ export class RelayClient {
             .map((run) => run.name),
         });
       }
+
+      const run = get(this.runStatusStoreFor(session.id));
+      if (run?.state === 'failing') {
+        items.push({
+          kind: 'run_failure',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: run.updatedAt,
+          failingRuns: run.entries
+            .filter((entry) => isFailingRunOutcome(entry.outcome))
+            .map((entry) => entry.kind),
+        });
+      }
+      const trackerConnectivity = get(this.trackerConnectivityStatusStoreFor(session.id));
+      if (trackerConnectivity && trackerConnectivity.state !== 'reachable') {
+        items.push({
+          kind: 'tracker_failure',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: trackerConnectivity.updatedAt,
+          trackerProvider: trackerConnectivity.provider,
+          trackerConnectivityState: trackerConnectivity.state,
+        });
+      }
     }
     items.sort((a, b) => a.waitingSince - b.waitingSince);
     this.attentionInboxStore.set(items);
@@ -5921,6 +6057,18 @@ export class RelayClient {
     if (!store) {
       store = writable<CiCheckStateV1 | undefined>(undefined);
       this.ciCheckStatuses.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /** `sessionId` -> {@link trackerConnectivityStatuses}'s backing store, created on first access — same lazy-map pattern as {@link ciCheckStatusStoreFor}. */
+  private trackerConnectivityStatusStoreFor(
+    sessionId: string,
+  ): Writable<TrackerConnectivityStateV1 | undefined> {
+    let store = this.trackerConnectivityStatuses.get(sessionId);
+    if (!store) {
+      store = writable<TrackerConnectivityStateV1 | undefined>(undefined);
+      this.trackerConnectivityStatuses.set(sessionId, store);
     }
     return store;
   }
@@ -6109,11 +6257,17 @@ export class RelayClient {
       case 'git_stash_drop_response':
         this.handleGitStashDropResponse(message);
         return;
+      case 'git_push_response':
+        this.handleGitPushResponse(message);
+        return;
       case 'agent_instructions_get_response':
         this.handleAgentInstructionsGetResponse(message);
         return;
       case 'agent_instructions_set_response':
         this.handleAgentInstructionsSetResponse(message);
+        return;
+      case 'session_template_list_result':
+        this.handleSessionTemplateListResult(message);
         return;
       case 'git_commit_draft_response':
         this.handleGitCommitDraftResponse(message);
@@ -6199,9 +6353,6 @@ export class RelayClient {
       case 'custom_agent_probe_response':
         this.handleCustomAgentProbeResponse(message);
         return;
-      case 'session_template_list_result':
-        this.handleSessionTemplateListResult(message);
-        return;
       case 'provision_progress':
         this.handleProvisionProgress(message);
         return;
@@ -6269,6 +6420,12 @@ export class RelayClient {
       }
       case 'ci_check_status':
         this.handleCiCheckStatus(message);
+        return;
+      case 'run_status':
+        this.handleRunStatus(message);
+        return;
+      case 'tracker_connectivity_status':
+        this.handleTrackerConnectivityStatus(message);
         return;
       default:
         return;
@@ -7077,6 +7234,33 @@ export class RelayClient {
       .catch((error: unknown) => {
         console.warn(
           `RelayClient: failed to decrypt ci_check_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /**
+   * The owning node's latest live-tracker connectivity reading for this
+   * session's project (SPEC §7.10; issue #219) — pushed on a fixed
+   * interval whatever the resulting state, exactly like
+   * {@link handleCiCheckStatus} above; no pending-request bookkeeping,
+   * since nothing on this client ever asks for it. Decrypts straight into
+   * {@link trackerConnectivityStatusStoreFor}, which
+   * {@link recomputeAttentionInbox} reads to build (or clear) this
+   * session's `'tracker_failure'` inbox item — a genuine decrypt failure
+   * is logged and otherwise swallowed, the same "best-effort push, never
+   * crash the client" contract {@link handleCiCheckStatus} follows.
+   */
+  private handleTrackerConnectivityStatus(message: TrackerConnectivityStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.trackerConnectivityStatusStoreFor(message.sessionId).set(
+          parseTrackerConnectivityStatusPayloadV1(decrypted).status,
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt tracker_connectivity_status for session ${message.sessionId}: ${errorMessage(error)}`,
         );
       });
   }
@@ -8506,35 +8690,129 @@ export class RelayClient {
       });
   }
 
-  // -----------------------------------------------------------------------
-  // Session templates (issue #259, epic #29) — kept as one contiguous block
-  // rather than interleaved among the methods above, on purpose: this
-  // class already grew several near-identical `handleX`/`sendX` method
-  // families in one evening, and a three-way git merge cannot always tell
-  // them apart. See `@loombox/protocol`'s `session-template.ts` doc
-  // comment for why this is routed by `nodeId`+`targetId` directly
-  // (mirrors `browseDirectory`/`probeCustomAgent` immediately below in
-  // spirit, not literally adjacent) rather than through an existing
-  // session's `sessionId` the way `listAgentProfiles`/`saveAgentProfiles`
-  // are: `NewSessionDialog` calls this before ever creating a session.
-  // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------
+  // Local runner <-> attention inbox unification (SPEC §7.14/§7.15;
+  // issue #247) — the client half of `NodeDaemon`'s own
+  // `RunStatusTracker`/`run_status` push: `runStatusStoreFor`/
+  // `handleRunStatus` are this file's `ciCheckStatusStoreFor`/
+  // `handleCiCheckStatus` counterparts, and `recomputeAttentionInbox`
+  // reads the resulting store to build (or clear) a session's own
+  // `'run_failure'` item — the exact sibling of `'ci_failure'` (see
+  // `AttentionInboxItem`'s own doc comment), so a local runner failure
+  // and a remote CI failure read as one story rather than two.
+  // -----------------------------------------------------------------
+
+  /** `sessionId` -> {@link runStatuses}'s backing store, created on first access — same lazy-map pattern as {@link ciCheckStatusStoreFor}. */
+  private runStatusStoreFor(sessionId: string): Writable<RunStatusStateV1 | undefined> {
+    let store = this.runStatuses.get(sessionId);
+    if (!store) {
+      store = writable<RunStatusStateV1 | undefined>(undefined);
+      this.runStatuses.set(sessionId, store);
+    }
+    return store;
+  }
 
   /**
-   * requestId -> the pending {@link listSessionTemplates}/
-   * {@link saveSessionTemplates} call it belongs to (issue #259) — the
-   * session-template counterpart of {@link pendingCustomAgentProbeRequests},
-   * same shape and same reason: one caller, one answer, resolved directly
-   * rather than through a reactive store, keyed by `targetId` for the
-   * eventual reply's `'target'`-keyed decrypt.
+   * The owning node's latest durable per-kind run status for a session
+   * (SPEC §7.15; issue #247) — pushed whenever `RunStatusTracker` records
+   * a fresh `run_exit`, exactly like {@link handleCiCheckStatus}; no
+   * pending-request bookkeeping, since nothing on this client ever asks
+   * for it. Decrypts straight into {@link runStatusStoreFor}, which
+   * {@link recomputeAttentionInbox} reads to build (or clear) this
+   * session's `'run_failure'` inbox item — a genuine decrypt failure is
+   * logged and otherwise swallowed, the same "best-effort push, never
+   * crash the client" contract {@link handleCiCheckStatus} follows.
    */
-  private readonly pendingSessionTemplateListRequests = new Map<
+  private handleRunStatus(message: RunStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.runStatusStoreFor(message.sessionId).set(parseRunStatusPayloadV1(decrypted).status);
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt run_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /** requestId -> the pending {@link pushBranch} call it belongs to (SPEC §7.6/§7.14; issue #235) — same shape as {@link pendingGitBranchSwitchRequests}, enveloped. */
+  private readonly pendingGitPushRequests = new Map<
     string,
-    {
-      targetId: string;
-      resolve: (templates: SessionTemplateV1[]) => void;
-      reject: (error: Error) => void;
-    }
+    { resolve: (payload: GitPushResponsePayloadV1) => void; reject: (error: Error) => void }
   >();
+
+  /**
+   * Pushes this session's own branch to its remote (SPEC §7.6/§7.14;
+   * issue #235) — {@link switchBranch}'s own enveloped-request shape.
+   * Resolves every outcome (`ok`, `no_branch`,
+   * `rejected_non_fast_forward`, `rejected_stale_lease`, `auth_failed`,
+   * `error`) rather than throwing for anything but a genuinely dead
+   * connection/timeout — `@loombox/protocol`'s `git-push.ts` file doc
+   * comment has the full reasoning for why a push has more named,
+   * actionable failure shapes than any other action in this file:
+   * pushing is the first operation in the whole git-management surface
+   * that talks to a remote at all. `params.force` is `--force-with-lease`
+   * on the node side, never plain `--force` — see that same doc comment.
+   */
+  async pushBranch(
+    sessionId: string,
+    params: { force: boolean },
+    timeoutMs = 15_000,
+  ): Promise<GitPushResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(new Error('RelayClient: cannot push branch, no open connection'));
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const payload: GitPushRequestPayloadV1 = { ...params };
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
+    const requestId = generateId('gitpush');
+    return new Promise<GitPushResponsePayloadV1>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGitPushRequests.delete(requestId);
+        reject(new Error('RelayClient: timed out waiting for git_push_response'));
+      }, timeoutMs);
+      this.pendingGitPushRequests.set(requestId, {
+        resolve: (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({
+        type: 'git_push_request',
+        protocolVersion: PROTOCOL_V1,
+        sessionId,
+        requestId,
+        envelope,
+      });
+    });
+  }
+
+  /** The owning node's reply to one of this client's own {@link pushBranch} calls (issue #235) — same sibling-device awareness as {@link handleGitBranchSwitchResponse}: a requesting client resolves its own pending call by `requestId`; any other subscribed client (or a device with no matching pending request) simply has nothing to do with this message. */
+  private handleGitPushResponse(message: GitPushResponse): void {
+    const pending = this.pendingGitPushRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitPushRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitPushResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
 
   /**
    * Reads this account's saved session-template catalog from the owning

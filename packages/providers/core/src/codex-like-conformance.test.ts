@@ -10,8 +10,8 @@ import type { AcpPermissionOptionKind } from './types';
 
 // Protocol-conformance coverage for issue #186: proves core's reducer and
 // registry handle a Codex-shaped update stream (a tool_call with a diff, a
-// session/request_permission round trip with Codex's own three-verb option
-// set, and a completed tool_call with no permission at all) entirely
+// session/request_permission round trip with Codex's own real three-verb
+// option set, and a completed tool_call with no permission at all) entirely
 // generically, with no bespoke Codex code loaded — the same fixture
 // packages/providers/codex's own conformance suite drives with its adapter
 // module attached.
@@ -55,7 +55,9 @@ describe('core reducer against a Codex-shaped update stream', () => {
           requestId: string;
           options: { optionId: string; kind: AcpPermissionOptionKind }[];
         }) => {
-          const chosen = request.options.find((o) => o.optionId === 'yes-for-session')!;
+          // 'allow_always' is the fixture's real Codex-shaped optionId for
+          // "Allow for Session" (issue #820).
+          const chosen = request.options.find((o) => o.optionId === 'allow_always')!;
           client.permissions.resolve(request.requestId, {
             outcome: 'selected',
             optionId: chosen.optionId,
@@ -83,7 +85,7 @@ describe('core reducer against a Codex-shaped update stream', () => {
     });
 
     const message = state.items.find((item) => item.type === 'message');
-    expect(message).toMatchObject({ text: 'patched (chose yes-for-session)' });
+    expect(message).toMatchObject({ text: 'patched (chose allow_always)' });
   });
 
   it('reduces a completed tool_call with no permission round trip at all', async () => {
