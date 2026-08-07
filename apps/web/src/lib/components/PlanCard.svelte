@@ -8,8 +8,11 @@
    * entry is `completed`; collapsible, remembering collapse state for the
    * session (the caller owns that state — see `collapsed`/`onToggle` — so a
    * "remembers during the session" store lives once, in the transcript view,
-   * not duplicated per card). The persistent per-session sidebar view of the
-   * same data is a separate v2 issue (§12); this is the inline card only.
+   * not duplicated per card). `$lib/plan.ts`'s `planProgress` backs this
+   * card's own `{completed}/{entries.length}` header — the same function
+   * `PlanSidebar.svelte` (issue #201, the persistent per-session sidebar
+   * view of this same data) uses for its own completion bar, so "N of M"
+   * reads identically in both places by construction, not by coincidence.
    *
    * Warp Deck restyle (docs/design/redesign.md §3/§6, issue #432): adopts
    * the elevation ladder's "raised" tier by name (the brief's table lists
@@ -47,6 +50,7 @@
    * would double it up.
    */
   import type { AcpPlanEntry } from '@loombox/providers-core/browser';
+  import { planProgress } from '$lib/plan';
   import CopyButton from './CopyButton.svelte';
   import StatusDot from './ui/StatusDot.svelte';
 
@@ -59,7 +63,7 @@
   const { entries, collapsed, onToggle }: Props = $props();
 
   const active = $derived(entries.some((entry) => entry.status !== 'completed'));
-  const completedCount = $derived(entries.filter((entry) => entry.status === 'completed').length);
+  const completedCount = $derived(planProgress(entries).completed);
   const copyText = $derived(
     entries.map((entry) => `[${entry.status}] ${entry.content}`).join('\n'),
   );
