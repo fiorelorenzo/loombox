@@ -11,22 +11,22 @@ import { type StatusTone } from '$lib/components/ui/StatusDot.svelte';
  * label. Every surface reads these two maps; none re-derives wording from the
  * enum.
  *
- * Keyed by the protocol's `SessionStatusV1` (8 values), not
- * `@loombox/providers-core`'s narrower `AcpSessionStatus` (5 values) —
- * `StatusDot`'s own doc comment already says call sites "map their own
- * status vocabulary (`SessionStatusV1`...)" onto its plain `tone`/`pulse`
- * pair, and `relay-client.ts`'s `parseSessionWireEvent` explains why the
- * two unions differ in the first place: "`session_status.status` is
- * `SessionStatusV1` on the protocol side (its own wider [...] enum,
- * including 'queued'/'starting') while `AcpSessionStatus` [...] is still
- * the narrower [...] union; the reducer's `case 'session_status'` [...]
- * already stores whichever string arrives unchecked either way." Keying
- * these two maps off the narrower union left `'queued'`/`'starting'`
- * falling through to `undefined` here (a real, pre-existing hole — a
- * queued/starting session's row title read literally "undefined"); adding
- * `'disconnected'` (issue #702) the same way would have silently hit the
- * same hole a third time. One map widening fixes all three at once,
- * matching what `StatusDot` already expected callers to do.
+ * Keyed by the protocol's `SessionStatusV1` directly, imported from
+ * `@loombox/protocol` rather than `@loombox/providers-core`'s
+ * `AcpSessionStatus` — this module is a generic wire-status utility with
+ * no other reason to depend on the provider package. The two types are
+ * the same nine-value union as of issue #636 (`AcpSessionStatus` is now
+ * an actual re-export of `SessionStatusV1`, not a second list), but that
+ * wasn't always true: before #636, `AcpSessionStatus` was its own
+ * narrower five-value union, and keying these two maps off it left
+ * `'queued'`/`'starting'` falling through to `undefined` here (a real,
+ * pre-existing hole — a queued/starting session's row title read
+ * literally "undefined"); adding `'disconnected'` (issue #702) the same
+ * way would have silently hit the same hole a third time. Switching these
+ * maps to the wider protocol type at the time fixed all three at once,
+ * matching what `StatusDot`'s own doc comment already expected callers to
+ * do — #636 later closed the gap at its actual source instead of leaving
+ * `AcpSessionStatus` permanently behind what the wire sends.
  */
 
 /**

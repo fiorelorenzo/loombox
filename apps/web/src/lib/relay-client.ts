@@ -476,13 +476,17 @@ function parseSessionWireEvent(raw: unknown): AcpSessionWireEvent {
 
   const lifecycleEvent = safeParseSessionLifecycleEventV1(raw);
   if (lifecycleEvent.success) {
-    // `session_status.status` is `SessionStatusV1` on the protocol side
-    // (its own wider 7-value enum, including 'queued'/'starting' — issues
-    // #252/#516) while `AcpSessionStatus` here is still the narrower
-    // five-value union; the reducer's `case 'session_status'`
-    // (`transcript.ts`) already stores whichever string arrives
-    // unchecked either way, so this makes that existing tolerance
-    // explicit rather than leaving it an implicit `as T` cast.
+    // `AcpSessionLifecycleEvent`/`AcpSessionWireEvent` (`@loombox/
+    // providers-core`) are hand-written interfaces mirroring
+    // `session-events.ts`'s zod-inferred types field-for-field, not
+    // imported from them (that module's own doc comment explains why) —
+    // structurally identical once parsed, but two independent
+    // declarations, hence the cast rather than a bare return. Before
+    // issue #636 this cast also had to paper over `AcpSessionStatus`
+    // being narrower than `SessionStatusV1` for `session_status`'s
+    // `status` field; `AcpSessionStatus` is that type now (an actual
+    // re-export, not a second list), so this is purely the structural
+    // cast, nothing left to tolerate.
     return lifecycleEvent.data as AcpSessionWireEvent;
   }
 
