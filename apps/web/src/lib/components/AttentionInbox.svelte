@@ -280,18 +280,14 @@
   /**
    * Maps an inbox item onto the shared session-status tone/label
    * vocabulary (`$lib/session-status.ts`) wherever it genuinely
-   * corresponds to one of `AcpSessionStatus`'s five states — the same
+   * corresponds to one of `AcpSessionStatus`'s states — the same
    * "one wording, never re-derived" rule the sidebar and command palette
-   * follow (redesign v3 design spec §3.6). `ci_failure`/`run_failure`/
-   * `review_request` have no `AcpSessionStatus` equivalent at all (a PR's
-   * CI state, a local run's own status, and a review request are all
-   * properties independent of the session's own live status), so those
-   * three keep a short label of their own rather than
    * follow (redesign v3 design spec §3.6). `ci_failure`/`tracker_failure`/
    * `review_request` have no `AcpSessionStatus` equivalent at all (a PR's
    * CI state, a tracker's connectivity, and a review request are none of
    * them the session's own live status), so those three keep a short
-   * label of their own rather than
+   * label of their own rather than borrowing tone/wording from a status
+   * that doesn't actually describe them.
    */
   function itemStatus(item: AttentionInboxItem): { tone: StatusTone; label: string } {
     switch (item.kind) {

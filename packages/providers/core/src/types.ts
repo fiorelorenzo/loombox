@@ -10,6 +10,8 @@
  * package until v1/v2 (issue #48).
  */
 
+import type { SessionStatusV1 } from '@loombox/protocol';
+
 /** The spawn recipe for launching a provider's ACP-speaking agent process. */
 export interface AcpSpawnConfig {
   command: string;
@@ -395,18 +397,30 @@ export type AcpTranscriptUpdate =
  * imported) from `@loombox/protocol`'s `session-events.ts`, the same
  * mirrored-not-shared pattern already used elsewhere across the encryption
  * boundary in this codebase; see that module's doc comment for the full
- * rationale (this package has zero workspace dependencies by design).
+ * rationale. The one exception is `AcpSessionStatus` itself, just below:
+ * this package already carries a real `@loombox/protocol` workspace
+ * dependency (`agent-catalogue.ts`'s `CustomAgentRecordV1`), so issue #636
+ * made it an actual re-export of `SessionStatusV1` rather than a second,
+ * independently-maintained copy of the same nine-value list.
  * ---------------------------------------------------------------------- */
 
 /**
- * The session-status vocabulary. Deliberately identical to `@loombox/
- * supervisor`'s already-shipped `AttentionStatus` (`transcript-store.ts`)
- * rather than a second taxonomy for the same concept — that status is
- * exactly what `AgentSession` already computes and what the node forwards
- * here unchanged.
+ * A session's current status vocabulary — a re-export of `@loombox/
+ * protocol`'s `SessionStatusV1`, not a second declaration of the same
+ * list (issue #636). Before that fix this was its own five-value union
+ * ('working'/'awaiting_input'/'permission_required'/'error'/'exited',
+ * mirroring `@loombox/supervisor`'s `AttentionStatus`) while the wire
+ * `SessionStatusV1` had grown four more values with no live-agent
+ * counterpart — `'queued'`/`'starting'` (issues #252, #516), `'disconnected'`
+ * (#702), `'paused'` (#251) — so every client-side consumer either cast
+ * past the mismatch or keyed its own map off the wider protocol type
+ * directly. `SessionStatusV1` is authoritative here: it is what the wire
+ * actually carries, and `AttentionStatus` (the ACP-native, live-agent-only
+ * subset with no `'queued'`/`'starting'`/`'disconnected'`/`'paused'`
+ * concept) stays its own, deliberately narrower type — this alias is
+ * about matching the wire, not the agent's own attention state.
  */
-export type AcpSessionStatus =
-  'working' | 'awaiting_input' | 'permission_required' | 'error' | 'exited';
+export type AcpSessionStatus = SessionStatusV1;
 
 /** A session's current status, pushed whenever it transitions (SPEC.md §7.13/§7.24). `reason` is set for `'error'` (issue #730) — a spawn that failed or timed out — and, since issue #271, for a mid-session `'exited'` too: the process's own exit code, in words a user can read. */
 export interface AcpSessionStatusEvent {

@@ -3623,19 +3623,15 @@ export class NodeDaemon extends EventEmitter {
     const reason = `Spend cap reached: $${spentUsd.toFixed(2)} of $${capUsd.toFixed(2)} — raise the cap or resume to continue.`;
     this.forwardSessionEvent(bridge.session.id, {
       kind: 'session_status',
-      // `AcpSessionWireEvent`'s `session_status` variant types `status` as
-      // the narrow, ACP-native `AttentionStatus` (5 values) — 'paused' is
-      // a `SessionStatusV1` (protocol-side) widening with no
-      // `AttentionStatus` counterpart, same category as 'queued'/
-      // 'starting'/'disconnected' (`session-events.ts`'s own doc comment:
-      // "deliberately NOT added to AcpSessionStatus... protocol-side, not
-      // there"). This is the one case among those four that DOES have a
-      // live bridge to push through, so it rides `forwardSessionEvent`
-      // rather than the bridge-less `sendSessionStatus` — the explicit
-      // widening cast here is the node-side mirror of `apps/web`'s
-      // `parseSessionWireEvent`, which documents the identical tolerance
-      // client-side.
-      status: 'paused' as unknown as AttentionStatus,
+      // Before issue #636, `AcpSessionWireEvent`'s `session_status`
+      // variant's `status` was typed with `@loombox/providers-core`'s
+      // then-five-value `AcpSessionStatus`, with no `'paused'` member —
+      // this line needed an explicit `'paused' as unknown as
+      // AttentionStatus` widening cast to get past that. `AcpSessionStatus`
+      // is now `@loombox/protocol`'s own nine-value `SessionStatusV1`
+      // (issue #636), which `'paused'` is a real member of, so the cast is
+      // gone: this is a plain, honestly-typed `'paused'` push.
+      status: 'paused',
       updatedAt: new Date().toISOString(),
       reason,
     });
