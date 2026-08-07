@@ -40,7 +40,10 @@
   import KeymapPanel, { type KeymapClient } from '../KeymapPanel.svelte';
   import NotificationPreferences from '../NotificationPreferences.svelte';
   import PushNotificationToggle from '../PushNotificationToggle.svelte';
-  import TargetStatusView, { type FocusTarget, type TargetActionsClient } from '../TargetStatusView.svelte';
+  import TargetStatusView, {
+    type FocusTarget,
+    type TargetActionsClient,
+  } from '../TargetStatusView.svelte';
   import Button from '../ui/Button.svelte';
   import Card from '../ui/Card.svelte';
   import PageLayout from './PageLayout.svelte';
