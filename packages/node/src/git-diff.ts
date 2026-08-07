@@ -1,12 +1,14 @@
 import { posix } from 'node:path';
 
 import type {
+  GitBranchSummaryV1,
   GitDiffFileStatusV1,
   GitDiffFileV1,
   GitHunkActionRequestPayloadV1,
   GitHunkFileV1,
   GitHunkLineV1,
   GitHunkV1,
+  GitStashSummaryV1,
 } from '@loombox/protocol';
 import type { ExecutionTarget } from './target';
 
@@ -534,4 +536,317 @@ export async function applyGitHunkAction(
     `"git apply" failed to ${action} a hunk in "${path}"`,
     patch,
   );
+}
+
+/**
+ * Branch create/switch/merge and stash save/list/pop/drop (SPEC §7.6;
+ * issue #234) — `applyGitHunkAction`'s siblings in shape: real `git`
+ * subcommands through `ExecutionTarget.exec`, one thrown error class per
+ * expected structured failure rather than a single catch-all, so
+ * `NodeDaemon`'s bridge (`node-daemon.ts`'s `switchBranchForBridge` and
+ * neighbors) can map each one to its own protocol outcome instead of
+ * collapsing everything to `'error'`. None of these know anything about
+ * `Session` — the worktree-isolated-session guard (a session's own fixed
+ * branch never switches from under it, `@loombox/protocol`'s
+ * `git-branch.ts` file doc comment) lives entirely in the bridge, applied
+ * before `switchBranch`/`createBranch`'s checkout path are ever called.
+ */
+
+/** Thrown only when a branch/stash *listing* could not be computed at all — `git` missing from the target, or the worktree isn't a usable git repository. Mirrors {@link GitDiffError}'s own "thrown only when genuinely unusable" contract. */
+export class GitBranchError extends Error {}
+
+/** The base class for every branch/stash *action* (create/switch/merge/abort/stash save/pop/drop) that could not be applied — thrown directly for a failure with no more specific shape below; every subclass below still `instanceof GitBranchActionError`, so a caller that only wants "did this fail" can catch this alone. */
+export class GitBranchActionError extends Error {}
+
+/** `createBranch` for a name git itself reports as already taken ("A branch named '<name>' already exists"). */
+export class GitBranchAlreadyExistsError extends GitBranchActionError {}
+
+/** `switchBranch`/`mergeBranch` for a name that matches no local or remote-tracking branch at all. */
+export class GitBranchNotFoundError extends GitBranchActionError {}
+
+/** `switchBranch` (and, through it, `createBranch`'s own checkout path) when real `git checkout` output shows local changes — tracked or untracked — that switching would overwrite, parsed into {@link paths} rather than left as a raw stderr paragraph (issue #234's own acceptance bar: an honest, actionable state). */
+export class GitDirtyWorktreeError extends GitBranchActionError {
+  readonly paths: string[];
+  constructor(message: string, paths: string[]) {
+    super(message);
+    this.paths = paths;
+  }
+}
+
+/** `mergeBranch` when the merge stops on real conflicts — {@link conflictedPaths} from `git diff --name-only --diff-filter=U`, the actual unmerged files, never a swallowed nonzero exit (issue #234's own acceptance bar: a state the client can render and the user can resolve or abort via {@link abortMerge}). */
+export class GitMergeConflictError extends GitBranchActionError {
+  readonly conflictedPaths: string[];
+  constructor(message: string, conflictedPaths: string[]) {
+    super(message);
+    this.conflictedPaths = conflictedPaths;
+  }
+}
+
+/** `stashPop`/`stashDrop` for an index naming no real stash entry. */
+export class GitStashNotFoundError extends GitBranchActionError {}
+
+/** `stashPop` when the pop cannot complete cleanly — issue #234's own named failure mode, "a stash that cannot pop". Real git conflict-markers the worktree AND keeps the stash entry rather than dropping it (git's own safety behaviour), so nothing is lost either way; {@link conflictedPaths} is the same `git diff --name-only --diff-filter=U` signal {@link GitMergeConflictError} uses. */
+export class GitStashPopConflictError extends GitBranchActionError {
+  readonly conflictedPaths: string[];
+  constructor(message: string, conflictedPaths: string[]) {
+    super(message);
+    this.conflictedPaths = conflictedPaths;
+  }
+}
+
+/** Every currently-unmerged path — `git diff --name-only --diff-filter=U`, real during a stopped merge or a failed stash pop alike (both leave the index in the same conflicted shape). Never throws: an unmerged-free worktree (nothing to report) and a target that can't even run the command both resolve `[]`, since a caller only reaches this after its own `git merge`/`git stash pop` already told it something is wrong. */
+async function listConflictedPaths(
+  target: ExecutionTarget,
+  worktreePath: string,
+): Promise<string[]> {
+  const result = await target
+    .exec('git', ['-C', worktreePath, 'diff', '--name-only', '--diff-filter=U'])
+    .catch(() => undefined);
+  if (!result || result.exitCode !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/** Extracts the actual conflicting paths from real `git checkout`'s own "Your local changes to the following files would be overwritten by checkout:" (tracked) or "The following untracked working tree files would be overwritten by checkout:" (untracked) stderr shape — one indented path per line between that header and the trailing "Please ... before you switch branches" paragraph. `null` when `stderr` matches neither shape (a genuinely different failure). */
+function parseCheckoutOverwritePaths(stderr: string): string[] | null {
+  const lines = stderr.split('\n');
+  const headerIndex = lines.findIndex((line) => line.includes('would be overwritten by checkout'));
+  if (headerIndex === -1) return null;
+  const paths: string[] = [];
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.startsWith('\t') && !line.startsWith('    ')) break;
+    const trimmed = line.trim();
+    if (trimmed) paths.push(trimmed);
+  }
+  return paths;
+}
+
+/** Every local branch in `worktreePath`, `current` tagging whichever one `git branch --list`'s own `'* '` prefix marks — a detached `HEAD`'s synthetic `(HEAD detached at ...)` pseudo-entry is dropped rather than reported as a branch named `"(HEAD..."`. `[]` for a repo with no branches at all (an unborn `HEAD`) — never an error. Throws {@link GitBranchError} only when the list itself could not be computed at all. */
+export async function listBranches(
+  target: ExecutionTarget,
+  worktreePath: string,
+): Promise<GitBranchSummaryV1[]> {
+  let result;
+  try {
+    result = await target.exec('git', ['-C', worktreePath, 'branch', '--list']);
+  } catch (error) {
+    throw new GitBranchError(
+      `git is not available on this target: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (result.exitCode !== 0) {
+    throw new GitBranchError(
+      `"git branch" failed: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
+  }
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const current = line.startsWith('* ');
+      const name = (current ? line.slice(2) : line).trim();
+      return { name, current };
+    })
+    .filter((entry) => !entry.name.startsWith('('));
+}
+
+export interface CreateBranchOptions {
+  name: string;
+  /** Branched off `HEAD` when `null`. */
+  startPoint: string | null;
+}
+
+/** Creates `options.name` off `options.startPoint` (or `HEAD`) — plain `git branch`, never a checkout on its own; a caller wanting create-and-switch composes this with {@link switchBranch} (`NodeDaemon`'s own bridge does, gating the switch half on the worktree-isolated-session guard neither function knows about itself). Throws {@link GitBranchAlreadyExistsError} for a name already taken, {@link GitBranchActionError} for any other failure. */
+export async function createBranch(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: CreateBranchOptions,
+): Promise<void> {
+  const args = ['branch', options.name];
+  if (options.startPoint) args.push(options.startPoint);
+  const result = await target.exec('git', ['-C', worktreePath, ...args]);
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim();
+    if (/already exists/.test(detail)) {
+      throw new GitBranchAlreadyExistsError(`branch "${options.name}" already exists`);
+    }
+    throw new GitBranchActionError(`"git branch" failed to create "${options.name}": ${detail}`);
+  }
+}
+
+export interface SwitchBranchOptions {
+  name: string;
+}
+
+/** Switches `worktreePath`'s checked-out branch to `options.name` — plain `git checkout <name>`. Throws {@link GitDirtyWorktreeError} (with the real conflicting paths) when local changes would be overwritten, {@link GitBranchNotFoundError} when `<name>` names no branch, {@link GitBranchActionError} for any other failure. Carries no worktree-isolated-session guard of its own — see this file's own doc comment above `GitBranchError`. */
+export async function switchBranch(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: SwitchBranchOptions,
+): Promise<void> {
+  const result = await target.exec('git', ['-C', worktreePath, 'checkout', options.name]);
+  if (result.exitCode === 0) return;
+  const detail = result.stderr.trim() || result.stdout.trim();
+  const dirtyPaths = parseCheckoutOverwritePaths(result.stderr);
+  if (dirtyPaths) {
+    throw new GitDirtyWorktreeError(
+      `switching to "${options.name}" would overwrite local changes`,
+      dirtyPaths,
+    );
+  }
+  if (/did not match any file\(s\) known to git|error: pathspec/.test(detail)) {
+    throw new GitBranchNotFoundError(`no such branch "${options.name}"`);
+  }
+  throw new GitBranchActionError(`"git checkout" failed to switch to "${options.name}": ${detail}`);
+}
+
+export interface MergeBranchOptions {
+  name: string;
+}
+
+export interface MergeBranchResult {
+  /** `true` only when real `git merge` output includes its own literal "Fast-forward" line — `false` for both a real merge commit and "Already up to date." (nothing moved either way). */
+  fastForward: boolean;
+}
+
+/** Merges `options.name` into `worktreePath`'s current branch — `git merge --no-edit` (git's own default merge-commit message, no interactive editor). Throws {@link GitMergeConflictError} (with every unmerged path) when the merge stops on real conflicts, {@link GitBranchNotFoundError} when `options.name` names no branch, {@link GitBranchActionError} for any other failure. Never moves which branch is checked out, so — unlike `switchBranch` — this carries no worktree-isolated-session guard: merging upstream INTO an isolated session's own branch is the intended use. */
+export async function mergeBranch(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: MergeBranchOptions,
+): Promise<MergeBranchResult> {
+  const result = await target.exec('git', ['-C', worktreePath, 'merge', '--no-edit', options.name]);
+  if (result.exitCode === 0) {
+    return { fastForward: result.stdout.includes('Fast-forward') };
+  }
+  const combined = `${result.stdout}\n${result.stderr}`;
+  const conflicted = await listConflictedPaths(target, worktreePath);
+  if (conflicted.length > 0) {
+    throw new GitMergeConflictError(`merging "${options.name}" produced conflicts`, conflicted);
+  }
+  if (/not something we can merge/.test(combined)) {
+    throw new GitBranchNotFoundError(`no such branch "${options.name}"`);
+  }
+  throw new GitBranchActionError(
+    `"git merge" failed to merge "${options.name}": ${result.stderr.trim() || result.stdout.trim()}`,
+  );
+}
+
+/** Aborts a merge stopped on conflicts (`git merge --abort`) — the other half of {@link mergeBranch}'s conflict outcome's "resolve or abort" (issue #234's own acceptance bar). Throws {@link GitBranchActionError} when there is no merge in progress to abort, or the abort itself fails. */
+export async function abortMerge(target: ExecutionTarget, worktreePath: string): Promise<void> {
+  const result = await target.exec('git', ['-C', worktreePath, 'merge', '--abort']);
+  if (result.exitCode !== 0) {
+    throw new GitBranchActionError(
+      `"git merge --abort" failed: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
+  }
+}
+
+/** Every entry on `worktreePath`'s stash stack, index-and-message parsed from `git stash list`'s own `stash@{N}: <message>` lines — index 0 is the most recent, the same addressing {@link stashPop}/{@link stashDrop} take directly. `[]` for an empty stack — never an error. Throws {@link GitBranchError} only when the list itself could not be computed at all. */
+export async function listStashes(
+  target: ExecutionTarget,
+  worktreePath: string,
+): Promise<GitStashSummaryV1[]> {
+  let result;
+  try {
+    result = await target.exec('git', ['-C', worktreePath, 'stash', 'list']);
+  } catch (error) {
+    throw new GitBranchError(
+      `git is not available on this target: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (result.exitCode !== 0) {
+    throw new GitBranchError(
+      `"git stash list" failed: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
+  }
+  return result.stdout
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      const match = /^stash@\{(\d+)\}:\s?(.*)$/.exec(line);
+      return match
+        ? { index: Number(match[1]), message: match[2] ?? '' }
+        : { index: 0, message: line };
+    });
+}
+
+export interface StashSaveOptions {
+  message: string | null;
+}
+
+export interface StashSaveResult {
+  /** `false`, not an error, when there was nothing to stash — real git behaviour ("No local changes to save", exit 0). */
+  created: boolean;
+}
+
+/** Saves the current worktree onto the stash stack — `git stash push -u`, always including untracked files (see `@loombox/protocol`'s `git-stash.ts` file doc comment for why: `computeWorktreeDiff`/`computeHunkDiff` already treat an untracked file as a real visible change, so leaving one behind here would silently disagree with the diff viewer). Labeled `options.message` when given. Throws {@link GitBranchActionError} for any failure. */
+export async function stashSave(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: StashSaveOptions,
+): Promise<StashSaveResult> {
+  const args = ['stash', 'push', '-u'];
+  if (options.message) args.push('-m', options.message);
+  const result = await target.exec('git', ['-C', worktreePath, ...args]);
+  if (result.exitCode !== 0) {
+    throw new GitBranchActionError(
+      `"git stash push" failed: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
+  }
+  return { created: !result.stdout.includes('No local changes to save') };
+}
+
+export interface StashPopOptions {
+  /** `stash@{0}` (the most recent) when `null`. */
+  index: number | null;
+}
+
+/** Pops `options.index` off the stash stack — `git stash pop`. Throws {@link GitStashPopConflictError} (with every unmerged path) when the pop cannot complete cleanly (issue #234's own named failure mode: "a stash that cannot pop") — real git conflict-markers the worktree and keeps the stash entry rather than dropping it, so a caller resolves the conflicts and calls {@link stashDrop}, or discards the conflict-marked changes and tries again; nothing is lost either way. Throws {@link GitStashNotFoundError} for an index naming no real entry, {@link GitBranchActionError} for any other failure. */
+export async function stashPop(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: StashPopOptions,
+): Promise<void> {
+  const ref = `stash@{${options.index ?? 0}}`;
+  const result = await target.exec('git', ['-C', worktreePath, 'stash', 'pop', ref]);
+  if (result.exitCode === 0) return;
+  const combined = `${result.stdout}\n${result.stderr}`;
+  if (/No stash entries found|unknown stash reference|is not a valid reference/.test(combined)) {
+    throw new GitStashNotFoundError(`no such stash entry "${ref}"`);
+  }
+  const conflicted = await listConflictedPaths(target, worktreePath);
+  if (conflicted.length > 0) {
+    throw new GitStashPopConflictError(`popping "${ref}" produced conflicts`, conflicted);
+  }
+  throw new GitBranchActionError(
+    `"git stash pop" failed: ${result.stderr.trim() || result.stdout.trim()}`,
+  );
+}
+
+export interface StashDropOptions {
+  index: number;
+}
+
+/** Drops `options.index` off the stash stack for good — `git stash drop`, the way out of a resolved (or abandoned) {@link stashPop} conflict, or of an entry no longer wanted. Throws {@link GitStashNotFoundError} for an index naming no real entry, {@link GitBranchActionError} for any other failure. */
+export async function stashDrop(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: StashDropOptions,
+): Promise<void> {
+  const ref = `stash@{${options.index}}`;
+  const result = await target.exec('git', ['-C', worktreePath, 'stash', 'drop', ref]);
+  if (result.exitCode !== 0) {
+    const combined = `${result.stdout}\n${result.stderr}`;
+    if (/No stash entries found|unknown stash reference|is not a valid reference/.test(combined)) {
+      throw new GitStashNotFoundError(`no such stash entry "${ref}"`);
+    }
+    throw new GitBranchActionError(
+      `"git stash drop" failed: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
+  }
 }

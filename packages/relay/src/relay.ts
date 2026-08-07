@@ -1445,6 +1445,30 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // pending request with that id.
         fanOutDirect(message.sessionId, message);
         return;
+      case 'git_branch_list_response':
+      case 'git_branch_create_response':
+      case 'git_branch_switch_response':
+      case 'git_branch_merge_response':
+      case 'git_branch_merge_abort_response':
+      case 'git_stash_save_response':
+      case 'git_stash_list_response':
+      case 'git_stash_pop_response':
+      case 'git_stash_drop_response':
+        // The owning node's reply to a client's git_branch_list_request/
+        // git_branch_create_request/git_branch_switch_request/
+        // git_branch_merge_request/git_branch_merge_abort_request or
+        // git_stash_save_request/git_stash_list_request/
+        // git_stash_pop_request/git_stash_drop_request (SPEC §7.6; issue
+        // #234's branch create/switch/merge and stash save/pop) — fanned
+        // out to this session's subscribed clients exactly like
+        // git_hunk_action_response above; the relay never opens the
+        // envelope, so it never learns which branch, stash message, or
+        // conflicted path was involved, only that something was asked
+        // (SPEC §8's metadata boundary). A requesting client matches its
+        // own pending request by `requestId`; any other subscribed
+        // client simply has no pending request with that id.
+        fanOutDirect(message.sessionId, message);
+        return;
       case 'config_option_result':
         // The owning node's reply to a client's config_option (SPEC §7.24;
         // issue #718) — fanned out to this session's subscribed clients
@@ -2256,6 +2280,28 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // path, which server/prompt was asked for, which hunk was touched
         // and how, or the commit message itself, never reaches the relay
         // in the clear (SPEC §8's metadata boundary).
+        await routeToOwningNode(message.sessionId, message);
+        return;
+      case 'git_branch_list_request':
+      case 'git_branch_create_request':
+      case 'git_branch_switch_request':
+      case 'git_branch_merge_request':
+      case 'git_branch_merge_abort_request':
+      case 'git_stash_save_request':
+      case 'git_stash_list_request':
+      case 'git_stash_pop_request':
+      case 'git_stash_drop_request':
+        // A client listing branches/stashes, creating/switching/merging a
+        // branch, aborting a conflicted merge, or saving/popping/dropping
+        // a stash (SPEC §7.6; issue #234) — routed to the owning node
+        // exactly like git_hunk_action_request above. The relay only ever
+        // sees sessionId/requestId plus, for every request that carries a
+        // payload (create/switch/merge/stash save/pop/drop), an opaque
+        // `EncryptedEnvelope`; git_branch_list_request,
+        // git_branch_merge_abort_request, and git_stash_list_request carry
+        // no envelope at all (asking/aborting carries no content, mirrors
+        // git_diff_request) — no branch name, stash message, or
+        // conflicted path ever reaches the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'terminal_open':
