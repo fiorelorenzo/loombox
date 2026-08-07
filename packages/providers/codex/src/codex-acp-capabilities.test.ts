@@ -132,16 +132,16 @@ describe('real @agentclientprotocol/codex-acp source (issue #182 build-time veri
 });
 
 describe("real-shape conformance: loombox's Codex adapter functions against actual source-verified data", () => {
-  it('mapCodexPermissionOptions still resolves the right verb from real Codex button labels, via the kind fallback', () => {
+  it('mapCodexPermissionOptions resolves the right verb from real Codex button labels via the text rule itself (issue #820: the text rule is the primary path now, not just the kind fallback)', () => {
     const realCommandOptions: AcpPermissionOption[] = [
       { optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' },
       { optionId: 'allow_always', name: 'Allow for Session', kind: 'allow_always' },
       { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
     ];
     expect(mapCodexPermissionOptions(realCommandOptions).map((b) => b.verb)).toEqual([
-      'yes',
-      'yes_for_session',
-      'stop_and_explain',
+      'allow_once',
+      'allow_for_session',
+      'reject',
     ]);
   });
 

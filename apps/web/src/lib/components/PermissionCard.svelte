@@ -8,8 +8,9 @@
    * card shows the real command/diff (issue #144's acceptance). The button
    * set is whatever `request.options[]` carries — ACP's own provider-
    * adapted `name`s (Claude's "Allow once"/"Allow all edits"/etc, Codex's
-   * "Yes"/"Yes for session"/etc, or the generic tier's Allow/Deny) — this
-   * component never hardcodes a per-provider label table.
+   * "Allow Once"/"Allow for Session"/"Reject"/etc — issue #820, corrected
+   * from a guessed "Yes"/"Stop, and explain" text — or the generic tier's
+   * Allow/Deny) — this component never hardcodes a per-provider label table.
    *
    * Keyboard shortcuts (issue #148): digit keys `1..n` resolve with the
    * matching `options[]` entry; `Esc` defers (blurs, leaves the request
