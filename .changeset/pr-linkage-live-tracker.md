@@ -1,0 +1,5 @@
+---
+'@loombox/node': minor
+---
+
+Write a PR-open event back through a live tracker project's own `TrackerBackend` (issue #242, SPEC §7.14): `NodeDaemon` now calls `writeLiveTrackerPrLinkage` right after a `pr_open_request` succeeds, dispatching through the same `resolveTrackerDispatch` seam `readTrackerSnapshot`/`applyTrackerWrite` already use. GitHub makes zero backend calls — it relies on its own issue-closing keyword parsing (`Closes #123`) in the PR body the operator already typed. Jira has no such convention, so the new `LiveTrackerPrLinkageWriter` (`tracker-pr-linkage-live.ts`) finds the Jira issue key named in the PR's own title/body (scoped to the bound project's own `projectKey`, never a bare `[A-Z]+-\d+` guess) and posts an `addComment` linking the PR, deduplicated in-memory per `(issue, PR)` pair so a repeat call never double-comments. A write failure is classified via issue #219's own `classifyTrackerConnectivityError` (`unreachable`/`authFailed`, never a swallowed catch-all) and logged, without turning an otherwise-successful `pr_open_request` into a reported failure. Native-tracker projects are unaffected — that write-back path is issue #241.
