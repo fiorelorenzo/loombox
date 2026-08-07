@@ -49,6 +49,8 @@ export const ICON_NAMES = [
   'more',
   'plus',
   'refresh',
+  'play',
+  'pause',
   'check',
   'alert',
   'health-ok',
@@ -170,6 +172,12 @@ export const ICON_PATHS: Record<IconName, readonly string[]> = {
   // An almost-complete ring left open on one side, with an arrowhead at
   // the open end — refresh/retry.
   refresh: ['M42 20 A18 18 0 1 0 42 44', 'M34 15 L42 20 L46 11'],
+
+  // A right-pointing triangle — replay/resume playback (issue #265).
+  play: ['M22 14 L48 32 L22 50 Z'],
+
+  // Two vertical bars — pause playback (issue #265).
+  pause: ['M24 16 V48', 'M40 16 V48'],
 
   // A single checkmark — confirmation/success.
   check: ['M15 33 L27 45 L49 19'],

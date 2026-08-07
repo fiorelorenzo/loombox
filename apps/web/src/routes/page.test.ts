@@ -2584,3 +2584,184 @@ describe('transcript search (SPEC.md §7.19; issues #262/#263)', () => {
     expect(screen.queryByTestId('transcript-search-bar')).toBeNull();
   });
 });
+
+describe('session replay (issue #265)', () => {
+  function replayableTranscript(): TranscriptState {
+    return {
+      ...createTranscriptState(),
+      items: [
+        {
+          type: 'message',
+          id: 'm1',
+          kind: 'user_message_chunk',
+          turnId: 'turn_1',
+          messageId: 'm1',
+          text: 'Fix the flaky retry test',
+        },
+        {
+          type: 'tool_call',
+          id: 'tc1',
+          turnId: 'turn_1',
+          title: 'Read src/retry.ts',
+          toolKind: 'read',
+          status: 'completed',
+          diff: undefined,
+          rawInput: undefined,
+          content: undefined,
+          parentToolCallId: undefined,
+          startedAtMs: undefined,
+          elapsedMs: undefined,
+          costAtStartUsd: undefined,
+          attributedCostUsd: undefined,
+        },
+        {
+          type: 'message',
+          id: 'm2',
+          kind: 'agent_message_chunk',
+          turnId: 'turn_1',
+          messageId: 'm2',
+          text: 'Done, the retry loop is fixed.',
+        },
+      ],
+    };
+  }
+
+  it('an exited session with real history offers a Replay entry point', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      sessionStatuses: { sess_1: 'exited' },
+      transcripts: { sess_1: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    expect(screen.getByTestId('start-replay-button')).toBeTruthy();
+  });
+
+  it('a session with no history yet offers no Replay entry point', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_2' })],
+      sessionStatuses: { sess_2: 'starting' },
+      transcripts: { sess_2: createTranscriptState() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    expect(screen.queryByTestId('start-replay-button')).toBeNull();
+  });
+
+  it('a disconnected session (composer still usable) also offers Replay — it has no live agent right now either', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      sessionStatuses: { sess_1: 'disconnected' },
+      transcripts: { sess_1: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    expect(screen.getByTestId('start-replay-button')).toBeTruthy();
+    expect((screen.getByTestId('composer-input') as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
+  it('starting replay shows the unmistakable banner, replaces the composer with playback controls, and starts playing', async () => {
+    vi.useFakeTimers();
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      sessionStatuses: { sess_1: 'exited' },
+      transcripts: { sess_1: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+
+    await fireEvent.click(screen.getByTestId('start-replay-button'));
+
+    expect(screen.getByTestId('session-replay-banner').textContent).toContain(
+      'Replaying a past session',
+    );
+    expect(screen.getByTestId('session-replay-controls')).toBeTruthy();
+    expect(screen.queryByTestId('composer-input')).toBeNull();
+    expect(screen.getByTestId('replay-play-pause').getAttribute('aria-label')).toBe('Pause replay');
+    vi.useRealTimers();
+  });
+
+  it('exiting replay restores the ordinary composer and drops the banner', async () => {
+    vi.useFakeTimers();
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      sessionStatuses: { sess_1: 'exited' },
+      transcripts: { sess_1: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    await fireEvent.click(screen.getByTestId('start-replay-button'));
+    expect(screen.getByTestId('session-replay-banner')).toBeTruthy();
+
+    await fireEvent.click(screen.getByTestId('exit-replay-button'));
+
+    expect(screen.queryByTestId('session-replay-banner')).toBeNull();
+    expect(screen.queryByTestId('session-replay-controls')).toBeNull();
+    expect(screen.getByTestId('composer-input')).toBeTruthy();
+    vi.useRealTimers();
+  });
+
+  it('Escape pauses a playing replay — the interruption instinct does something sensible instead of nothing', async () => {
+    vi.useFakeTimers();
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      sessionStatuses: { sess_1: 'exited' },
+      transcripts: { sess_1: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    await fireEvent.click(screen.getByTestId('start-replay-button'));
+    expect(screen.getByTestId('replay-play-pause').getAttribute('aria-label')).toBe('Pause replay');
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(screen.getByTestId('replay-play-pause').getAttribute('aria-label')).toBe('Play replay');
+    // Replay is still active — Escape paused it, it did not exit replay
+    // or reach for a live-turn action that has nothing to interrupt here.
+    expect(screen.getByTestId('session-replay-banner')).toBeTruthy();
+    vi.useRealTimers();
+  });
+
+  it('switching sessions exits an in-progress replay rather than leaving it running against the wrong transcript', async () => {
+    vi.useFakeTimers();
+    mountCockpit({
+      sessions: [
+        makeSession({ id: 'sess_1', title: 'First session' }),
+        makeSession({ id: 'sess_2', title: 'Second session' }),
+      ],
+      sessionStatuses: { sess_1: 'exited', sess_2: 'exited' },
+      transcripts: { sess_1: replayableTranscript(), sess_2: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    await fireEvent.click(screen.getByTestId('start-replay-button'));
+    expect(screen.getByTestId('session-replay-banner')).toBeTruthy();
+
+    const secondRow = screen.getByText('Second session').closest('button');
+    await fireEvent.click(secondRow!);
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('cockpit-session-title').textContent).toBe('Second session'),
+    );
+    expect(screen.queryByTestId('session-replay-banner')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('skipping to the end reveals the full transcript in original order, then Restart plays it again from the top', async () => {
+    vi.useFakeTimers();
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      sessionStatuses: { sess_1: 'exited' },
+      transcripts: { sess_1: replayableTranscript() },
+    });
+    await screen.findByTestId('cockpit-session-title');
+    await fireEvent.click(screen.getByTestId('start-replay-button'));
+
+    await fireEvent.click(screen.getByTestId('replay-skip-to-end'));
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('replay-progress').textContent?.trim()).toBe('3 / 3 steps'),
+    );
+    const rows = screen.getAllByTestId('transcript-row');
+    expect(rows.map((row) => row.getAttribute('data-item-id'))).toEqual(['m1', 'tc1', 'm2']);
+
+    await fireEvent.click(screen.getByTestId('replay-restart'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('replay-progress').textContent?.trim()).not.toBe('3 / 3 steps'),
+    );
+    vi.useRealTimers();
+  });
+});
