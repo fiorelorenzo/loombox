@@ -186,9 +186,11 @@ describe("real-shape conformance: loombox's Codex adapter functions against actu
     // Codex's real agentCapabilities shape (dist/index.js:28773-28795):
     // `delete`/`additionalDirectories` live nested under
     // `sessionCapabilities`, and the method AcpClient's resumeSession()
-    // actually calls (session/resume) is gated by
-    // `sessionCapabilities.resume`, not the older top-level `loadSession`
-    // flag (which gates session/load, a method this client never calls).
+    // calls first (session/resume) is gated by `sessionCapabilities.resume`,
+    // not the older top-level `loadSession` flag -- which gates the
+    // separate `session/load` method (issue #843: now a resumeSession()
+    // fallback for an agent that doesn't set sessionCapabilities.resume,
+    // not relevant here since Codex sets both).
     const realCodexAgentCapabilities: AcpAgentCapabilities = {
       loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
@@ -206,11 +208,11 @@ describe("real-shape conformance: loombox's Codex adapter functions against actu
     expect(flags.supportsResume).toBe(true);
   });
 
-  it('deriveFeatureFlags reports supportsResume: false for an agent that sets the older loadSession flag but not sessionCapabilities.resume (issue #821: loadSession gates session/load, a different method than the one this client calls)', () => {
+  it('deriveFeatureFlags reports supportsResume: true for an agent that sets only the older loadSession flag, not sessionCapabilities.resume (issue #843: AcpClient.resumeSession falls back to session/load in exactly this case, so resume genuinely works even without the newer method)', () => {
     const loadSessionOnlyAgent: AcpAgentCapabilities = {
       loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
     };
-    expect(deriveFeatureFlags(loadSessionOnlyAgent).supportsResume).toBe(false);
+    expect(deriveFeatureFlags(loadSessionOnlyAgent).supportsResume).toBe(true);
   });
 });
