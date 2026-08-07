@@ -173,6 +173,7 @@ import { prOpenPreviewRequest, prOpenPreviewResult, prOpenRequest, prOpenResult 
 import { runCancel, runExit, runOutput, runStart, runStarted } from './test-runner';
 import { ciCheckStatus } from './ci-check';
 import { ciAutoIterateStatus, ciAutoIterateStop } from './ci-auto-iterate';
+import { runStatus } from './run-status';
 
 /** The full v1 wire message set, discriminated on `type` (SPEC §10, §16, `docs/v1-plan.md`). */
 export const wireMessageV1 = z.discriminatedUnion('type', [
@@ -349,6 +350,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   agentInstructionsSetResponse,
   ciAutoIterateStatus,
   ciAutoIterateStop,
+  runStatus,
   ping,
   pong,
 ]);

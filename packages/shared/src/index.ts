@@ -57,3 +57,11 @@ export { filterSpendLedgerRows, aggregateSpendLedgerRows } from './spend-aggrega
 // both name the exact same check runs as failing. See `ci-check.ts`'s own
 // doc comment.
 export { isFailingCiConclusion } from './ci-check';
+
+// Pure test/lint/build run-outcome judgment (SPEC §7.14/§7.15; issue
+// #247) — shared between `@loombox/node` (`RunStatusTracker`'s own
+// aggregate `state`, and `NodeDaemon`'s auto-iterate hook) and
+// `@loombox/web` (`RelayClient`'s `'run_failure'` attention-inbox item),
+// so both name the exact same runs as failing. See `run-status.ts`'s own
+// doc comment.
+export { isFailingRunOutcome } from './run-status';

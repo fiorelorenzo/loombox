@@ -7,7 +7,7 @@ import {
   unwrapAmkWithRecoveryCode,
   type EcdhKeyPair,
 } from '@loombox/crypto';
-import { isFailingCiConclusion } from '@loombox/shared';
+import { isFailingCiConclusion, isFailingRunOutcome } from '@loombox/shared';
 import { createEnvelopeCrypto, type EnvelopeCrypto } from './envelope-crypto-client';
 import {
   acpPermissionRequestPayloadSchema,
@@ -54,6 +54,7 @@ import {
   parsePermissionPolicyViolationPayloadV1,
   parsePrOpenPreviewResultPayloadV1,
   parsePrOpenResultPayloadV1,
+  parseRunStatusPayloadV1,
   parseTestRunnerConfigDetectedPayloadV1,
   parseTestRunnerConfigResultPayloadV1,
   PROTOCOL_V1,
@@ -173,6 +174,8 @@ import {
   type RunStarted,
   type RunStartedResultPayloadV1,
   type RunStartPayloadV1,
+  type RunStatus,
+  type RunStatusStateV1,
   type SessionAnnounceV1,
   type SessionArchiveResponse,
   type SessionForkResponse,
@@ -557,7 +560,7 @@ export interface RunClientState {
 
 /**
  * One row of the cross-project, cross-node attention inbox (SPEC §7.13;
- * issues #167/#168/#169). `kind` discriminates the four classes SPEC §7.13
+ * issues #167/#168/#169). `kind` discriminates the classes SPEC §7.13
  * names:
  * - `'permission'` — a session's actionable FIFO-head permission request.
  * - `'awaiting_input'` — a session whose live status is `awaiting_input`.
@@ -567,6 +570,13 @@ export interface RunClientState {
  *   `ci_check_status` (`packages/node/src/ci-check-watcher.ts`, issue #239)
  *   aggregates to `'failing'`; see `prUrl`/`prNumber`/`failingChecks`
  *   (issue #243).
+ * - `'run_failure'` — a session whose latest `run_status`
+ *   (`packages/node/src/run-status-tracker.ts`, issue #247) aggregates to
+ *   `'failing'`: at least one configured test/lint/build kind's latest
+ *   completed run did not pass; see `failingRuns`. The exact sibling of
+ *   `'ci_failure'` — same shape, same "durable until it clears" lifecycle
+ *   — so a local runner failure and a remote CI failure read as one
+ *   story rather than two (issue #247's own acceptance).
  * - `'review_request'` — declared here as an extension point ONLY: SPEC
  *   §7.14 says a review request lands in this same inbox too, but it has
  *   no live event source in this client yet (that needs the tracker
@@ -575,18 +585,25 @@ export interface RunClientState {
  *   renders it distinctly) purely so wiring a real source later is
  *   additive, not a rendering/type rework.
  *
- * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'` are
- * the four "needs the user now" classes this client actually wires to live
- * data. See {@link RelayClient.attentionInbox}'s doc comment for why a
- * session with a queue of several pending requests only ever contributes
- * its head as one item, why a session contributes at most one of
- * `awaiting_input`/`session_outcome` (its live status is one or the other,
- * never both), and why `ci_failure` is independent of both (a session can
- * be idle/finished AND have a failing check on its open PR at once).
+ * `'permission'`/`'awaiting_input'`/`'session_outcome'`/`'ci_failure'`/
+ * `'run_failure'` are the five "needs the user now" classes this client
+ * actually wires to live data. See {@link RelayClient.attentionInbox}'s
+ * doc comment for why a session with a queue of several pending requests
+ * only ever contributes its head as one item, why a session contributes
+ * at most one of `awaiting_input`/`session_outcome` (its live status is
+ * one or the other, never both), and why `ci_failure`/`run_failure` are
+ * each independent of both AND of each other (a session can be
+ * idle/finished, have a failing check on its open PR, AND have a failing
+ * local run, all at once — three unrelated facts about that session).
  */
 export interface AttentionInboxItem {
   readonly kind:
-    'permission' | 'awaiting_input' | 'session_outcome' | 'ci_failure' | 'review_request';
+    | 'permission'
+    | 'awaiting_input'
+    | 'session_outcome'
+    | 'ci_failure'
+    | 'run_failure'
+    | 'review_request';
   readonly sessionId: string;
   readonly sessionTitle: string;
   readonly projectPath: string;
@@ -630,6 +647,18 @@ export interface AttentionInboxItem {
    * that exact set (issue #243).
    */
   readonly failingChecks?: readonly string[];
+  /**
+   * Set only for a `'run_failure'` item: the configured kinds
+   * (`TestRunnerKindV1` — `'test'`/`'lint'`/`'build'`) whose latest
+   * completed run did not pass (`RunStatusStateV1.entries`, filtered
+   * through `@loombox/shared`'s `isFailingRunOutcome` — the exact same
+   * judgment `NodeDaemon`'s own runner auto-iterate hook feeds back to
+   * the agent, never a second guess in the browser). Never empty when
+   * `kind` is `'run_failure'`: the node's own aggregate `state` only
+   * reaches `'failing'` when at least one entry's outcome matches that
+   * exact set (issue #247). The `'ci_failure'` sibling of `failingChecks`.
+   */
+  readonly failingRuns?: readonly string[];
 }
 
 /**
@@ -1421,6 +1450,8 @@ export class RelayClient {
   private readonly inboxTrackedSessions = new Set<string>();
   /** `sessionId` -> this session's latest known CI check state (SPEC §7.14; issue #243) — backs the attention inbox's `'ci_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleCiCheckStatus}. `undefined` (no entry yet) until the node's first `ci_check_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. */
   private readonly ciCheckStatuses = new Map<string, Writable<CiCheckStateV1 | undefined>>();
+  /** `sessionId` -> this session's latest known durable run status (SPEC §7.15; issue #247) — backs the attention inbox's `'run_failure'` class (see {@link recomputeAttentionInbox}), populated by {@link handleRunStatus}. `undefined` (no entry yet) until the node's first `run_status` push for a session arrives: a session where no configured run has ever completed yet. */
+  private readonly runStatuses = new Map<string, Writable<RunStatusStateV1 | undefined>>();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -5806,11 +5837,12 @@ export class RelayClient {
 
   /**
    * Wires one session into the attention inbox: subscribes it (so its
-   * `permission_request`/`session_update`/`ci_check_status` traffic
-   * actually reaches this client, see `ensureSubscribed`) and recomputes
-   * the inbox whenever its transcript (status), permission queue, or CI
-   * check state changes. Idempotent per session id, and a no-op before
-   * {@link attentionInbox} has ever been called (see `syncInboxTracking`).
+   * `permission_request`/`session_update`/`ci_check_status`/`run_status`
+   * traffic actually reaches this client, see `ensureSubscribed`) and
+   * recomputes the inbox whenever its transcript (status), permission
+   * queue, CI check state, or run status changes. Idempotent per session
+   * id, and a no-op before {@link attentionInbox} has ever been called
+   * (see `syncInboxTracking`).
    */
   private trackSessionForInbox(sessionId: string): void {
     if (this.inboxTrackedSessions.has(sessionId)) return;
@@ -5819,6 +5851,7 @@ export class RelayClient {
     this.transcriptStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.permissionQueueStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
     this.ciCheckStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
+    this.runStatusStoreFor(sessionId).subscribe(() => this.recomputeAttentionInbox());
   }
 
   /** Tracks every session in `sessions` for the inbox — a no-op until {@link attentionInbox} has been called at least once, and per-session idempotent thereafter (see `trackSessionForInbox`). Called whenever the session list gains an entry. */
@@ -5894,6 +5927,21 @@ export class RelayClient {
           failingChecks: ci.checkRuns
             .filter((run) => isFailingCiConclusion(run.conclusion))
             .map((run) => run.name),
+        });
+      }
+
+      const run = get(this.runStatusStoreFor(session.id));
+      if (run?.state === 'failing') {
+        items.push({
+          kind: 'run_failure',
+          sessionId: session.id,
+          sessionTitle: session.title,
+          projectPath: session.projectPath,
+          nodeId: session.nodeId,
+          waitingSince: run.updatedAt,
+          failingRuns: run.entries
+            .filter((entry) => isFailingRunOutcome(entry.outcome))
+            .map((entry) => entry.kind),
         });
       }
     }
@@ -6261,6 +6309,9 @@ export class RelayClient {
       }
       case 'ci_check_status':
         this.handleCiCheckStatus(message);
+        return;
+      case 'run_status':
+        this.handleRunStatus(message);
         return;
       default:
         return;
@@ -8495,6 +8546,52 @@ export class RelayClient {
       .then((payload) => pending.resolve(payload))
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  // -----------------------------------------------------------------
+  // Local runner <-> attention inbox unification (SPEC §7.14/§7.15;
+  // issue #247) — the client half of `NodeDaemon`'s own
+  // `RunStatusTracker`/`run_status` push: `runStatusStoreFor`/
+  // `handleRunStatus` are this file's `ciCheckStatusStoreFor`/
+  // `handleCiCheckStatus` counterparts, and `recomputeAttentionInbox`
+  // reads the resulting store to build (or clear) a session's own
+  // `'run_failure'` item — the exact sibling of `'ci_failure'` (see
+  // `AttentionInboxItem`'s own doc comment), so a local runner failure
+  // and a remote CI failure read as one story rather than two.
+  // -----------------------------------------------------------------
+
+  /** `sessionId` -> {@link runStatuses}'s backing store, created on first access — same lazy-map pattern as {@link ciCheckStatusStoreFor}. */
+  private runStatusStoreFor(sessionId: string): Writable<RunStatusStateV1 | undefined> {
+    let store = this.runStatuses.get(sessionId);
+    if (!store) {
+      store = writable<RunStatusStateV1 | undefined>(undefined);
+      this.runStatuses.set(sessionId, store);
+    }
+    return store;
+  }
+
+  /**
+   * The owning node's latest durable per-kind run status for a session
+   * (SPEC §7.15; issue #247) — pushed whenever `RunStatusTracker` records
+   * a fresh `run_exit`, exactly like {@link handleCiCheckStatus}; no
+   * pending-request bookkeeping, since nothing on this client ever asks
+   * for it. Decrypts straight into {@link runStatusStoreFor}, which
+   * {@link recomputeAttentionInbox} reads to build (or clear) this
+   * session's `'run_failure'` inbox item — a genuine decrypt failure is
+   * logged and otherwise swallowed, the same "best-effort push, never
+   * crash the client" contract {@link handleCiCheckStatus} follows.
+   */
+  private handleRunStatus(message: RunStatus): void {
+    this.envelopeCrypto
+      .open<unknown>('session', message.sessionId, message.sessionId, message.envelope)
+      .then((decrypted) => {
+        this.runStatusStoreFor(message.sessionId).set(parseRunStatusPayloadV1(decrypted).status);
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `RelayClient: failed to decrypt run_status for session ${message.sessionId}: ${errorMessage(error)}`,
+        );
       });
   }
 }
