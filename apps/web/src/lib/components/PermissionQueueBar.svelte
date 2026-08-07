@@ -20,7 +20,7 @@
   import { headPermissionRequest, listPermissionRequests } from '@loombox/providers-core/browser';
   import PermissionCard from './PermissionCard.svelte';
   import Button from './ui/Button.svelte';
-  import StatusDot from './ui/StatusDot.svelte';
+  import Badge from './ui/Badge.svelte';
 
   interface Props {
     sessionId: string;
@@ -40,15 +40,16 @@
 {#if head}
   <div class="permission-queue-bar" class:narrow data-testid="permission-queue-bar">
     <div class="queue-meta">
-      <span class="queue-count">
-        <StatusDot
-          tone="warning"
-          pulse={pending.length > 1}
-          label="Permission requests pending"
-          size="sm"
-        />
+      <Badge
+        tone="warning"
+        size="md"
+        dot
+        dotLabel="Permission requests pending"
+        dotPulse={pending.length > 1}
+        class="queue-count"
+      >
         <span class="font-mono">{pending.length}</span> pending
-      </span>
+      </Badge>
       <Button variant="danger" size="sm" onclick={onStop}>Stop</Button>
     </div>
     <PermissionCard
@@ -87,18 +88,5 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-  }
-
-  .queue-count {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-2xs) var(--space-md);
-    border-radius: var(--radius-full);
-    background: var(--color-warning-subtle);
-    color: var(--color-text-secondary);
-    font-size: var(--text-small-size);
-    font-weight: 600;
-    line-height: 1;
   }
 </style>

@@ -52,7 +52,7 @@
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
-  import type { AsyncPanelState } from '$lib/async-panel';
+  import { writeErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   export interface GitBranchPanelClient {
     requestBranches(sessionId: string): Promise<GitBranchListResponsePayloadV1>;
@@ -188,10 +188,7 @@
   );
 
   function errorMessage(error: unknown): string {
-    const raw = error instanceof Error ? error.message : String(error);
-    return raw.includes('timed out waiting')
-      ? 'Nothing answered in time. The node may be asleep, offline, or on an older relay.'
-      : raw;
+    return writeErrorMessage(undefined, error);
   }
 
   // Loads once per session, mirroring `fileTreeFor`'s own lazy-once

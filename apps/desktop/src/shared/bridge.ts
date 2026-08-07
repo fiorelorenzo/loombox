@@ -1,3 +1,5 @@
+import type { UpdaterStatus } from '../main/updater';
+
 /**
  * The typed IPC bridge contract between the Electron main process (which has
  * the native powers a sandboxed PWA lacks) and the renderer (the loombox PWA
@@ -22,6 +24,8 @@ export const BRIDGE_CHANNELS = {
   spawnLocalNode: 'loombox:spawnLocalNode',
   stopLocalNode: 'loombox:stopLocalNode',
   status: 'loombox:status',
+  checkForUpdate: 'loombox:checkForUpdate',
+  applyUpdate: 'loombox:applyUpdate',
 } as const;
 
 export type BridgeChannel = (typeof BRIDGE_CHANNELS)[keyof typeof BRIDGE_CHANNELS];
@@ -236,6 +240,26 @@ export interface BridgeStatus {
     status: LocalNodeStatus;
     pid?: number;
   };
+  /** The desktop shell's own self-update state (issue #657), from `../main/updater.ts`'s `UpdateController.getState()` — always present (an idle controller reports `{ status: 'idle' }`, mirroring `localNode` always being present here too). */
+  update: UpdateCheckResult;
+}
+
+// ---------------------------------------------------------------------------
+// checkForUpdate / applyUpdate — the desktop shell's own self-update (issue
+// #657), via `../main/updater.ts`'s electron-updater wiring. Two separate
+// actions, matching the epic's own consent requirement (#653's "Out of
+// scope: auto-updating without consent"): checkForUpdate only ever asks
+// whether a newer build exists; applyUpdate is the one explicit,
+// user-initiated action that downloads AND installs, then restarts. Both
+// return the resulting snapshot rather than void, so a caller can render
+// the outcome without a separate status() round trip.
+// ---------------------------------------------------------------------------
+
+/** Mirrors `../main/updater.ts`'s `UpdaterState` — a plain-data projection with no Electron/electron-updater types crossing the IPC boundary. */
+export interface UpdateCheckResult {
+  status: UpdaterStatus;
+  version?: string;
+  error?: string;
 }
 
 /**
@@ -252,6 +276,8 @@ export interface LoomboxBridgeApi {
   spawnLocalNode(request?: SpawnLocalNodeRequest): Promise<SpawnLocalNodeResult>;
   stopLocalNode(): Promise<StopLocalNodeResult>;
   status(): Promise<BridgeStatus>;
+  checkForUpdate(): Promise<UpdateCheckResult>;
+  applyUpdate(): Promise<UpdateCheckResult>;
 }
 
 declare global {

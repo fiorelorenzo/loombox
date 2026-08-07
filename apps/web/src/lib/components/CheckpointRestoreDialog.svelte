@@ -43,7 +43,7 @@
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
-  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
+  import { loadErrorMessage, writeErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The two calls this dialog needs off `RelayClient` — both resolve their whole outcome union rather than throwing for a named error, `RelayClient`'s own documented contract for every checkpoint call. */
   export interface CheckpointRestoreClient {
@@ -138,10 +138,7 @@
       restoreOutcome = await client.restoreCheckpoint(sessionId, checkpoint.id, true);
     } catch (err) {
       console.warn('CheckpointRestoreDialog: restoreCheckpoint failed', err);
-      const raw = err instanceof Error ? err.message : String(err);
-      restoreError = raw.includes('timed out waiting')
-        ? 'Nothing answered in time. The node may be asleep, offline, or on an older relay. Nothing was restored.'
-        : raw;
+      restoreError = writeErrorMessage('restored', err);
     } finally {
       restoring = false;
     }

@@ -5,6 +5,7 @@ import { BRIDGE_CHANNELS } from '../../shared/bridge';
 import { LocalNodeBridge } from '../local-node/bridge';
 import type { LoginItemApp } from '../login-item';
 import type { AppVersionSource } from '../status';
+import type { UpdateController, UpdaterState } from '../updater';
 import { registerBridgeHandlers, type IpcMainLike } from './handlers';
 
 /** Records every `ipcMain.handle(channel, listener)` call so a test can invoke a channel's listener directly, without any real Electron `ipcMain`. */
@@ -39,12 +40,22 @@ function fakeApp(): LoginItemApp & AppVersionSource {
   };
 }
 
+/** A trivial `UpdateController` fake — `checkForUpdates`/`applyUpdate` just report whatever `state` was constructed with, never touching a real feed. */
+function fakeUpdateController(state: UpdaterState = { status: 'idle' }): UpdateController {
+  return {
+    getState: () => state,
+    checkForUpdates: async () => state,
+    applyUpdate: async () => state,
+  };
+}
+
 describe('registerBridgeHandlers', () => {
   it('registers every BRIDGE_CHANNELS entry', () => {
     const ipcMain = new FakeIpcMain();
     registerBridgeHandlers(ipcMain, {
       localNode: new LocalNodeBridge(undefined, {}),
       app: fakeApp(),
+      updateController: fakeUpdateController(),
     });
     expect(new Set(ipcMain.registeredChannels)).toEqual(new Set(Object.values(BRIDGE_CHANNELS)));
   });
@@ -65,6 +76,7 @@ describe('registerBridgeHandlers', () => {
     registerBridgeHandlers(ipcMain, {
       localNode: new LocalNodeBridge(undefined, {}),
       app: fakeApp(),
+      updateController: fakeUpdateController(),
       listSshHostCandidates: () => Promise.resolve(discovered),
     });
     await expect(ipcMain.invoke(BRIDGE_CHANNELS.listSshHostCandidates)).resolves.toEqual(
@@ -77,6 +89,7 @@ describe('registerBridgeHandlers', () => {
     registerBridgeHandlers(ipcMain, {
       localNode: new LocalNodeBridge(undefined, {}),
       app: fakeApp(),
+      updateController: fakeUpdateController(),
     });
     const result = await ipcMain.invoke(BRIDGE_CHANNELS.provisionTarget, {
       target: { id: 't1', label: 'Test', host: '127.0.0.1' },
@@ -92,6 +105,7 @@ describe('registerBridgeHandlers', () => {
     registerBridgeHandlers(ipcMain, {
       localNode: new LocalNodeBridge(undefined, {}),
       app: fakeApp(),
+      updateController: fakeUpdateController(),
       provisionTargetDeps: {
         transportFactory: () => new FakeTransport({ connectError }),
         store: new SshTargetStore({ stateDir: '/tmp/loombox-desktop-handlers-test-unused' }),
@@ -122,6 +136,7 @@ describe('registerBridgeHandlers', () => {
     registerBridgeHandlers(ipcMain, {
       localNode: new LocalNodeBridge(undefined, {}),
       app: fakeApp(),
+      updateController: fakeUpdateController(),
       provisionLocalNodeDeps: {
         version: '1.0.0',
         fetchArchive: async () => {
@@ -155,7 +170,11 @@ describe('registerBridgeHandlers', () => {
   it('spawnLocalNode / stopLocalNode / status delegate to the LocalNodeBridge and status builder', async () => {
     const ipcMain = new FakeIpcMain();
     const app = fakeApp();
-    registerBridgeHandlers(ipcMain, { localNode: new LocalNodeBridge(undefined, {}), app });
+    registerBridgeHandlers(ipcMain, {
+      localNode: new LocalNodeBridge(undefined, {}),
+      app,
+      updateController: fakeUpdateController({ status: 'available', version: '0.9.0' }),
+    });
 
     await expect(ipcMain.invoke(BRIDGE_CHANNELS.spawnLocalNode)).resolves.toMatchObject({
       notConfigured: true,
@@ -167,6 +186,26 @@ describe('registerBridgeHandlers', () => {
       appVersion: '0.1.0',
       launchAtLogin: false,
       localNode: { status: 'stopped', pid: undefined },
+      update: { status: 'available', version: '0.9.0' },
+    });
+  });
+
+  it('checkForUpdate / applyUpdate delegate to the injected UpdateController', async () => {
+    const ipcMain = new FakeIpcMain();
+    const updateController = fakeUpdateController({ status: 'available', version: '1.0.0' });
+    registerBridgeHandlers(ipcMain, {
+      localNode: new LocalNodeBridge(undefined, {}),
+      app: fakeApp(),
+      updateController,
+    });
+
+    await expect(ipcMain.invoke(BRIDGE_CHANNELS.checkForUpdate)).resolves.toEqual({
+      status: 'available',
+      version: '1.0.0',
+    });
+    await expect(ipcMain.invoke(BRIDGE_CHANNELS.applyUpdate)).resolves.toEqual({
+      status: 'available',
+      version: '1.0.0',
     });
   });
 });
