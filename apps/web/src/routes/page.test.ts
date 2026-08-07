@@ -301,6 +301,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     onTerminalResync: vi.fn(() => () => {}),
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
+    promptInjectErrorFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),
     sessionViewStateFor: () => makeStore(undefined),
     setSessionViewState: vi.fn().mockResolvedValue(undefined),

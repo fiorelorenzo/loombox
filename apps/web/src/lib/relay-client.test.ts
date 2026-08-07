@@ -1477,6 +1477,164 @@ describe('RelayClient: config_option_result (SPEC §7.24; issue #718)', () => {
   });
 });
 
+describe('RelayClient: prompt_inject_result (issue #706/#912)', () => {
+  it("an 'outcome: error' reply publishes a PromptInjectErrorNotice carrying the node's own reason, and immediately releases the turn-active gate so a prompt already queued behind it flushes right away", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-prompt-result-error';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-prompt-result-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_prompt_result_error', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-prompt-result-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    client.transcriptFor(session.id);
+    const errorNotice = client.promptInjectErrorFor(session.id);
+    expect(get(errorNotice)).toBeUndefined();
+
+    // First send dispatches immediately; a second one queues behind it
+    // (this client's own single-flight gating, issue #128) — exactly the
+    // state a revival failure needs to prove it releases.
+    const firstPromptId = client.sendPrompt(session.id, 'revive me');
+    await node.waitFor((m) => m.type === 'prompt_inject' && m.promptId === firstPromptId);
+    const secondPromptId = client.sendPrompt(session.id, 'are you there yet?');
+    expect(get(client.queuedPromptsFor(session.id))).toEqual([
+      expect.objectContaining({ id: secondPromptId }),
+    ]);
+
+    node.send({
+      type: 'prompt_inject_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId: firstPromptId,
+      result: { outcome: 'error', message: "Couldn't restart this session's agent: spawn failed" },
+    });
+    await waitForStore(errorNotice, (value) => value !== undefined);
+    expect(get(errorNotice)).toMatchObject({
+      promptId: firstPromptId,
+      message: "Couldn't restart this session's agent: spawn failed",
+    });
+
+    // The queued second prompt is free now, not stuck waiting out
+    // turnIdleMs for a turn that never actually started.
+    await node.waitFor((m) => m.type === 'prompt_inject' && m.promptId === secondPromptId);
+    expect(get(client.queuedPromptsFor(session.id))).toEqual([]);
+  });
+
+  it("a client ignores a prompt_inject_result for another device's own send on the same session (fanned out, not addressed) — never publishing a notice for a prompt it didn't send", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-prompt-result-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-prompt-result-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_prompt_result_sibling', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-prompt-result-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const errorNotice = client.promptInjectErrorFor(session.id);
+
+    // This client never sent this promptId — a sibling device's own
+    // attempt, fanned out to every subscriber of the session exactly like
+    // config_option_result.
+    node.send({
+      type: 'prompt_inject_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId: 'prompt_from_another_device',
+      result: { outcome: 'error', message: 'paused on a spend cap' },
+    });
+
+    // The correct behavior produces NO store change here, so there is no
+    // event to await instead — mirrors config_option_result's own
+    // sibling-device test above, over the same real WebSocket/relay this
+    // suite drives.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 50);
+    await promise;
+    expect(get(errorNotice)).toBeUndefined();
+  });
+
+  it("an 'outcome: ok' reply publishes nothing", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-prompt-result-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-prompt-result-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_prompt_result_ok', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-prompt-result-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    client.transcriptFor(session.id);
+    const errorNotice = client.promptInjectErrorFor(session.id);
+    const promptId = client.sendPrompt(session.id, 'ping');
+    await node.waitFor((m) => m.type === 'prompt_inject' && m.promptId === promptId);
+
+    node.send({
+      type: 'prompt_inject_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      promptId,
+      result: { outcome: 'ok' },
+    });
+
+    // No optimistic value to reconcile, so no event to await instead —
+    // same real-timer "prove nothing published" shape as the sibling-
+    // device test above.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 50);
+    await promise;
+    expect(get(errorNotice)).toBeUndefined();
+  });
+});
+
 describe('RelayClient: connectedAccounts (SPEC §7.26, issue #221 wiring; consumed by issue #220)', () => {
   it('starts empty and surfaces an account announced by a node before the client connects, exactly like the sessions snapshot', async () => {
     const amk = generateAmk();

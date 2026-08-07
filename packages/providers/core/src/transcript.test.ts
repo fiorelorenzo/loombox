@@ -877,6 +877,96 @@ describe('reduceSessionEvent: session_status', () => {
     expect(state.status).toBe('working');
     expect(state.statusReason).toBeUndefined();
   });
+
+  it("appends a TranscriptRevivalItem when a 'starting' status carries a reason (issue #706/#912's revival disclosure)", () => {
+    let state = reduceTranscript(createTranscriptState(), {
+      kind: 'agent_message_chunk',
+      turnId: 't1',
+      messageId: 'm1',
+      text: 'before the restart',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: '2026-08-07T12:00:00.000Z',
+      reason: 'This starts a brand-new agent process. It does not remember earlier turns.',
+    });
+    expect(state.items).toEqual([
+      {
+        type: 'message',
+        id: 't1::agent_message_chunk::m1',
+        kind: 'agent_message_chunk',
+        turnId: 't1',
+        messageId: 'm1',
+        text: 'before the restart',
+      },
+      {
+        type: 'revival',
+        id: 'revival::2026-08-07T12:00:00.000Z',
+        reason: 'This starts a brand-new agent process. It does not remember earlier turns.',
+      },
+    ]);
+    // The ambient statusReason field is still set too, same as every
+    // other reason-carrying transition — the item is additive, not a
+    // replacement for it.
+    expect(state.statusReason).toBe(
+      'This starts a brand-new agent process. It does not remember earlier turns.',
+    );
+  });
+
+  it("an ordinary 'starting' status with no reason (an ordinary session creation) never appends a revival item", () => {
+    const state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: 't1',
+    });
+    expect(state.items).toEqual([]);
+  });
+
+  it('a duplicate starting+reason event for the identical updatedAt is idempotent — one revival row, not two', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: 't1',
+      reason: 'revived',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: 't1',
+      reason: 'revived',
+    });
+    expect(state.items).toHaveLength(1);
+  });
+
+  it('a second, later revival for the same session is its own distinct row', () => {
+    let state = reduceSessionEvent(createTranscriptState(), {
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: 't1',
+      reason: 'first revival',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'working',
+      updatedAt: 't2',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'disconnected',
+      updatedAt: 't3',
+    });
+    state = reduceSessionEvent(state, {
+      kind: 'session_status',
+      status: 'starting',
+      updatedAt: 't4',
+      reason: 'second revival',
+    });
+    expect(state.items).toEqual([
+      { type: 'revival', id: 'revival::t1', reason: 'first revival' },
+      { type: 'revival', id: 'revival::t4', reason: 'second revival' },
+    ]);
+  });
 });
 
 describe('reduceSessionEvent: config_options / config_option_update', () => {

@@ -61,6 +61,7 @@ export type {
   TranscriptGapItem,
   TranscriptItem,
   TranscriptMessageItem,
+  TranscriptRevivalItem,
   TranscriptState,
   TranscriptToolCallItem,
   UsageRecord,
