@@ -38,6 +38,7 @@ import type {
   ClientSessionMeta,
   ConnectedAccount,
   ConnectionStatus,
+  SnippetV1,
   TargetListEntry,
 } from '$lib/relay-client';
 import type { StoredAuthSession } from '$lib/auth-store';
@@ -183,6 +184,8 @@ interface FakeClientScenario {
     promptName: string,
     args: Record<string, string>,
   ) => Promise<string>;
+  /** The account's saved snippet catalog (SPEC §7.18; issue #261), returned by `listSnippets` and mutated in place by `saveSnippets` (the fake mirrors `RelayClient.saveSnippets`'s own "resolves with the saved catalog" contract, not just accepting the call). */
+  snippets?: SnippetV1[];
 }
 
 /**
@@ -210,6 +213,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     scenario.getMcpPromptText ??
       (() => Promise.reject(new Error('getMcpPromptText: no scenario override supplied'))),
   );
+  let currentSnippets: SnippetV1[] = scenario.snippets ?? [];
   return {
     status: statusStore,
     sessions: sessionsStore,
@@ -320,6 +324,12 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     onRunOutput: vi.fn(() => () => {}),
     spendReportFor: () => makeStore({ status: 'loading' as const, rows: [] }),
     reloadSpendReport: vi.fn(),
+    /** Issue #261: `saveSnippets` mutates `currentSnippets` in place and resolves with it, mirroring the real `RelayClient`'s own "resolves with the node's saved catalog" contract, so a re-opened picker (a second `listSnippets` call) sees what a prior save actually saved. */
+    listSnippets: vi.fn(async () => currentSnippets),
+    saveSnippets: vi.fn(async (_sessionId: string, next: SnippetV1[]) => {
+      currentSnippets = next;
+      return currentSnippets;
+    }),
   };
 }
 
@@ -2373,6 +2383,69 @@ describe('composer: `/`-command picker, driven by what the agent declared (Zed-p
     await vi.waitFor(() =>
       expect(client.sendPrompt).toHaveBeenCalledWith('sess_1', '/review', [], []),
     );
+  });
+});
+
+// ---------------------------------------------------------------------
+// The reusable prompt/snippet library (SPEC §7.18; issue #261): the
+// composer-level half of the acceptance bar — `SnippetPicker.test.ts`
+// covers the dialog's own search/insert/save/delete contract in
+// isolation; this proves `+page.svelte`'s `insertSnippetText` actually
+// splices `snippet.text` into the REAL composer textarea at the caret,
+// which no dialog-level test can see.
+// ---------------------------------------------------------------------
+
+describe('composer: snippet library (SPEC §7.18; issue #261)', () => {
+  it('inserts a picked snippet verbatim at the end of an empty draft', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      snippets: [{ id: 'snip_1', name: 'Standup', text: 'What did you ship yesterday?' }],
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Insert snippet' }));
+    const item = await screen.findByTestId('snippet-picker-item');
+    await fireEvent.click(item);
+
+    expect(composer.value).toBe('What did you ship yesterday?');
+  });
+
+  it('inserts at the live caret, splicing into already-typed text rather than appending blindly', async () => {
+    mountCockpit({
+      sessions: [makeSession({ id: 'sess_1' })],
+      snippets: [{ id: 'snip_1', name: 'Ship note', text: 'SHIPPED' }],
+    });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+
+    await fireEvent.input(composer, { target: { value: 'Status:  — reviewed already' } });
+    composer.setSelectionRange(8, 8); // right after "Status: "
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Insert snippet' }));
+    const item = await screen.findByTestId('snippet-picker-item');
+    await fireEvent.click(item);
+
+    expect(composer.value).toBe('Status: SHIPPED — reviewed already');
+  });
+
+  it('saving the current draft as a snippet round-trips through the fake catalog and is insertable afterwards', async () => {
+    mountCockpit({ sessions: [makeSession({ id: 'sess_1' })], snippets: [] });
+    const composer = (await screen.findByTestId('composer-input')) as HTMLTextAreaElement;
+    await fireEvent.input(composer, { target: { value: 'Please rebase onto main first.' } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Insert snippet' }));
+    await fireEvent.click(await screen.findByTestId('snippet-picker-save-toggle'));
+    await fireEvent.input(screen.getByTestId('snippet-picker-name'), {
+      target: { value: 'Rebase reminder' },
+    });
+    await fireEvent.click(screen.getByTestId('snippet-picker-save'));
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('snippet-picker-item').textContent).toContain('Rebase reminder'),
+    );
+
+    await fireEvent.input(composer, { target: { value: '' } });
+    await fireEvent.click(screen.getByTestId('snippet-picker-item'));
+    expect(composer.value).toBe('Please rebase onto main first.');
   });
 });
 

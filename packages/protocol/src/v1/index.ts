@@ -1130,6 +1130,24 @@ export {
   sessionTemplateListResult,
 } from './session-template';
 export type {
+  SnippetV1,
+  SnippetListResultPayloadV1,
+  SnippetListSetPayloadV1,
+  SnippetListGet,
+  SnippetListSet,
+  SnippetListResult,
+} from './snippet';
+export {
+  snippetV1,
+  parseSnippetListResultPayloadV1,
+  safeParseSnippetListResultPayloadV1,
+  parseSnippetListSetPayloadV1,
+  safeParseSnippetListSetPayloadV1,
+  snippetListGet,
+  snippetListSet,
+  snippetListResult,
+} from './snippet';
+export type {
   AccountPinErrorType,
   AccountPinGetRequest,
   AccountPinMapV1,
@@ -1581,6 +1599,7 @@ import {
   sessionTemplateListSet,
   sessionTemplateListResult,
 } from './session-template';
+import { snippetV1, snippetListGet, snippetListSet, snippetListResult } from './snippet';
 import {
   spendCapSetPayloadV1,
   spendCapResultPayloadV1,
@@ -1867,6 +1886,10 @@ export const schemasV1 = {
   sessionTemplateListGet,
   sessionTemplateListSet,
   sessionTemplateListResult,
+  snippetV1,
+  snippetListGet,
+  snippetListSet,
+  snippetListResult,
   spendCapSetPayloadV1,
   spendCapResultPayloadV1,
   spendCapGet,
