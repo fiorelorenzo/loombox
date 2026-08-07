@@ -1,0 +1,7 @@
+---
+'@loombox/node': minor
+---
+
+Issue #831: a sandboxed `local` session (issue #257's `bwrap` confinement) now reuses this account's real npm/npx package cache instead of paying a fresh download every single session. `resolveNpmCacheDir()` (`packages/node/src/npm-cache.ts`) resolves the same directory a real, unsandboxed `npx` on this host would already use — `NPM_CONFIG_CACHE`, then a real `npm config get cache`, then `$HOME/.npm` — creates it if missing, and refuses (falls back to no cache mount at all) if that directory would be the filesystem root or the account's own home directory, the same class of "heuristic computed something too broad" bug issue #257 already hit once for its read-only toolchain mounts. `launchLocalSession` mounts it read-write alongside the session worktree via `resolveSessionSandbox`'s existing `extraReadWriteMounts`.
+
+Sharing scope: per-node, on by default. A `NodeCliConfig` is scoped to exactly one `accountId`, so "the directory this process resolves once and reuses" and "the directory this account's sessions share" are the same set — there is no cross-account leak surface to defend against here. The mounted content is not secret (public npm package tarballs, content-addressed by npm's own `_cacache` store), and the mount targets only that one narrow leaf directory, never a wider root. New operator kill switch `LOOMBOX_SANDBOX_NPM_CACHE` / config file `sandboxNpmCacheEnabled` (defaults `true`; has no effect while `LOOMBOX_SANDBOX` itself is `off`).

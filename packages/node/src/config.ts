@@ -172,6 +172,19 @@ export interface NodeCliConfig {
    * off can never be a silent, easy-to-miss state.
    */
   sandboxEnabled: boolean;
+  /**
+   * Whether `main.ts`'s `start()` also turns on `NodeDaemonOptions.
+   * sessionSandbox.npmCacheEnabled` for this node (issue #831) — same kill
+   * switch shape as {@link sandboxEnabled} itself
+   * (`LOOMBOX_SANDBOX_NPM_CACHE=off`/the config file's
+   * `sandboxNpmCacheEnabled: false`), not a normal opt-in: defaults to
+   * `true`, since the mount this enables is narrow and single-purpose (see
+   * `./npm-cache.ts`'s `resolveNpmCacheDir()` doc comment for the
+   * sharing-scope defense), and turning it off buys an operator nothing
+   * but the first-run network cost issue #831 exists to remove. Has no
+   * effect while {@link sandboxEnabled} itself is `false`.
+   */
+  sandboxNpmCacheEnabled: boolean;
 }
 
 /** The JSON shape a config file may provide (all fields optional — env vars can fill in the rest, or override a value the file also sets). Field names match {@link NodeCliConfig} exactly, except `amk`, which is base64 text here (decoded by {@link loadNodeConfig}). */
@@ -198,6 +211,8 @@ interface NodeConfigFile {
   stateDir?: string;
   /** See {@link NodeCliConfig.sandboxEnabled}. */
   sandboxEnabled?: boolean;
+  /** See {@link NodeCliConfig.sandboxNpmCacheEnabled}. */
+  sandboxNpmCacheEnabled?: boolean;
 }
 
 const AMK_BYTES = 32;
@@ -346,6 +361,28 @@ function parseSandboxEnabled(
   throw new ConfigError(`sandbox (LOOMBOX_SANDBOX) must be "on" or "off"; got "${envValue}"`);
 }
 
+/**
+ * Parses `LOOMBOX_SANDBOX_NPM_CACHE`/the config file's
+ * `sandboxNpmCacheEnabled` (issue #831) — the operator kill switch for
+ * `NodeDaemonOptions.sessionSandbox.npmCacheEnabled`, not a normal opt-in
+ * toggle (see `NodeCliConfig.sandboxNpmCacheEnabled`'s own doc comment for
+ * why). Same precedence, same accepted values, and the same fail-loud-on-
+ * typo behavior as {@link parseSandboxEnabled} — deliberately, since this
+ * is the same class of kill switch, just for a narrower sub-feature.
+ */
+function parseSandboxNpmCacheEnabled(
+  envValue: string | undefined,
+  fileValue: boolean | undefined,
+): boolean {
+  if (envValue === undefined) return fileValue ?? true;
+  const normalized = envValue.trim().toLowerCase();
+  if (normalized === 'off') return false;
+  if (normalized === 'on') return true;
+  throw new ConfigError(
+    `sandbox npm cache (LOOMBOX_SANDBOX_NPM_CACHE) must be "on" or "off"; got "${envValue}"`,
+  );
+}
+
 export interface LoadNodeConfigOptions {
   /** Defaults to `process.env`; tests inject a plain object instead. */
   env?: NodeJS.ProcessEnv;
@@ -405,6 +442,11 @@ export interface LoadNodeConfigOptions {
  *   sandboxing, not a normal opt-in — see {@link NodeCliConfig.sandboxEnabled}'s
  *   doc comment for why. `main.ts`'s `start()` logs loudly at startup
  *   whenever this actually turns sandboxing off.)
+ * - `LOOMBOX_SANDBOX_NPM_CACHE` (optional; `"on"` or `"off"`, defaults to
+ *   `"on"` — issue #831. The operator kill switch for mounting this
+ *   account's npm/npx cache read-write into a sandboxed session — see
+ *   {@link NodeCliConfig.sandboxNpmCacheEnabled}'s doc comment. Has no
+ *   effect while `LOOMBOX_SANDBOX` is `"off"`.)
  *
  * `sshTargets` (each `ssh:` target's connection recipe) is deliberately
  * file-only: it's structured enough (host/user/port/key path/...) that
@@ -470,6 +512,10 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     file.customAgentAllowlist,
   );
   const sandboxEnabled = parseSandboxEnabled(env.LOOMBOX_SANDBOX, file.sandboxEnabled);
+  const sandboxNpmCacheEnabled = parseSandboxNpmCacheEnabled(
+    env.LOOMBOX_SANDBOX_NPM_CACHE,
+    file.sandboxNpmCacheEnabled,
+  );
 
   return {
     relayUrl: withRelayWsPath(relayUrl!),
@@ -489,5 +535,6 @@ export function loadNodeConfig(options: LoadNodeConfigOptions = {}): NodeCliConf
     localMaxConcurrentSessions,
     stateDir,
     sandboxEnabled,
+    sandboxNpmCacheEnabled,
   };
 }
