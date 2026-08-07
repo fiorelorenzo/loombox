@@ -364,9 +364,57 @@ interface RawSessionModes {
   currentModeId?: string;
 }
 
+/**
+ * Gemini CLI's vendor-only `models` axis (issue #844; `docs/research/
+ * gemini-acp-completeness.md` finding 7): a `session/new`/`session/load`
+ * sub-object shaped exactly like `RawSessionModes` above (`{available*,
+ * current*Id}`), but for models rather than modes, and paired with a
+ * separate `unstable_setSessionModel` method (wire name `session/set_model`)
+ * rather than `session/set_config_option`. Confirmed at two independent
+ * layers, not just Gemini's own source: `acpUtils.ts`'s `buildAvailableModels`
+ * (commit `a74b483d14a93159fa36e7ee9e32cf44bda594df`, the exact commit
+ * GitHub's `v0.54.0` tag resolves to) builds `{availableModels: [{modelId,
+ * name, description?}], currentModelId}`, and the real
+ * `@agentclientprotocol/sdk@0.16.1` package gemini-cli 0.54.0 actually
+ * depends on (`packages/cli/package.json`) independently declares the
+ * identical shape as `SessionModelState`/`ModelInfo` in its own generated
+ * zod schema — both marked **UNSTABLE**, i.e. "not part of the spec yet,
+ * may be removed or changed at any point" per the SDK's own JSDoc.
+ * `mapConfigOptions` folds this into a `'model'`-category entry the same
+ * way it folds `modes` into `'mode'` (see that fold's own comment below)
+ * — deliberately NOT a second, Gemini-specific UI surface: #711's
+ * `ConfigBar` already renders every non-`mode` category generically, so
+ * feeding it a `model` entry is the whole fix. The synthesized entry's
+ * `type` is `UNSTABLE_MODEL_CONFIG_TYPE` (not `'select'`, which would
+ * misroute a later `setConfigOption` call through
+ * `session/set_config_option` — Gemini's real `GeminiAgent` class
+ * implements no such method at all, only `unstable_setSessionModel`) so
+ * `AcpClient.setConfigOption` can tell the two apart and route correctly;
+ * see that method's own doc comment.
+ */
+interface RawSessionModels {
+  availableModels?: { modelId?: string; name?: string; description?: string }[];
+  currentModelId?: string;
+}
+
+/**
+ * The synthesized `AcpConfigOption.type` for a `'model'` entry folded in
+ * from `RawSessionModels` rather than a real wire `configOptions` entry
+ * (issue #844). Deliberately not one of ACP's own real
+ * `SessionConfigOption.type` values (`'select' | 'boolean'`) so
+ * `AcpClient.setConfigOption` can route a change through this axis's own
+ * `session/set_model` request instead of `session/set_config_option` —
+ * see `mapConfigOptions`'s `models` fold and `setConfigOption`'s own doc
+ * comment for the full reasoning. Module-private: nothing outside this
+ * file needs to recognize it, matching the instruction that this vendor
+ * extension's presence never becomes load-bearing for another module.
+ */
+const UNSTABLE_MODEL_CONFIG_TYPE = 'unstable_model';
+
 interface RawConfigCatalog {
   configOptions?: RawConfigOption[];
   modes?: RawSessionModes;
+  models?: RawSessionModels;
 }
 
 /**
@@ -396,6 +444,18 @@ interface RawConfigCatalog {
  * used only when `configOptions` has no `'mode'` entry at all, so an
  * agent that advertises just the ACP-baseline `modes` field (without also
  * duplicating it into `configOptions`, unlike omp) still gets one.
+ *
+ * `models` (Gemini's vendor-only extension, `RawSessionModels` above;
+ * issue #844) is folded the same way, into a `'model'`-category entry —
+ * used only when `configOptions` has no `'model'` entry at all, so an
+ * agent that already advertises `model` as an ordinary `configOptions`
+ * entry (e.g. a real `omp acp` binary) is completely unaffected: this
+ * fold never runs for it. The synthesized entry gets `id: 'model'` but
+ * `type: UNSTABLE_MODEL_CONFIG_TYPE`, not `'select'` — deliberately
+ * distinct from the `modes` fold just above, so `setConfigOption` can
+ * route a change through `session/set_model` instead of
+ * `session/set_config_option`, which Gemini's real agent does not
+ * implement at all.
  *
  * Also carries the wire's own `id`/`type` through onto `AcpConfigOption.id`/
  * `.type` (issue #707): `AcpClient.setConfigOption` needs both to build a
@@ -439,6 +499,22 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
         id: 'mode',
         type: 'select',
         choices: modeChoices.map((mode) => ({ id: mode.id, name: mode.name })),
+      });
+    }
+  }
+
+  if (wire?.models && !options.some((option) => option.category === 'model')) {
+    const modelChoices = (wire.models.availableModels ?? []).filter(
+      (model): model is { modelId: string; name: string; description?: string } =>
+        typeof model.modelId === 'string' && typeof model.name === 'string',
+    );
+    if (modelChoices.length > 0) {
+      options.push({
+        category: 'model',
+        current: wire.models.currentModelId,
+        id: 'model',
+        type: UNSTABLE_MODEL_CONFIG_TYPE,
+        choices: modelChoices.map((model) => ({ id: model.modelId, name: model.name })),
       });
     }
   }
@@ -826,39 +902,53 @@ export class AcpClient extends EventEmitter {
   }
 
   /**
-   * Sends a user-driven config-option change (`session/set_config_option`)
-   * and applies the agent's full, wholesale-replaced option list to
-   * `configOptions` once it acks — never a per-category patch.
+   * Sends a user-driven config-option change and applies the agent's full,
+   * wholesale-replaced option list to `configOptions` once it acks — never
+   * a per-category patch. Every caller (`apps/web`'s ConfigBar via
+   * `RelayClient`/`NodeDaemon`/`AgentSession`, issue #718/#711) supplies
+   * only `category`/`choiceId`; which underlying ACP request that becomes
+   * is this method's own decision, sourced from the catalogue entry
+   * `mapConfigOptions` already seeded for `category`.
    *
-   * The real wire request is `{sessionId, configId, value, type}` (issue
-   * #707), not `{category, choiceId}` (a real agent 400s that with
-   * "Invalid params" — verified against the real `omp acp` binary). This
-   * method's own public parameter stays `category`, matching every
-   * existing caller and what `ConfigOptionStore` groups on, but `configId`
-   * and `type` are NOT the same thing as `category` and a caller cannot be
-   * asked to invent them: `configId` is the wire entry's own `id` (its
+   * The ordinary path (a real wire `configOptions` entry, or a `modes`-
+   * folded `mode` entry) is `session/set_config_option`: `{sessionId,
+   * configId, value, type}` (issue #707), not `{category, choiceId}` (a
+   * real agent 400s that with "Invalid params" — verified against the
+   * real `omp acp` binary). `configId` is the wire entry's own `id` (its
    * `thinking` option has `id: "thinking"` but `category: "thought_level"`
    * — sending `category` as `configId` is rejected outright, "Unknown ACP
    * config option: thought_level"), and `type` is that entry's own
    * `'select' | 'boolean'`. Both are sourced from the catalogue entry
    * already seeded for this category — `mapConfigOptions` retains
    * `AcpConfigOption.id`/`.type` for exactly this reason, a field this
-   * store used to drop. A category this session's catalogue has no entry
-   * for throws before any request is sent, rather than guessing; a
-   * category the catalogue *does* carry — however unrecognized/future its
-   * name — works unmodified (issue #179's passthrough guarantee: nothing
-   * here branches on a specific category value).
+   * store used to drop. The response's real field is `configOptions`
+   * (wire-shaped), not `options` (this client's internal shape) — the
+   * same class of bug #705 fixed for `session/new`/`config_option_update`;
+   * reuses that same `mapConfigOptions` rather than a second translation.
    *
-   * The response's real field is `configOptions` (wire-shaped), not
-   * `options` (this client's internal shape) — the same class of bug
-   * #705 fixed for `session/new`/`config_option_update`; reuses that same
-   * `mapConfigOptions` rather than a second translation.
+   * The vendor path (`category === 'model'` folded from Gemini's `models`,
+   * `UNSTABLE_MODEL_CONFIG_TYPE`; issue #844) is different at the wire
+   * level, not just a naming detail: Gemini's real `GeminiAgent` class has
+   * no `setSessionConfigOption` method at all, only
+   * `unstable_setSessionModel` (wire `session/set_model`, params
+   * `{sessionId, modelId}` — no `configId`/`value`/`type`), and that
+   * method's own response carries no catalog back (`SetSessionModelResponse`
+   * is just `{_meta?}`, confirmed against `@agentclientprotocol/
+   * sdk@0.16.1`'s generated schema — unlike `session/set_config_option`,
+   * which always echoes the full, current catalog). `setUnstableSessionModel`
+   * below sends that request and, once it acks, applies the new selection
+   * to this session's own catalogue entry directly — there is nothing else
+   * to read back. A category this session's catalogue has no entry for
+   * throws before any request is sent, rather than guessing; a category
+   * the catalogue *does* carry — however unrecognized/future its name —
+   * works unmodified either way (issue #179's passthrough guarantee:
+   * nothing here branches on a specific category value, only on the wire
+   * `type` each entry's own producer, `mapConfigOptions`, already tagged
+   * it with).
    *
    * Rejects (never swallows) if the agent rejects the change — e.g. an
    * unsupported value — exactly like any other `sendRequest` failure, so a
-   * caller that awaits this finds out. No caller in this codebase invokes
-   * this method yet (see the PR this shipped in for the seam that leaves
-   * open, going into #711's consolidated control).
+   * caller that awaits this finds out.
    */
   async setConfigOption(
     sessionId: string,
@@ -873,6 +963,9 @@ export class AcpClient extends EventEmitter {
         `AcpClient.setConfigOption: no catalogue entry for category "${category}" on session "${sessionId}" carries a configId/type to build a real session/set_config_option request from — the agent must advertise this category (via session/new's configOptions) before a caller can act on it.`,
       );
     }
+    if (current.type === UNSTABLE_MODEL_CONFIG_TYPE) {
+      return this.setUnstableSessionModel(sessionId, category, choiceId);
+    }
     const result = await this.sendRequest<RawConfigCatalog>('session/set_config_option', {
       sessionId,
       configId: current.id,
@@ -880,6 +973,31 @@ export class AcpClient extends EventEmitter {
       type: current.type,
     });
     this.configOptionStore.setAll(sessionId, mapConfigOptions(result), { unprompted: false });
+    return this.configOptionStore.get(sessionId);
+  }
+
+  /**
+   * `setConfigOption`'s vendor-extension branch for Gemini's `models` axis
+   * (issue #844): sends the real `unstable_setSessionModel` wire request
+   * (`session/set_model`, `{sessionId, modelId}`) and, since its response
+   * carries no catalog to reapply (unlike `session/set_config_option`'s
+   * always-echoed `configOptions`), applies the new selection to this
+   * session's own `category` entry directly once the agent acks — an
+   * optimistic update, but only ever reached after a successful round
+   * trip: a rejected request (e.g. an unknown `modelId`) throws before
+   * this runs, leaving the stored `current` untouched, same as the
+   * ordinary path's own rejection behavior.
+   */
+  private async setUnstableSessionModel(
+    sessionId: string,
+    category: string,
+    modelId: string,
+  ): Promise<AcpConfigOption[]> {
+    await this.sendRequest<Record<string, unknown>>('session/set_model', { sessionId, modelId });
+    const updated = this.configOptionStore
+      .get(sessionId)
+      .map((option) => (option.category === category ? { ...option, current: modelId } : option));
+    this.configOptionStore.setAll(sessionId, updated, { unprompted: false });
     return this.configOptionStore.get(sessionId);
   }
 

@@ -461,6 +461,86 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
   });
 });
 
+describe("mapConfigOptions: Gemini's vendor `models` axis (issue #844)", () => {
+  const OMP_RECORDED_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'test',
+    'fixtures',
+    'omp-acp-session-new-response.json',
+  );
+  const ompRecorded = JSON.parse(readFileSync(OMP_RECORDED_PATH, 'utf8')) as {
+    sessionNewResult: { models?: unknown };
+  };
+
+  it("does not touch a real omp acp response's own model category — its `models` field is absent and its `configOptions` model entry keeps its real wire type ('select'), not the vendor sentinel", () => {
+    expect(ompRecorded.sessionNewResult.models).toBeUndefined();
+    const options = mapConfigOptions(
+      ompRecorded.sessionNewResult as Parameters<typeof mapConfigOptions>[0],
+    );
+    const model = options.find((o) => o.category === 'model');
+    expect(model?.type).toBe('select');
+  });
+
+  it("folds a Gemini-shaped session/new response's vendor `models` sub-object into a synthesized 'model' category — the same {available*, current*Id} shape `modes` already gets, cited against acpUtils.ts's buildAvailableModels (commit a74b483d, docs/research/gemini-acp-completeness.md finding 7) and the real @agentclientprotocol/sdk@0.16.1 SessionModelState/ModelInfo schema gemini-cli 0.54.0 actually depends on", () => {
+    const options = mapConfigOptions({
+      modes: { availableModes: [{ id: 'default', name: 'Default' }], currentModeId: 'default' },
+      models: {
+        availableModels: [
+          { modelId: 'auto', name: 'Auto', description: 'Automatically selects a model' },
+          { modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+        ],
+        currentModelId: 'auto',
+      },
+    });
+    const model = options.find((o) => o.category === 'model');
+    expect(model).toEqual({
+      category: 'model',
+      current: 'auto',
+      id: 'model',
+      type: 'unstable_model',
+      choices: [
+        { id: 'auto', name: 'Auto' },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+      ],
+    });
+  });
+
+  it("does not duplicate the 'model' category when configOptions already carries a real one — the vendor models fold only ever fills a gap, same guard the modes fold already uses", () => {
+    const options = mapConfigOptions({
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'claude-opus',
+          options: [{ value: 'claude-opus', name: 'Claude Opus' }],
+        },
+      ],
+      models: {
+        availableModels: [{ modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' }],
+        currentModelId: 'gemini-2.5-pro',
+      },
+    });
+    expect(options.filter((o) => o.category === 'model')).toHaveLength(1);
+    expect(options.find((o) => o.category === 'model')).toEqual({
+      category: 'model',
+      current: 'claude-opus',
+      id: 'model',
+      type: 'select',
+      choices: [{ id: 'claude-opus', name: 'Claude Opus' }],
+    });
+  });
+
+  it("an agent that never sends `models` at all is unaffected: no `model` category is synthesized from nothing (issue #844's absence-is-ordinary requirement)", () => {
+    const options = mapConfigOptions({
+      modes: { availableModes: [{ id: 'default', name: 'Default' }], currentModeId: 'default' },
+    });
+    expect(options.find((o) => o.category === 'model')).toBeUndefined();
+  });
+});
+
 /**
  * `deriveFeatureFlags` against a real recorded `initialize` response (issue
  * #821), same recording convention as `mapConfigOptions` above: the

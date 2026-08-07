@@ -202,19 +202,22 @@ adapter:
   through `AGENT_CATALOGUE`'s custom-agent quick-add, the same generic path
   any other ACP agent takes. Issue #273 (the reserved bespoke-module slot)
   is closed on that basis. The spike filed two real gaps, each its own
-  issue: #843 (Gemini implements no ACP v1 session-lifecycle method except
-  the deprecated `session/load` — `session/resume`/`list`/`close`/`delete`
-  are unimplemented on the real binary, not just unadvertised) and #844
-  (Gemini's `session/new` carries a non-standard `models` axis, paired with
-  `unstable_setSessionModel`, that `mapConfigOptions` never reads — no
-  model-switcher UI is possible for Gemini today). #843 is fixed at the
-  core level, not with a bespoke Gemini module (the bullet above:
-  `resumeSession` falls back to `session/load`), so a Gemini `session/list`/
-  `close`/`delete` still isn't possible — those really are unimplemented on
-  the real binary, no client-side fallback exists for them — but resume
-  works and `getFeatureFlags().supportsResume` honestly reports so. #844
-  remains open. A bespoke Gemini module is worth building again only if
-  #844 is picked up.
+  issue, and both are now closed in core rather than by a bespoke module.
+  #843: Gemini implements no ACP v1 session-lifecycle method except the
+  deprecated `session/load` — `session/resume`/`list`/`close`/`delete` are
+  unimplemented on the real binary, not merely unadvertised — so
+  `resumeSession` falls back to `session/load` (the bullet above) and
+  `getFeatureFlags().supportsResume` honestly reports the result. A Gemini
+  `session/list`/`close`/`delete` still isn't possible, since no client-side
+  fallback exists for those. #844: Gemini's `session/new` carries a
+  non-standard `models` axis, paired with `unstable_setSessionModel`, that
+  `mapConfigOptions` never read — now folded into a `'model'` category the
+  exact same way ACP-baseline `modes` already folds into `'mode'`, so
+  `ConfigBar`'s existing popover picks it up with no new UI, and
+  `AcpClient.setConfigOption` routes that one category through the real
+  `session/set_model` request instead of `session/set_config_option`. With
+  both closed generically, every provider benefits and there is still no
+  bespoke Gemini module to maintain.
 - **Generic ACP adapter** (`packages/providers/generic`) is what any other
   ACP-speaking agent gets automatically — flat tool-call list, `ToolKind`-
   generic rows, plain permission buttons, `ResourceLink` for file/image
@@ -224,10 +227,9 @@ adapter:
   warrant one.
 - v1 ships **Claude Code + Codex** adapter modules (Codex's ACP completeness
   verified at build time, §10/§12). **Gemini** is registered generic-tier
-  only (§16, issue #272; its one real lifecycle gap, #843, fixed at the
-  core level instead) — no bespoke module is planned unless #844 gets
-  picked up (bullet above). loombox deliberately does not chase provider
-  breadth for its own sake (§11).
+  only (§16, issue #272; both real gaps it found, #843 and #844, were
+  fixed in core instead) — no bespoke module is planned. loombox
+  deliberately does not chase provider breadth for its own sake (§11).
 
 ### 5.6 Agent-supervisor
 
