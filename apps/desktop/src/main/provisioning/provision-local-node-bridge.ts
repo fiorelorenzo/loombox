@@ -3,11 +3,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type {
-  LocalProvisionOptions,
-  LocalProvisionProgress,
-  SupervisorBackend,
-} from '@loombox/node';
+import type { LocalProvisionOptions, LocalProvisionProgress } from '@loombox/node';
 
 import type {
   LocalProvisionProgressStep,
