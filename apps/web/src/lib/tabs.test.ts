@@ -334,3 +334,105 @@ describe("CanvasTabsState: the working-tree diff tab's staging-mode hunk viewer 
     expect(tabs.hunkViewer).toBeUndefined();
   });
 });
+
+describe('CanvasTabsState: the commit graph tab (SPEC §7.6; issue #231)', () => {
+  const commitA = {
+    sha: 'a'.repeat(40),
+    parents: [],
+    authorName: 'loombox test',
+    authorEmail: 'test@loombox.dev',
+    authorDateIso: '2026-01-01T00:00:00Z',
+    subject: 'base',
+    refs: [],
+    isHead: false,
+  };
+  const commitB = { ...commitA, sha: 'b'.repeat(40), subject: 'second' };
+
+  it('openGraph() on a fresh session appends a closable graph tab, starts loading, and activates it', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openGraph([]);
+    expect(tabs.tabs).toEqual([
+      { kind: 'transcript', id: 'transcript' },
+      { kind: 'graph', id: 'graph' },
+    ]);
+    expect(tabs.activeId).toBe('graph');
+    expect(tabs.graphViewer).toEqual({ status: 'loading' });
+    expect(tabs.graphLoadingMore).toBe(false);
+  });
+
+  it('openGraph() called again activates the existing tab instead of duplicating it, and does not reset an already-loaded viewer', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openGraph([]);
+    tabs.setGraphViewer({ status: 'loaded', commits: [commitA], nextOffset: null });
+    tabs.activate('transcript', []);
+
+    tabs.openGraph([]);
+    expect(tabs.tabs).toHaveLength(2);
+    expect(tabs.activeId).toBe('graph');
+    expect(tabs.graphViewer).toEqual({ status: 'loaded', commits: [commitA], nextOffset: null });
+  });
+
+  it('the graph tab and a file tab coexist independently, each keeping its own viewer state', () => {
+    const tabs = new CanvasTabsState();
+    tabs.open('src/foo.ts', []);
+    tabs.openGraph([]);
+    expect(tabs.tabs.map((t) => t.id)).toEqual(['transcript', 'src/foo.ts', 'graph']);
+    expect(tabs.has('src/foo.ts')).toBe(true);
+  });
+
+  it('close() on the graph tab drops it, clears its viewer, and falls back to the transcript tab when it was active', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openGraph([]);
+    tabs.setGraphViewer({ status: 'loaded', commits: [commitA], nextOffset: null });
+
+    tabs.close('graph');
+    expect(tabs.tabs).toEqual([{ kind: 'transcript', id: 'transcript' }]);
+    expect(tabs.activeId).toBe('transcript');
+    expect(tabs.graphViewer).toBeUndefined();
+    expect(tabs.graphLoadingMore).toBe(false);
+  });
+
+  it('close() on the graph tab while a file tab is active leaves that file tab untouched', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openGraph([]);
+    tabs.open('src/foo.ts', []);
+
+    tabs.close('graph');
+    expect(tabs.activeId).toBe('src/foo.ts');
+    expect(tabs.has('src/foo.ts')).toBe(true);
+  });
+
+  it('appendGraphPage() concatenates onto the already-loaded commits and updates nextOffset, and clears loadingMore', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openGraph([]);
+    tabs.setGraphViewer({ status: 'loaded', commits: [commitA], nextOffset: 1 });
+    tabs.setGraphLoadingMore(true);
+    expect(tabs.graphLoadingMore).toBe(true);
+
+    tabs.appendGraphPage([commitB], null);
+    expect(tabs.graphViewer).toEqual({
+      status: 'loaded',
+      commits: [commitA, commitB],
+      nextOffset: null,
+    });
+    expect(tabs.graphLoadingMore).toBe(false);
+  });
+
+  it('appendGraphPage() against no prior loaded state starts from an empty list rather than throwing', () => {
+    const tabs = new CanvasTabsState();
+    tabs.appendGraphPage([commitA], null);
+    expect(tabs.graphViewer).toEqual({ status: 'loaded', commits: [commitA], nextOffset: null });
+  });
+
+  it('reset() drops the graph tab, its viewer, and the loadingMore flag along with everything else', () => {
+    const tabs = new CanvasTabsState();
+    tabs.openGraph([]);
+    tabs.setGraphViewer({ status: 'error', message: 'boom' });
+    tabs.setGraphLoadingMore(true);
+
+    tabs.reset();
+    expect(tabs.tabs).toEqual([{ kind: 'transcript', id: 'transcript' }]);
+    expect(tabs.graphViewer).toBeUndefined();
+    expect(tabs.graphLoadingMore).toBe(false);
+  });
+});

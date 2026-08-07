@@ -21,7 +21,7 @@
  * wall-clock timestamp — see {@link syncDirty}'s own doc comment for why.
  */
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import type { GitDiffFileV1, GitHunkFileV1 } from '@loombox/protocol';
+import type { GitDiffFileV1, GitGraphCommitV1, GitHunkFileV1 } from '@loombox/protocol';
 import type { TranscriptItem } from '@loombox/providers-core/browser';
 
 /** A file tab's own content-loading state — set to `'loading'` the instant a tab opens, then resolved once the caller's `readFile` round trip (or a re-open) settles. */
@@ -40,6 +40,12 @@ export type DiffTabViewerState =
 export type HunkTabViewerState =
   | { status: 'loading' }
   | { status: 'loaded'; files: readonly GitHunkFileV1[] }
+  | { status: 'error'; message: string };
+
+/** The commit graph / branch tree tab's own content-loading state (SPEC §7.6; issue #231) — the exact same "loading -> resolved" shape as {@link DiffTabViewerState}. `commits` accumulates across pages (see `CanvasTabsState.appendGraphPage`) — this is the FULL list rendered so far, not just the latest page; `nextOffset` is `git_graph_response`'s own paging cursor, `null` once the walk reached the ref's root. */
+export type GraphTabViewerState =
+  | { status: 'loading' }
+  | { status: 'loaded'; commits: readonly GitGraphCommitV1[]; nextOffset: number | null }
   | { status: 'error'; message: string };
 
 /** The one permanent tab — pinned first, never closable, never reorderable (issue #737's own acceptance line). */
@@ -62,9 +68,17 @@ export interface DiffCanvasTab {
   readonly id: 'diff';
 }
 
-export type CanvasTab = TranscriptCanvasTab | FileCanvasTab | DiffCanvasTab;
+/** The commit graph / branch tree tab (SPEC §7.6; issue #231): closable like a file tab, but a singleton — same "one, not one per file" shape as {@link DiffCanvasTab}. */
+export interface GraphCanvasTab {
+  readonly kind: 'graph';
+  readonly id: 'graph';
+}
+
+export type CanvasTab = TranscriptCanvasTab | FileCanvasTab | DiffCanvasTab | GraphCanvasTab;
 
 const DIFF_TAB: DiffCanvasTab = { kind: 'diff', id: 'diff' };
+
+const GRAPH_TAB: GraphCanvasTab = { kind: 'graph', id: 'graph' };
 
 const TRANSCRIPT_TAB: TranscriptCanvasTab = { kind: 'transcript', id: 'transcript' };
 
@@ -81,6 +95,10 @@ export class CanvasTabsState {
   #diffViewer = $state<DiffTabViewerState | undefined>(undefined);
   /** The working-tree diff tab's own STAGING-mode content (issue #232) — same "no entry until first opened" shape as {@link #diffViewer}, kept as a separate field since it's fetched via a separate wire pair on its own refresh cadence (every hunk action re-fetches only this, never {@link #diffViewer}). */
   #hunkViewer = $state<HunkTabViewerState | undefined>(undefined);
+  /** The commit graph tab's own content (SPEC §7.6; issue #231) — same "no entry until first opened" shape as {@link #diffViewer}. */
+  #graphViewer = $state<GraphTabViewerState | undefined>(undefined);
+  /** Whether a "Load more" page fetch is in flight for the commit graph tab — kept separate from `#graphViewer.status` so paging further in never flips an already-`'loaded'` list back to a bare loading spinner and discards what is already rendered. */
+  #graphLoadingMore = $state(false);
 
   get tabs(): readonly CanvasTab[] {
     return this.#tabs;
@@ -109,6 +127,14 @@ export class CanvasTabsState {
 
   get hunkViewer(): HunkTabViewerState | undefined {
     return this.#hunkViewer;
+  }
+
+  get graphViewer(): GraphTabViewerState | undefined {
+    return this.#graphViewer;
+  }
+
+  get graphLoadingMore(): boolean {
+    return this.#graphLoadingMore;
   }
 
   isDirty(path: string): boolean {
@@ -154,6 +180,26 @@ export class CanvasTabsState {
     this.activate(DIFF_TAB.id, items);
   }
 
+  /**
+   * Opens the commit graph tab (or, if already open, just activates it —
+   * never a duplicate), SPEC §7.6, issue #231. `items` mirrors {@link
+   * openDiff}'s own parameter. A freshly opened tab's viewer starts
+   * `'loading'`; the caller is responsible for calling {@link
+   * setGraphViewer} once its own `requestCommitGraph` round trip
+   * settles, exactly like {@link openDiff}'s `setDiffViewer` contract.
+   * Re-opening an already-open graph tab does NOT reset an already-
+   * loaded viewer back to `'loading'` — same "switching back shows what
+   * was already fetched, not a fresh spinner" contract {@link openDiff}
+   * itself follows for its own diff viewer.
+   */
+  openGraph(items: readonly TranscriptItem[]): void {
+    if (!this.#tabs.some((tab) => tab.id === GRAPH_TAB.id)) {
+      this.#tabs = [...this.#tabs, GRAPH_TAB];
+      this.#graphViewer = { status: 'loading' };
+    }
+    this.activate(GRAPH_TAB.id, items);
+  }
+
   /** Activates an already-open tab by id (a no-op for an id that isn't open) and, for a file tab, clears its dirty flag and re-arms its watermark — "you looked" happens exactly on activation, never merely on staying mounted. */
   activate(id: string, items: readonly TranscriptItem[]): void {
     const tab = this.#tabs.find((candidate) => candidate.id === id);
@@ -187,6 +233,9 @@ export class CanvasTabsState {
     } else if (closing.kind === 'diff') {
       this.#diffViewer = undefined;
       this.#hunkViewer = undefined;
+    } else if (closing.kind === 'graph') {
+      this.#graphViewer = undefined;
+      this.#graphLoadingMore = false;
     }
     if (wasActive) {
       this.#activeId = (this.#tabs[Math.min(index, this.#tabs.length - 1)] ?? TRANSCRIPT_TAB).id;
@@ -203,6 +252,31 @@ export class CanvasTabsState {
 
   setHunkViewer(state: HunkTabViewerState): void {
     this.#hunkViewer = state;
+  }
+
+  setGraphViewer(state: GraphTabViewerState): void {
+    this.#graphViewer = state;
+  }
+
+  setGraphLoadingMore(loading: boolean): void {
+    this.#graphLoadingMore = loading;
+  }
+
+  /**
+   * Appends one more page onto the commit graph tab's already-loaded
+   * commits (issue #231's own paging contract — `computeCommitGraph`'s
+   * `offset`/`nextOffset`), rather than replacing the list the way
+   * {@link setGraphViewer} does for the FIRST page. A no-op page (called
+   * before {@link openGraph} ever ran, or after the tab was closed) is
+   * tolerated by starting from an empty list rather than throwing —
+   * this method's own caller only ever reaches it from an in-flight
+   * "Load more" click on an already-`'loaded'` viewer, but nothing here
+   * assumes that stays true.
+   */
+  appendGraphPage(commits: readonly GitGraphCommitV1[], nextOffset: number | null): void {
+    const existing = this.#graphViewer?.status === 'loaded' ? this.#graphViewer.commits : [];
+    this.#graphViewer = { status: 'loaded', commits: [...existing, ...commits], nextOffset };
+    this.#graphLoadingMore = false;
   }
 
   /**
@@ -249,5 +323,7 @@ export class CanvasTabsState {
     this.#viewedUntil.clear();
     this.#diffViewer = undefined;
     this.#hunkViewer = undefined;
+    this.#graphViewer = undefined;
+    this.#graphLoadingMore = false;
   }
 }

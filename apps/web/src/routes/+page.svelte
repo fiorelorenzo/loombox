@@ -164,6 +164,7 @@
   } from '$lib/components/TranscriptTimeline.svelte';
   import TurnEditsBar from '$lib/components/TurnEditsBar.svelte';
   import TurnStopControl from '$lib/components/TurnStopControl.svelte';
+  import CommitGraphViewer from '$lib/components/CommitGraphViewer.svelte';
   import WorktreeDiffViewer from '$lib/components/WorktreeDiffViewer.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
 
@@ -2318,6 +2319,10 @@
   const activeDiffTab = $derived(
     canvasTabs.activeTab.kind === 'diff' ? canvasTabs.activeTab : undefined,
   );
+  /** The active tab, narrowed to the commit graph tab or `undefined` — `activeDiffTab`'s own sibling (SPEC §7.6; issue #231). */
+  const activeGraphTab = $derived(
+    canvasTabs.activeTab.kind === 'graph' ? canvasTabs.activeTab : undefined,
+  );
 
   /** Fetches `path`'s content for its own open tab (issue #737) — a fresh one-shot `RelayClient.readFile` every call, never a cached re-render, since re-reading (a retry, or reopening an already-open tab) is meant to hit the node again. */
   async function loadFileContent(path: string): Promise<void> {
@@ -2399,6 +2404,59 @@
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /** Fetches page one of the session's commit graph (SPEC §7.6; issue #231) — `loadWorktreeDiff`'s own sibling, `offset: 0` every time (a fresh full reload, never a partial resume). */
+  async function loadCommitGraph(): Promise<void> {
+    if (!client || !selectedSessionId) return;
+    canvasTabs.setGraphViewer({ status: 'loading' });
+    try {
+      const result = await client.requestCommitGraph(selectedSessionId, { offset: 0 });
+      if (result.outcome === 'ok') {
+        canvasTabs.setGraphViewer({
+          status: 'loaded',
+          commits: result.commits,
+          nextOffset: result.nextOffset,
+        });
+      } else {
+        canvasTabs.setGraphViewer({ status: 'error', message: result.message });
+      }
+    } catch (error) {
+      canvasTabs.setGraphViewer({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Fetches the next commit-graph page at `graphViewer.nextOffset` and appends it (`CommitGraphViewer`'s own "Load more") — a no-op if the viewer isn't currently `'loaded'` with a real `nextOffset` (the button that triggers this is only ever rendered in exactly that state). */
+  async function loadMoreCommitGraph(): Promise<void> {
+    if (!client || !selectedSessionId) return;
+    const viewer = canvasTabs.graphViewer;
+    if (viewer?.status !== 'loaded' || viewer.nextOffset === null) return;
+    canvasTabs.setGraphLoadingMore(true);
+    try {
+      const result = await client.requestCommitGraph(selectedSessionId, {
+        offset: viewer.nextOffset,
+      });
+      if (result.outcome === 'ok') {
+        canvasTabs.appendGraphPage(result.commits, result.nextOffset);
+      } else {
+        canvasTabs.setGraphViewer({ status: 'error', message: result.message });
+      }
+    } catch (error) {
+      canvasTabs.setGraphViewer({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Opens (or activates) the commit graph tab (SPEC §7.6; issue #231) — `openWorktreeDiffTab`'s own sibling, same "always re-fetch on open" contract: the branch's own history keeps growing under an active session. */
+  function openCommitGraphTab(): void {
+    canvasTabs.openGraph(transcript?.items ?? []);
+    mainView = 'session';
+    void loadCommitGraph();
   }
 
   /** Stages or unstages one hunk (issue #232) — applies immediately, no confirmation (unlike discard, which is destructive and routed to `DiscardHunkDialog` instead). Re-fetches both {@link loadHunkDiff} and {@link loadWorktreeDiff} afterward, mirroring `DiscardHunkDialog`'s own `onDiscarded` contract: the staging view needs a fresh hunk breakdown, and re-fetching the plain diff too keeps both surfaces honest rather than one trusting a now-stale snapshot. Errors surface via a fresh `hunkViewer` `'error'` state — there is no separate toast for a stage/unstage failure, the staging view itself becomes the error surface, same as a failed initial load. */
@@ -4361,7 +4419,9 @@
             />
             <div
               class="canvas-transcript-view"
-              hidden={activeFileTab !== undefined || activeDiffTab !== undefined}
+              hidden={activeFileTab !== undefined ||
+                activeDiffTab !== undefined ||
+                activeGraphTab !== undefined}
             >
               {#if forkError}
                 <p class="fork-error" role="alert" data-testid="fork-error">
@@ -4640,6 +4700,14 @@
                 onOpenFile={openFileTab}
               />
             {/if}
+            {#if activeGraphTab}
+              <CommitGraphViewer
+                viewer={canvasTabs.graphViewer ?? { status: 'loading' }}
+                onRetry={loadCommitGraph}
+                loadingMore={canvasTabs.graphLoadingMore}
+                onLoadMore={loadMoreCommitGraph}
+              />
+            {/if}
           {/if}
         </section>
       </div>
@@ -4727,6 +4795,16 @@
                 >
                   <Icon name="tool-edit" />
                   Working tree diff
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  class="worktree-diff-trigger"
+                  onclick={openCommitGraphTab}
+                  dataTestId="open-commit-graph"
+                >
+                  <Icon name="git-graph" />
+                  Commit graph
                 </Button>
                 <FileTreePanel
                   tree={fileTree}
