@@ -1650,6 +1650,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         return;
       case 'pr_open_preview_result':
       case 'pr_open_result':
+      case 'pr_merge_result':
         // The owning node's reply to a client's pr_open_preview_request/
         // pr_open_request (SPEC §7.14; issue #238) — fanned out exactly
         // like permission_policy_result above; the relay never opens
@@ -1686,6 +1687,14 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // out exactly like run_output/pr_open_result above; the relay
         // never opens the envelope, so it never sees a check's name,
         // conclusion, or failure output.
+        fanOutDirect(message.sessionId, message);
+        return;
+      case 'review_comment_status':
+        // The owning node's periodic review-thread reading for a
+        // session's open pull request (SPEC §7.14; issue #240) — fanned
+        // out exactly like ci_check_status above; the relay never opens
+        // the envelope, so it never sees a review comment's own body,
+        // author, or file/line.
         fanOutDirect(message.sessionId, message);
         return;
       case 'tracker_connectivity_status':
@@ -2626,6 +2635,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_commit_draft_request':
       case 'pr_open_preview_request':
       case 'pr_open_request':
+      case 'pr_merge_request':
         // A client taking/listing/previewing/rolling back a session's
         // checkpoints (SPEC §7.20; issue #603), the session's own current
         // working-tree diff (SPEC §7.4; issue #206's diff viewer), the

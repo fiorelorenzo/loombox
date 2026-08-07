@@ -273,7 +273,7 @@ describe('AttentionInbox: session-outcome class (issue #167, SPEC §7.13)', () =
   });
 });
 
-describe('AttentionInbox: ci_failure is live (issue #243); review_request remains a modeled extension point', () => {
+describe('AttentionInbox: ci_failure (issue #243) and review_request (issue #240) are both live', () => {
   it('renders both classes with their own badge and needs-attention label, and an Open action, with no permission card or reply composer', async () => {
     const onOpenSession = vi.fn();
     render(AttentionInbox, {

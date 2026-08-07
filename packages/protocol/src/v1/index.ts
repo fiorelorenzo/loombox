@@ -975,6 +975,46 @@ export {
   ciCheckStatus,
 } from './ci-check';
 export type {
+  ReviewCommentThreadV1,
+  ReviewCommentOverallStateV1,
+  ReviewCommentStateV1,
+  ReviewCommentStatusPayloadV1,
+  ReviewCommentStatus,
+} from './review-comment';
+export {
+  reviewCommentThreadV1,
+  reviewCommentOverallStateV1,
+  reviewCommentStateV1,
+  parseReviewCommentStatusPayloadV1,
+  safeParseReviewCommentStatusPayloadV1,
+  reviewCommentStatusPayloadV1,
+  reviewCommentStatus,
+} from './review-comment';
+export type {
+  PrMergeMethod,
+  PrMergeBlockedReason,
+  PrMergeFailureCategory,
+  PrMergeOutcome,
+  PrMergeRequestPayloadV1,
+  PrMergeRequest,
+  PrMergeResultPayloadV1,
+  PrMergeResult,
+} from './pr-merge';
+export {
+  prMergeMethod,
+  prMergeBlockedReason,
+  prMergeFailureCategory,
+  prMergeOutcome,
+  parsePrMergeRequestPayloadV1,
+  safeParsePrMergeRequestPayloadV1,
+  prMergeRequestPayloadV1,
+  prMergeRequest,
+  parsePrMergeResultPayloadV1,
+  safeParsePrMergeResultPayloadV1,
+  prMergeResultPayloadV1,
+  prMergeResult,
+} from './pr-merge';
+export type {
   TrackerConnectivityStateV1,
   TrackerConnectivityStatusPayloadV1,
   TrackerConnectivityStatus,
@@ -1429,6 +1469,23 @@ import {
   ciCheckStatus,
 } from './ci-check';
 import {
+  reviewCommentThreadV1,
+  reviewCommentOverallStateV1,
+  reviewCommentStateV1,
+  reviewCommentStatusPayloadV1,
+  reviewCommentStatus,
+} from './review-comment';
+import {
+  prMergeMethod,
+  prMergeBlockedReason,
+  prMergeFailureCategory,
+  prMergeOutcome,
+  prMergeRequestPayloadV1,
+  prMergeRequest,
+  prMergeResultPayloadV1,
+  prMergeResult,
+} from './pr-merge';
+import {
   trackerConnectivityStateV1,
   trackerConnectivityStatusPayloadV1,
   trackerConnectivityStatus,
@@ -1852,6 +1909,19 @@ export const schemasV1 = {
   ciCheckStateV1,
   ciCheckStatusPayloadV1,
   ciCheckStatus,
+  reviewCommentThreadV1,
+  reviewCommentOverallStateV1,
+  reviewCommentStateV1,
+  reviewCommentStatusPayloadV1,
+  reviewCommentStatus,
+  prMergeMethod,
+  prMergeBlockedReason,
+  prMergeFailureCategory,
+  prMergeOutcome,
+  prMergeRequestPayloadV1,
+  prMergeRequest,
+  prMergeResultPayloadV1,
+  prMergeResult,
   trackerConnectivityStateV1,
   trackerConnectivityStatusPayloadV1,
   trackerConnectivityStatus,
