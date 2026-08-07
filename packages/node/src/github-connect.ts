@@ -37,7 +37,13 @@ import {
   runGithubDeviceFlow,
   type GithubDeviceCodeInfo,
 } from './github-device-flow';
-import { resolveGithubIdentity } from './github-identity';
+import {
+  githubApiBaseUrl,
+  resolveGithubIdentity,
+  resolveGithubPatReach,
+  type GithubIdentity,
+  type GithubPatReach,
+} from './github-identity';
 import type { NodeKeyring } from './keyring';
 
 const GITHUB_HOST = 'github.com';
@@ -115,6 +121,35 @@ export interface ConnectGithubAccountOptions {
   onUserCode?: (info: GithubDeviceCodeInfo) => void;
 }
 
+export type GithubPatConnectFailureReason = 'invalid_or_revoked' | 'insufficient_access' | 'error';
+
+/** Raised by {@link GithubConnectService.connectWithToken} — never includes the pasted token in `message`. `reason` names which of issue #224's three failure modes this is: `'invalid_or_revoked'` (`GET /user` itself rejected the token — GitHub's API returns a bare 401 for an invalid, expired, or revoked fine-grained PAT with no further distinction to report, confirmed by GitHub's own community guidance on this exact question), `'insufficient_access'` (the token authenticates fine but `resolveGithubPatReach` found no repository it can reach — too narrow to be useful), or `'error'` for anything else (a network failure, a malformed GitHub response). */
+export class GithubPatConnectError extends Error {
+  constructor(
+    readonly reason: GithubPatConnectFailureReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GithubPatConnectError';
+  }
+}
+
+export interface ConnectGithubPatOptions {
+  /** The pasted fine-grained PAT. Never logged, never included in any thrown error — the same contract `resolveGithubIdentity`'s own doc comment gives the device flow's token. */
+  token: string;
+  /** `github.com` by default; set for a GitHub Enterprise Server token — resolved through `githubApiBaseUrl`, the same per-host split `./github-cli-import.ts` (#223) already gives its own accounts. */
+  host?: string;
+  /** Injectable for tests; defaults to the global `fetch`. Never hits the real GitHub API from a test. */
+  fetchImpl?: typeof fetch;
+}
+
+/** {@link GithubConnectService.connectWithToken}'s success shape — `account` plus the reach report `resolveGithubPatReach` produced, so a caller (the node-daemon wire handler) can pass both straight through `github_pat_connect_response` without a second call. */
+export interface GithubPatConnectSuccess {
+  account: ConnectedAccount;
+  accessibleRepositories: string[];
+  accessibleRepositoriesTruncated: boolean;
+}
+
 /**
  * Runs SPEC §7.26's GitHub device-flow connect path (issue #222) and holds
  * the OS-keyring-backed token storage it writes into. One instance is
@@ -187,6 +222,114 @@ export class GithubConnectService {
       updatedAt: now,
       secretRef,
     });
+  }
+
+  /**
+   * Runs SPEC §7.26's fine-grained PAT paste path (issue #224) — the
+   * fallback for orgs whose OAuth App access restrictions block {@link
+   * connect}'s device flow outright. Reuses every piece {@link connect}
+   * already built rather than growing a second copy: the same
+   * `resolveGithubIdentity` numeric-id identity resolution, the same
+   * keyring write (`this.keyring`/`this.onCredentialChanged`), and the
+   * same `connectedAccount.parse` structural guard. The only genuinely
+   * new step is `resolveGithubPatReach`, since a fine-grained PAT has no
+   * classic OAuth scope to report at all (see that function's own top
+   * comment) — its result is what stands in for `connect()`'s own
+   * `grantedScopes`/`deriveGithubCapabilities` pair here.
+   *
+   * Throws {@link GithubPatConnectError} for every named failure —
+   * `'invalid_or_revoked'` when `GET /user` itself rejects the token,
+   * `'insufficient_access'` when the token authenticates but reaches no
+   * repository at all, `'error'` for anything else — never a bare
+   * `GithubIdentityError`, so a caller (`node-daemon.ts`'s
+   * `handleGithubPatConnectRequest`) always has a named reason to map onto
+   * `github_pat_connect_response`.
+   */
+  async connectWithToken(options: ConnectGithubPatOptions): Promise<GithubPatConnectSuccess> {
+    const token = options.token.trim();
+    if (token.length === 0) {
+      throw new GithubPatConnectError('invalid_or_revoked', 'Paste a personal access token first.');
+    }
+    const host = options.host?.trim() || GITHUB_HOST;
+    const apiBaseUrl = githubApiBaseUrl(host);
+
+    let identity: GithubIdentity;
+    try {
+      identity = await resolveGithubIdentity(token, { fetchImpl: options.fetchImpl, apiBaseUrl });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new GithubPatConnectError(
+        'invalid_or_revoked',
+        `This token is invalid, expired, or has been revoked (${detail}) — GitHub's API does not ` +
+          'distinguish those three cases any further than a bare 401, so generate a fresh ' +
+          'fine-grained personal access token and paste it again.',
+      );
+    }
+
+    let reach: GithubPatReach;
+    try {
+      reach = await resolveGithubPatReach(token, { fetchImpl: options.fetchImpl, apiBaseUrl });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new GithubPatConnectError(
+        'error',
+        `Connected as ${identity.login}, but could not check which repositories this token ` +
+          `can reach (${detail}). Try again.`,
+      );
+    }
+    if (reach.repositories.length === 0) {
+      throw new GithubPatConnectError(
+        'insufficient_access',
+        "This fine-grained PAT can't reach any repositories — grant it access to at least one " +
+          'repository (Contents: Read-only is enough to browse) when creating the token on ' +
+          'GitHub, then paste it again.',
+      );
+    }
+
+    const id = composeConnectedAccountId({
+      provider: 'github',
+      host,
+      providerAccountId: String(identity.id),
+    });
+    const secretRef = connectedAccountSecretRef(id);
+
+    // The token touches this one keyring write and nothing else — it is
+    // never assigned to any field of the ConnectedAccount built below,
+    // exactly like `connect()` above.
+    await this.keyring.set(CONNECTED_ACCOUNT_KEYRING_SERVICE, secretRef, token);
+    this.onCredentialChanged?.(secretRef);
+
+    const now = Date.now();
+    const account = connectedAccount.parse({
+      id,
+      provider: 'github',
+      host,
+      providerAccountId: String(identity.id),
+      label: identity.login,
+      avatarUrl: identity.avatarUrl,
+      credentialSource: 'fine_grained_pat',
+      // Always empty: `resolveGithubIdentity`'s own top comment — GitHub
+      // never sends `X-OAuth-Scopes` for a fine-grained PAT, so this is
+      // never a signal of anything actually missing (contrast the device
+      // flow's `grantedScopes`, a real granted/requested comparison).
+      scopes: identity.scopes,
+      // 'repo' only, never 'issues'/'projects': `reach.repositories`
+      // proves this token can reach at least one repository, but a
+      // fine-grained PAT's Issues/Projects permissions are independent
+      // grants this module has no way to probe (GitHub exposes no
+      // introspection endpoint for either) — `deriveGithubCapabilities`
+      // (OAuth-scope-driven) doesn't apply to this credential kind at all.
+      capabilities: ['repo'],
+      connectedAt: now,
+      updatedAt: now,
+      secretRef,
+    });
+
+    return {
+      account,
+      accessibleRepositories: reach.repositories,
+      accessibleRepositoriesTruncated: reach.truncated,
+    };
   }
 
   /** This account's stored token, or `undefined` if never connected (or since disconnected). Never reaches the relay or a client — a purely local read for whichever node needs to actually call the GitHub API on this account's behalf. */

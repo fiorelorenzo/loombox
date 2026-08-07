@@ -252,6 +252,7 @@ describe('SettingsPage (design spec v4 §3.3, issue #507; reorganised by issue #
         cancel: vi.fn(),
         result: Promise.withResolvers<never>().promise,
       })),
+      connectGithubPat: vi.fn(),
       connectJiraAccount: vi.fn(),
       scanAccountPins: vi.fn(async () => []),
       disconnectAccount: vi.fn(),

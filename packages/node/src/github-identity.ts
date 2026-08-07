@@ -47,7 +47,7 @@ export interface GithubIdentity {
   scopes: string[];
 }
 
-/** Raised when GitHub's `GET /user` response can't be trusted as an identity — an HTTP error, or (the case issue #222's acceptance calls out explicitly) a body carrying only a `login`-shaped identity with no usable numeric `id`. Never includes the access token used to make the call. */
+/** Raised when GitHub's `GET /user`/`GET /user/repos` response can't be trusted — an HTTP error, or (the case issue #222's acceptance calls out explicitly) a body carrying only a `login`-shaped identity with no usable numeric `id`. Never includes the access token used to make the call. */
 export class GithubIdentityError extends Error {
   constructor(message: string) {
     super(message);
@@ -127,4 +127,79 @@ export async function resolveGithubIdentity(
         : undefined,
     scopes: parseScopesHeader(response),
   };
+}
+
+export interface GithubPatReach {
+  /** Full `owner/repo` names GitHub's `GET /user/repos` returned for this token, up to the first page (100) — see {@link resolveGithubPatReach}'s own doc comment for why more than that is never fetched here. */
+  repositories: string[];
+  /** True when GitHub's own `Link: rel="next"` response header says there is at least one more page beyond the 100 already read — surfaced so a caller reports "100+" rather than a falsely-exact count. */
+  truncated: boolean;
+}
+
+export interface ResolveGithubPatReachOptions {
+  /** Injectable for tests; defaults to the global `fetch`. Must never be pointed at a real GitHub endpoint from a test. */
+  fetchImpl?: typeof fetch;
+  /** See {@link ResolveGithubIdentityOptions.apiBaseUrl} — same GHES-vs-`github.com` split, same default. */
+  apiBaseUrl?: string;
+}
+
+/**
+ * Reports what a fine-grained PAT can actually reach (issue #224): a
+ * fine-grained PAT has per-repository permissions, and unlike a classic
+ * token's scopes (this module's own top comment on `X-OAuth-Scopes`),
+ * GitHub's API has no endpoint that introspects a fine-grained PAT's
+ * granted permissions directly — confirmed by GitHub's own maintainers
+ * (`github.com/orgs/community/discussions/156115`: "GitHub currently
+ * doesn't provide a way to query the scopes or repository permissions of
+ * a fine-grained personal access token"). The community-documented
+ * workaround is "permission probing" — call an endpoint the token would
+ * need and see what comes back — and `GET /user/repos` is the cheapest
+ * such probe that also means something to an operator (a repository
+ * list, not a bare boolean): a fine-grained PAT "only [has] access to the
+ * repositories... [it is] explicitly granted access to" (GitHub's own
+ * fine-grained-PAT announcement post), so this endpoint genuinely
+ * reflects the token's own grant, not just the account's.
+ *
+ * Reads only the first response page (100 repositories, GitHub's own max
+ * `per_page`) — a fine-grained PAT scoped to more than 100 repositories is
+ * already "effectively account-wide" for this reporting purpose, and
+ * `truncated` says so rather than silently paginating through hundreds of
+ * repositories on every connect attempt. Throws {@link GithubIdentityError}
+ * on a non-2xx response — a caller distinguishes "the API call itself
+ * failed" from "the call succeeded and returned zero repositories" (the
+ * real too-narrow-to-connect signal `github-connect.ts`'s
+ * `GithubConnectService.connectWithToken` acts on).
+ */
+export async function resolveGithubPatReach(
+  token: string,
+  options: ResolveGithubPatReachOptions = {},
+): Promise<GithubPatReach> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const apiBaseUrl = options.apiBaseUrl ?? DEFAULT_GITHUB_API_BASE_URL;
+
+  const response = await fetchImpl(`${apiBaseUrl}/user/repos?per_page=100&sort=full_name`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/vnd.github+json',
+      'x-github-api-version': '2022-11-28',
+      'user-agent': 'loombox',
+    },
+  });
+  if (!response.ok) {
+    throw new GithubIdentityError(
+      `github identity: GET /user/repos responded with HTTP ${response.status}`,
+    );
+  }
+
+  const body = (await response.json()) as unknown;
+  // Mirrors `resolveGithubIdentity`'s own `Record<string, unknown>` cast
+  // above: one named cast at the array level, then every field read back
+  // through a `typeof` check before use — never trusted un-narrowed.
+  const entries = Array.isArray(body) ? (body as Record<string, unknown>[]) : [];
+  const repositories = entries
+    .map((entry) => entry.full_name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+  const truncated = /rel="next"/.test(response.headers?.get?.('link') ?? '');
+
+  return { repositories, truncated };
 }

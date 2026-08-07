@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { GithubIdentityError, githubApiBaseUrl, resolveGithubIdentity } from './github-identity';
+import {
+  GithubIdentityError,
+  githubApiBaseUrl,
+  resolveGithubIdentity,
+  resolveGithubPatReach,
+} from './github-identity';
 
 /** Stubbed GitHub `GET /user` responses only (issue #222's acceptance: never hit the real API). `headers` defaults to an empty real `Headers` — close to what a bare `{ok, status, json}` double from before issue #223 looked like, minus the `.headers?.get?.()` crash that shape would now hit; `scopesHeader` lets a test opt into a populated `X-OAuth-Scopes` header. */
 function jsonResponse(status: number, body: unknown, scopesHeader?: string): Response {
@@ -139,5 +144,100 @@ describe('resolveGithubIdentity (SPEC §7.26, issue #222)', () => {
     const identity = await resolveGithubIdentity('gho_the-token', { fetchImpl });
 
     expect(identity.avatarUrl).toBeUndefined();
+  });
+});
+
+describe('resolveGithubPatReach (issue #224)', () => {
+  it('returns the full_name of every repository GET /user/repos returns, not truncated', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse(200, [
+          { full_name: 'octocat/hello-world' },
+          { full_name: 'octocat/spoon-knife' },
+        ]),
+      );
+
+    const reach = await resolveGithubPatReach('github_pat_the-token', { fetchImpl });
+
+    expect(reach).toEqual({
+      repositories: ['octocat/hello-world', 'octocat/spoon-knife'],
+      truncated: false,
+    });
+  });
+
+  it('sends the token only as a Bearer header, on GET /user/repos with per_page=100', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, []));
+
+    await resolveGithubPatReach('github_pat_the-token', { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.github.com/user/repos?per_page=100&sort=full_name',
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: 'Bearer github_pat_the-token' }),
+      }),
+    );
+  });
+
+  it('an empty repository list is a real, valid result — the too-narrow signal a caller acts on, not an error', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, []));
+
+    const reach = await resolveGithubPatReach('github_pat_the-token', { fetchImpl });
+
+    expect(reach).toEqual({ repositories: [], truncated: false });
+  });
+
+  it('truncated is true when the Link response header carries rel="next"', async () => {
+    const headers = new Headers();
+    headers.set('link', '<https://api.github.com/user/repos?page=2>; rel="next"');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [{ full_name: 'octocat/hello-world' }],
+      headers,
+    } as Response);
+
+    const reach = await resolveGithubPatReach('github_pat_the-token', { fetchImpl });
+
+    expect(reach.truncated).toBe(true);
+  });
+
+  it('resolves against a caller-supplied apiBaseUrl (GHES) rather than api.github.com', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, []));
+
+    await resolveGithubPatReach('github_pat_the-token', {
+      fetchImpl,
+      apiBaseUrl: 'https://github.mycorp.com/api/v3',
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://github.mycorp.com/api/v3/user/repos?per_page=100&sort=full_name',
+      expect.anything(),
+    );
+  });
+
+  it('an HTTP error response is rejected without leaking the token into the error message', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(401, { message: 'Bad credentials' }));
+
+    await expect(
+      resolveGithubPatReach('github_pat_super-secret-token', { fetchImpl }),
+    ).rejects.toMatchObject({
+      message: expect.not.stringContaining('github_pat_super-secret-token'),
+    });
+    await expect(
+      resolveGithubPatReach('github_pat_super-secret-token', { fetchImpl }),
+    ).rejects.toBeInstanceOf(GithubIdentityError);
+  });
+
+  it('a non-array response body resolves to an empty repository list rather than throwing', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(200, { message: 'not a list' }));
+
+    const reach = await resolveGithubPatReach('github_pat_the-token', { fetchImpl });
+
+    expect(reach).toEqual({ repositories: [], truncated: false });
   });
 });

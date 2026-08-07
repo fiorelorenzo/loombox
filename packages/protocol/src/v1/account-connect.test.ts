@@ -13,6 +13,8 @@ import {
   githubConnectDeviceCode,
   githubConnectResult,
   githubConnectStartRequest,
+  githubPatConnectRequest,
+  githubPatConnectResponse,
   jiraConnectRequest,
   jiraConnectResponse,
 } from './account-connect';
@@ -208,6 +210,89 @@ describe('jiraConnectRequest / jiraConnectResponse', () => {
     // design. The RESPONSE must never echo it or any other secret back.
     expect(Object.keys(jiraConnectResponse.shape)).not.toContain('apiToken');
     expect(Object.keys(jiraConnectResponse.shape)).not.toContain('token');
+  });
+});
+
+describe('githubPatConnectRequest / githubPatConnectResponse (issue #224)', () => {
+  it('parses a valid connect request, with and without an explicit GHES host', () => {
+    const message = {
+      type: 'github_pat_connect_request' as const,
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-1',
+      nodeId: 'node-1',
+      token: 'github_pat_11ABC',
+    };
+    expect(githubPatConnectRequest.parse(message)).toEqual(message);
+
+    const ghes = { ...message, host: 'github.mycorp.com' };
+    expect(githubPatConnectRequest.parse(ghes)).toEqual(ghes);
+  });
+
+  it('rejects an empty token', () => {
+    expect(
+      githubPatConnectRequest.safeParse({
+        type: 'github_pat_connect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-1',
+        nodeId: 'node-1',
+        token: '',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parses a success response carrying the reach report, and each named failure reason', () => {
+    const account = githubAccount({
+      credentialSource: 'fine_grained_pat',
+      scopes: [],
+      capabilities: ['repo'],
+    });
+    const success = githubPatConnectResponse.parse({
+      type: 'github_pat_connect_response',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-1',
+      nodeId: 'node-1',
+      result: {
+        outcome: 'success',
+        account,
+        accessibleRepositories: ['octocat/hello-world'],
+        accessibleRepositoriesTruncated: false,
+      },
+    });
+    expect(success.result).toEqual({
+      outcome: 'success',
+      account,
+      accessibleRepositories: ['octocat/hello-world'],
+      accessibleRepositoriesTruncated: false,
+    });
+
+    for (const reason of ['invalid_or_revoked', 'insufficient_access', 'error'] as const) {
+      expect(
+        githubPatConnectResponse.parse({
+          type: 'github_pat_connect_response',
+          protocolVersion: PROTOCOL_V1,
+          requestId: 'req-1',
+          nodeId: 'node-1',
+          result: { outcome: 'failure', reason, message: `${reason} message` },
+        }).result,
+      ).toEqual({ outcome: 'failure', reason, message: `${reason} message` });
+    }
+  });
+
+  it('the response schema has no field shaped like a bare token or secret', () => {
+    expect(Object.keys(githubPatConnectResponse.shape)).not.toContain('apiToken');
+    expect(Object.keys(githubPatConnectResponse.shape)).not.toContain('token');
+  });
+
+  it('is reachable through the discriminated wireMessageV1 union', () => {
+    expect(() =>
+      wireMessageV1.parse({
+        type: 'github_pat_connect_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-1',
+        nodeId: 'node-1',
+        token: 'github_pat_11ABC',
+      }),
+    ).not.toThrow();
   });
 });
 

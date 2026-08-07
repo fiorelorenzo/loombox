@@ -2038,6 +2038,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'github_connect_result':
       case 'jira_connect_response':
       case 'github_cli_import_response':
+      case 'github_pat_connect_response':
       case 'account_pin_response':
       case 'account_pin_resolve_response':
       case 'account_pin_scan_response':
@@ -2630,6 +2631,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'github_connect_start_request':
       case 'jira_connect_request':
       case 'github_cli_import_request':
+      case 'github_pat_connect_request':
       case 'connected_account_disconnect_request':
       case 'account_pin_get_request':
       case 'account_pin_set_request':

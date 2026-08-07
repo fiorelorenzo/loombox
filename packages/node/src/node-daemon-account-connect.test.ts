@@ -10,6 +10,7 @@ import type {
   ConnectedAccount,
   ConnectedAccountDisconnectResponse,
   GithubConnectResult,
+  GithubPatConnectResponse,
   JiraConnectResponse,
   WireMessageV1,
 } from '@loombox/protocol';
@@ -121,6 +122,10 @@ function sleep(ms: number): Promise<void> {
 
 function isGithubConnectResult(m: WireMessageV1): m is GithubConnectResult {
   return m.type === 'github_connect_result';
+}
+
+function isGithubPatConnectResponse(m: WireMessageV1): m is GithubPatConnectResponse {
+  return m.type === 'github_pat_connect_response';
 }
 
 function isJiraConnectResponse(m: WireMessageV1): m is JiraConnectResponse {
@@ -325,6 +330,26 @@ describe('jira_connect_request / jira_connect_response', () => {
     const response = await phone.waitFor(isJiraConnectResponse, 15000);
     expect(response.result.outcome).toBe('failure');
     expect(JSON.stringify(response)).not.toContain('super-secret-token-never-synced');
+  }, 20000);
+});
+
+describe('github_pat_connect_request / github_pat_connect_response (issue #224)', () => {
+  it('surfaces a failure outcome, never the token, when the connect attempt fails', async () => {
+    const accountId = 'acct-github-pat-fail';
+    node = buildNode({ nodeId: 'node-github-pat-1', accountId });
+    phone = await connectPhone(accountId);
+
+    phone.send({
+      type: 'github_pat_connect_request',
+      protocolVersion: PROTOCOL_V1,
+      requestId: 'req-github-pat-1',
+      nodeId: 'node-github-pat-1',
+      token: 'super-secret-fine-grained-pat-never-synced',
+      host: 'this-host-does-not-resolve.invalid',
+    });
+    const response = await phone.waitFor(isGithubPatConnectResponse, 15000);
+    expect(response.result.outcome).toBe('failure');
+    expect(JSON.stringify(response)).not.toContain('super-secret-fine-grained-pat-never-synced');
   }, 20000);
 });
 
