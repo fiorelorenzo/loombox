@@ -69,14 +69,20 @@ describe('mergePr (SPEC §7.14; issue #240)', () => {
   });
 
   it('reports already_merged for a PR GitHub already merged — never attempts a write', async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(pullRequestResponse({ merged: true, state: 'closed' }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(pullRequestResponse({ merged: true, state: 'closed' }));
 
-    await expect(mergePr({ ...options(), fetchImpl })).resolves.toEqual({ outcome: 'already_merged' });
+    await expect(mergePr({ ...options(), fetchImpl })).resolves.toEqual({
+      outcome: 'already_merged',
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('reports blocked/closed for a PR closed without merging — never attempts a write', async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(pullRequestResponse({ state: 'closed', merged: false }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(pullRequestResponse({ state: 'closed', merged: false }));
 
     await expect(mergePr({ ...options(), fetchImpl })).resolves.toEqual({
       outcome: 'blocked',
@@ -121,7 +127,9 @@ describe('mergePr (SPEC §7.14; issue #240)', () => {
     async (mergeableState, reason) => {
       const fetchImpl = vi
         .fn()
-        .mockResolvedValueOnce(pullRequestResponse({ mergeable: true, mergeable_state: mergeableState }));
+        .mockResolvedValueOnce(
+          pullRequestResponse({ mergeable: true, mergeable_state: mergeableState }),
+        );
 
       await expect(mergePr({ ...options(), fetchImpl })).resolves.toEqual({
         outcome: 'blocked',
@@ -160,7 +168,7 @@ describe('mergePr (SPEC §7.14; issue #240)', () => {
     expect(result).toMatchObject({ category: 'unknown' });
   });
 
-  it('reports failed/unknown, with GitHub\'s own message, for an unexpected non-2xx write', async () => {
+  it("reports failed/unknown, with GitHub's own message, for an unexpected non-2xx write", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(pullRequestResponse({ mergeable: true, mergeable_state: 'clean' }))

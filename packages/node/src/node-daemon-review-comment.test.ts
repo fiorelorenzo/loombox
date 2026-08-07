@@ -148,7 +148,11 @@ function internals(node: NodeDaemon): DaemonInternals {
 }
 
 function reviewThreadsResponse(
-  threads: Array<{ id: string; isResolved: boolean; comments: Array<{ id: string; body: string }> }>,
+  threads: Array<{
+    id: string;
+    isResolved: boolean;
+    comments: Array<{ id: string; body: string }>;
+  }>,
 ): Response {
   return new Response(
     JSON.stringify({
@@ -233,16 +237,30 @@ describe('NodeDaemon review-comment wiring end to end (SPEC §7.14; issue #240)'
       .fn()
       .mockResolvedValueOnce(
         reviewThreadsResponse([
-          { id: 'PRRT_1', isResolved: false, comments: [{ id: 'PRRC_1', body: 'please fix the null check' }] },
+          {
+            id: 'PRRT_1',
+            isResolved: false,
+            comments: [{ id: 'PRRC_1', body: 'please fix the null check' }],
+          },
         ]),
       )
       .mockResolvedValueOnce(
         reviewThreadsResponse([
-          { id: 'PRRT_1', isResolved: false, comments: [{ id: 'PRRC_1', body: 'please fix the null check' }] },
+          {
+            id: 'PRRT_1',
+            isResolved: false,
+            comments: [{ id: 'PRRC_1', body: 'please fix the null check' }],
+          },
         ]),
       )
       .mockResolvedValueOnce(
-        reviewThreadsResponse([{ id: 'PRRT_1', isResolved: true, comments: [{ id: 'PRRC_1', body: 'please fix the null check' }] }]),
+        reviewThreadsResponse([
+          {
+            id: 'PRRT_1',
+            isResolved: true,
+            comments: [{ id: 'PRRC_1', body: 'please fix the null check' }],
+          },
+        ]),
       );
     vi.stubGlobal('fetch', fetchImpl);
 
@@ -267,9 +285,13 @@ describe('NodeDaemon review-comment wiring end to end (SPEC §7.14; issue #240)'
 
       let reviewMessages: SentMessage[] = [];
       await vi.waitFor(() => {
-        reviewMessages = sentMessagesOf(sendSpy).filter((message) => message.type === 'review_comment_status');
+        reviewMessages = sentMessagesOf(sendSpy).filter(
+          (message) => message.type === 'review_comment_status',
+        );
         if (reviewMessages.length < 3) {
-          throw new Error(`only ${reviewMessages.length}/3 review_comment_status sends observed so far`);
+          throw new Error(
+            `only ${reviewMessages.length}/3 review_comment_status sends observed so far`,
+          );
         }
       });
       expect(reviewMessages).toHaveLength(3);
@@ -278,7 +300,11 @@ describe('NodeDaemon review-comment wiring end to end (SPEC §7.14; issue #240)'
       const states = await Promise.all(
         reviewMessages.map(async (message) => {
           expect(message.sessionId).toBe(session.id);
-          const payload = await openJson<ReviewCommentStatusPayloadV1>(session.id, message.envelope, key);
+          const payload = await openJson<ReviewCommentStatusPayloadV1>(
+            session.id,
+            message.envelope,
+            key,
+          );
           return payload.status;
         }),
       );
@@ -286,7 +312,10 @@ describe('NodeDaemon review-comment wiring end to end (SPEC §7.14; issue #240)'
       // Detected once, reaches the client, on both of the first two polls.
       expect(states[0].state).toBe('pending');
       expect(states[0].threads).toHaveLength(1);
-      expect(states[0].threads[0]).toMatchObject({ commentId: 'PRRC_1', body: 'please fix the null check' });
+      expect(states[0].threads[0]).toMatchObject({
+        commentId: 'PRRC_1',
+        body: 'please fix the null check',
+      });
       expect(states[1].state).toBe('pending');
 
       // The thread resolves — the third poll's state clears it.
@@ -380,7 +409,9 @@ describe('NodeDaemon.handlePrMergeRequest (SPEC §7.14; issue #240)', () => {
     await seedToken(account.secretRef, 'ghp_merge_token');
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValueOnce(pullRequestResponse({ mergeable: false, mergeable_state: 'dirty' })),
+      vi
+        .fn()
+        .mockResolvedValueOnce(pullRequestResponse({ mergeable: false, mergeable_state: 'dirty' })),
     );
 
     const node = bareDaemon();
@@ -404,7 +435,11 @@ describe('NodeDaemon.handlePrMergeRequest (SPEC §7.14; issue #240)', () => {
     await seedToken(account.secretRef, 'ghp_merge_token');
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValueOnce(pullRequestResponse({ mergeable: true, mergeable_state: 'blocked' })),
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          pullRequestResponse({ mergeable: true, mergeable_state: 'blocked' }),
+        ),
     );
 
     const node = bareDaemon();
@@ -477,7 +512,9 @@ describe('NodeDaemon.handlePrMergeRequest (SPEC §7.14; issue #240)', () => {
       // resolves, handlePrMergeRequest has already returned, so no
       // polling wait is needed to observe "nothing was sent".
       await sendMergeRequest(node, 'sess-unowned', { method: 'squash' });
-      expect(sentMessagesOf(sendSpy).some((message) => message.type === 'pr_merge_result')).toBe(false);
+      expect(sentMessagesOf(sendSpy).some((message) => message.type === 'pr_merge_result')).toBe(
+        false,
+      );
     } finally {
       node.close();
     }

@@ -94,7 +94,13 @@ export interface ReviewCommentWatchEntry {
 }
 
 function unknownState(entry: ReviewCommentWatchEntry, now: number): ReviewCommentStateV1 {
-  return { state: 'unknown', prUrl: entry.prUrl, prNumber: entry.prNumber, threads: [], updatedAt: now };
+  return {
+    state: 'unknown',
+    prUrl: entry.prUrl,
+    prNumber: entry.prNumber,
+    threads: [],
+    updatedAt: now,
+  };
 }
 
 /** The GraphQL query this watcher sends on every poll — `first: 100` threads/comments each, a generous ceiling no real PR review conversation approaches in practice, and simplest to reason about (no pagination state to carry between polls). */

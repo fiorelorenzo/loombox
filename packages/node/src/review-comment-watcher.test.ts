@@ -50,7 +50,9 @@ function threadsResponse(
                     path: comment.path ?? 'src/foo.ts',
                     line: comment.line ?? 10,
                     createdAt: comment.createdAt ?? '2026-08-01T00:00:00Z',
-                    url: comment.url ?? `https://github.com/fiorelorenzo/loombox/pull/42#${comment.id}`,
+                    url:
+                      comment.url ??
+                      `https://github.com/fiorelorenzo/loombox/pull/42#${comment.id}`,
                     author: comment.login ? { login: comment.login } : null,
                   })),
                 },
@@ -164,7 +166,9 @@ describe('ReviewCommentWatcher (SPEC §7.14; issue #240)', () => {
         ]),
       )
       .mockResolvedValueOnce(
-        threadsResponse([{ id: 'PRRT_1', isResolved: true, comments: [{ id: 'PRRC_1', body: 'please address' }] }]),
+        threadsResponse([
+          { id: 'PRRT_1', isResolved: true, comments: [{ id: 'PRRC_1', body: 'please address' }] },
+        ]),
       );
     const onUpdate = vi.fn();
     const watcher = new ReviewCommentWatcher({
@@ -187,7 +191,11 @@ describe('ReviewCommentWatcher (SPEC §7.14; issue #240)', () => {
     const fetchImpl = vi.fn().mockImplementation(() =>
       Promise.resolve(
         threadsResponse([
-          { id: 'PRRT_1', isResolved: false, comments: [{ id: 'PRRC_1', body: 'please address' }] },
+          {
+            id: 'PRRT_1',
+            isResolved: false,
+            comments: [{ id: 'PRRC_1', body: 'please address' }],
+          },
         ]),
       ),
     );
@@ -277,11 +285,19 @@ describe('ReviewCommentWatcher (SPEC §7.14; issue #240)', () => {
   });
 
   it('unwatch stops polling and forgets the last reading and dedup state', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      threadsResponse([{ id: 'PRRT_1', isResolved: false, comments: [{ id: 'PRRC_1', body: 'x' }] }]),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        threadsResponse([
+          { id: 'PRRT_1', isResolved: false, comments: [{ id: 'PRRC_1', body: 'x' }] },
+        ]),
+      );
     const onNewComment = vi.fn();
-    const watcher = new ReviewCommentWatcher({ resolveToken: async () => 'tok', fetchImpl, onNewComment });
+    const watcher = new ReviewCommentWatcher({
+      resolveToken: async () => 'tok',
+      fetchImpl,
+      onNewComment,
+    });
     watcher.watch('sess-1', entry());
 
     await watcher.pollNow();
@@ -296,18 +312,22 @@ describe('ReviewCommentWatcher (SPEC §7.14; issue #240)', () => {
   });
 
   it('polls every registered session independently in one pass', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockImplementation((url: string, init: RequestInit) => {
-        const body = JSON.parse(String(init.body)) as { variables: { number: number } };
-        return Promise.resolve(
-          body.variables.number === 1
-            ? threadsResponse([{ id: 'PRRT_a', isResolved: false, comments: [{ id: 'PRRC_a', body: 'a' }] }])
-            : threadsResponse([]),
-        );
-      });
+    const fetchImpl = vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { variables: { number: number } };
+      return Promise.resolve(
+        body.variables.number === 1
+          ? threadsResponse([
+              { id: 'PRRT_a', isResolved: false, comments: [{ id: 'PRRC_a', body: 'a' }] },
+            ])
+          : threadsResponse([]),
+      );
+    });
     const onUpdate = vi.fn();
-    const watcher = new ReviewCommentWatcher({ resolveToken: async () => 'tok', fetchImpl, onUpdate });
+    const watcher = new ReviewCommentWatcher({
+      resolveToken: async () => 'tok',
+      fetchImpl,
+      onUpdate,
+    });
     watcher.watch('sess-1', entry({ prNumber: 1 }));
     watcher.watch('sess-2', entry({ prNumber: 2 }));
 

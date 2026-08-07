@@ -156,7 +156,11 @@ export async function mergePr(options: MergePrOptions): Promise<PrMergeOutcome> 
 
   const merged = mergeResponseSchema.parse(await mergeResponse.json());
   if (!merged.sha) {
-    return { outcome: 'failed', category: 'unknown', detail: 'GitHub reported success with no merge sha' };
+    return {
+      outcome: 'failed',
+      category: 'unknown',
+      detail: 'GitHub reported success with no merge sha',
+    };
   }
   return { outcome: 'merged', sha: merged.sha };
 }

@@ -1513,7 +1513,10 @@ export class RelayClient {
     Writable<TrackerConnectivityStateV1 | undefined>
   >();
   /** `sessionId` -> this session's latest known review-thread state (SPEC §7.14; issue #240) — backs the attention inbox's `'review_request'` class (see {@link recomputeAttentionInbox}), populated by {@link handleReviewCommentStatus}. `undefined` (no entry yet) until the node's first `review_comment_status` push for a session arrives: a session with no open PR, or one whose PR hasn't reported yet. Mirrors {@link ciCheckStatuses} exactly. */
-  private readonly reviewCommentStatuses = new Map<string, Writable<ReviewCommentStateV1 | undefined>>();
+  private readonly reviewCommentStatuses = new Map<
+    string,
+    Writable<ReviewCommentStateV1 | undefined>
+  >();
   private readonly attachments = new Map<string, Writable<ComposerAttachment[]>>();
   /** Keyed by attachment id (globally unique, `generateId('att')`), not per-session — an id is only ever used within the one session it was attached to. */
   private readonly attachmentBytesById = new Map<string, CachedAttachment>();
@@ -9188,7 +9191,9 @@ export class RelayClient {
   }
 
   /** `sessionId` -> {@link reviewCommentStatuses}'s backing store, created on first access — same lazy-map pattern as {@link ciCheckStatusStoreFor}. */
-  private reviewCommentStatusStoreFor(sessionId: string): Writable<ReviewCommentStateV1 | undefined> {
+  private reviewCommentStatusStoreFor(
+    sessionId: string,
+  ): Writable<ReviewCommentStateV1 | undefined> {
     let store = this.reviewCommentStatuses.get(sessionId);
     if (!store) {
       store = writable<ReviewCommentStateV1 | undefined>(undefined);
