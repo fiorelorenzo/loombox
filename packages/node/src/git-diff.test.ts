@@ -903,9 +903,9 @@ describe('pushBranch against a real local git repo with a real bare remote (issu
     expect(result).toEqual({ setUpstream: true, forced: false });
     const remoteRefs = await execFileAsync('git', ['ls-remote', '--heads', bareDir]);
     expect(remoteRefs.stdout).toContain('refs/heads/feature');
-    await expect(
-      execGit(worktreePath, ['rev-parse', '--abbrev-ref', 'feature@{u}']),
-    ).resolves.toBe('origin/feature');
+    await expect(execGit(worktreePath, ['rev-parse', '--abbrev-ref', 'feature@{u}'])).resolves.toBe(
+      'origin/feature',
+    );
   });
 
   it('a second push on an already-tracked branch reports setUpstream: false — upstream is set exactly once', async () => {
