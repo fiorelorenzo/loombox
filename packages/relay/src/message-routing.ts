@@ -90,6 +90,8 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   fs_read_response: { routed: 'node' },
   git_diff_request: { routed: 'client' },
   git_diff_response: { routed: 'node' },
+  git_graph_request: { routed: 'client' },
+  git_graph_response: { routed: 'node' },
   git_hunk_diff_request: { routed: 'client' },
   git_hunk_diff_response: { routed: 'node' },
   git_hunk_action_request: { routed: 'client' },

@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { GIT_GRAPH_MAX_LIMIT } from '@loombox/protocol';
+
 import { LocalExecutionTarget } from './local-execution-target';
 import {
   abortMerge,
   applyGitHunkAction,
+  computeCommitGraph,
   computeHunkDiff,
   computeWorktreeDiff,
   createBranch,
@@ -18,6 +21,7 @@ import {
   GitBranchNotFoundError,
   GitDiffError,
   GitDirtyWorktreeError,
+  GitGraphError,
   GitHunkActionError,
   GitMergeConflictError,
   GitStashNotFoundError,
@@ -25,6 +29,7 @@ import {
   listBranches,
   listStashes,
   mergeBranch,
+  parseCommitGraphLog,
   stashDrop,
   stashPop,
   stashSave,
@@ -844,5 +849,311 @@ describe('stash save/list/pop/drop against a real local git repo (issue #234)', 
         GitStashNotFoundError,
       );
     });
+  });
+});
+
+describe('parseCommitGraphLog against captured git log --pretty=format: output (issue #231)', () => {
+  const FS = '\x1f';
+  const RS = '\x1e';
+
+  it('parses a root commit (empty parents field) with no decoration', () => {
+    const record = [
+      'a'.repeat(40),
+      '',
+      'A U Thor',
+      'a@x.dev',
+      '2026-01-01T00:00:00+00:00',
+      '',
+      'root',
+    ].join(FS);
+    expect(parseCommitGraphLog(record + RS)).toEqual([
+      {
+        sha: 'a'.repeat(40),
+        parents: [],
+        authorName: 'A U Thor',
+        authorEmail: 'a@x.dev',
+        authorDateIso: '2026-01-01T00:00:00+00:00',
+        subject: 'root',
+        refs: [],
+        isHead: false,
+      },
+    ]);
+  });
+
+  it('parses a merge commit — two space-separated parents, in order', () => {
+    const record = [
+      'b'.repeat(40),
+      `${'c'.repeat(40)} ${'d'.repeat(40)}`,
+      'A U Thor',
+      'a@x.dev',
+      '2026-01-02T00:00:00+00:00',
+      '',
+      'merge feature into main',
+    ].join(FS);
+    const [commit] = parseCommitGraphLog(record + RS);
+    expect(commit?.parents).toEqual(['c'.repeat(40), 'd'.repeat(40)]);
+  });
+
+  it('parses every decoration shape: attached HEAD, tag + branch, remote-tracking branch, and bare detached HEAD', () => {
+    const records = [
+      ['a'.repeat(40), '', 'A', 'a@x.dev', '2026-01-01T00:00:00Z', 'HEAD -> main', 'x'],
+      ['b'.repeat(40), '', 'A', 'a@x.dev', '2026-01-01T00:00:00Z', 'tag: v1.0, main', 'x'],
+      ['c'.repeat(40), '', 'A', 'a@x.dev', '2026-01-01T00:00:00Z', 'origin/main', 'x'],
+      ['d'.repeat(40), '', 'A', 'a@x.dev', '2026-01-01T00:00:00Z', 'HEAD', 'x'],
+    ]
+      .map((fields) => fields.join(FS))
+      .join(RS + '\n');
+    const commits = parseCommitGraphLog(records + RS);
+    expect(commits).toHaveLength(4);
+    expect(commits[0]).toMatchObject({ isHead: true, refs: [{ name: 'main', kind: 'branch' }] });
+    expect(commits[1]).toMatchObject({
+      isHead: false,
+      refs: [
+        { name: 'v1.0', kind: 'tag' },
+        { name: 'main', kind: 'branch' },
+      ],
+    });
+    expect(commits[2]).toMatchObject({
+      isHead: false,
+      refs: [{ name: 'origin/main', kind: 'remoteBranch' }],
+    });
+    expect(commits[3]).toMatchObject({ isHead: true, refs: [] });
+  });
+
+  it('truncates a pathological long subject rather than growing the response unbounded', () => {
+    const longSubject = 'x'.repeat(10_000);
+    const record = [
+      'a'.repeat(40),
+      '',
+      'A',
+      'a@x.dev',
+      '2026-01-01T00:00:00Z',
+      '',
+      longSubject,
+    ].join(FS);
+    const [commit] = parseCommitGraphLog(record + RS);
+    expect(commit?.subject.length).toBe(500);
+  });
+});
+
+describe('computeCommitGraph against a real local git repo with an awkward shape (issue #231)', () => {
+  let worktreePath: string;
+  const target: ExecutionTarget = new LocalExecutionTarget();
+
+  async function execGit(args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd: worktreePath });
+    return stdout.trim();
+  }
+
+  // Builds: base (root) -> [main: main-work -> merge(v1.0) -> after-merge
+  // (HEAD, main's tip)] with feature merged in at `merge`, PLUS a
+  // divergent `wip` branch off `base` that is never merged anywhere —
+  // a merge commit, two diverged branches, real topology for every
+  // assertion below to check itself against (`git log` run independently
+  // in each test, never hand-derived expectations).
+  let baseSha: string;
+  let featureTipSha: string;
+  let mainWorkSha: string;
+  let mergeSha: string;
+  let afterMergeSha: string;
+  let wipTipSha: string;
+
+  beforeEach(async () => {
+    worktreePath = await mkdtemp(join(tmpdir(), 'loombox-git-graph-'));
+    await execGit(['init', '-q', '-b', 'main']);
+    await execGit(['config', 'user.email', 'test@loombox.dev']);
+    await execGit(['config', 'user.name', 'loombox test']);
+
+    await writeFile(join(worktreePath, 'f.txt'), 'base\n');
+    await execGit(['add', 'f.txt']);
+    await execGit(['commit', '-q', '-m', 'base']);
+    baseSha = await execGit(['rev-parse', 'HEAD']);
+
+    await execGit(['checkout', '-q', '-b', 'feature']);
+    await writeFile(join(worktreePath, 'g.txt'), 'feat\n');
+    await execGit(['add', 'g.txt']);
+    await execGit(['commit', '-q', '-m', 'feature work']);
+    featureTipSha = await execGit(['rev-parse', 'HEAD']);
+
+    await execGit(['checkout', '-q', 'main']);
+    await writeFile(join(worktreePath, 'h.txt'), 'mainwork\n');
+    await execGit(['add', 'h.txt']);
+    await execGit(['commit', '-q', '-m', 'main work']);
+    mainWorkSha = await execGit(['rev-parse', 'HEAD']);
+
+    await execGit(['merge', '--no-edit', '-q', '-m', 'merge feature into main', 'feature']);
+    mergeSha = await execGit(['rev-parse', 'HEAD']);
+    await execGit(['tag', 'v1.0']);
+
+    await writeFile(join(worktreePath, 'i.txt'), 'after merge\n');
+    await execGit(['add', 'i.txt']);
+    await execGit(['commit', '-q', '-m', 'after merge']);
+    afterMergeSha = await execGit(['rev-parse', 'HEAD']);
+
+    await execGit(['checkout', '-q', '-b', 'wip', baseSha]);
+    await writeFile(join(worktreePath, 'w.txt'), 'wip\n');
+    await execGit(['add', 'w.txt']);
+    await execGit(['commit', '-q', '-m', 'wip work']);
+    wipTipSha = await execGit(['rev-parse', 'HEAD']);
+
+    await execGit(['checkout', '-q', 'main']);
+  });
+
+  afterEach(async () => {
+    await rm(worktreePath, { recursive: true, force: true });
+  });
+
+  it("matches real `git log --topo-order` order for main's own history, exactly", async () => {
+    const realOrder = (await execGit(['log', '--topo-order', '--pretty=format:%H', 'main'])).split(
+      '\n',
+    );
+
+    const page = await computeCommitGraph(target, worktreePath, { ref: 'main', limit: 10 });
+
+    expect(page.commits.map((c) => c.sha)).toEqual(realOrder);
+    expect(page.nextOffset).toBeNull();
+  });
+
+  it('reports the merge commit with both real parents, main-side first (the branch checked out during the merge)', async () => {
+    const page = await computeCommitGraph(target, worktreePath, { ref: 'main', limit: 10 });
+    const merge = page.commits.find((c) => c.sha === mergeSha);
+    expect(merge?.parents).toEqual([mainWorkSha, featureTipSha]);
+  });
+
+  it('reports the root commit with no parents', async () => {
+    const page = await computeCommitGraph(target, worktreePath, { ref: 'main', limit: 10 });
+    const base = page.commits.find((c) => c.sha === baseSha);
+    expect(base?.parents).toEqual([]);
+  });
+
+  it("tags main's real current tip isHead and decorated with the main branch label", async () => {
+    const page = await computeCommitGraph(target, worktreePath, { ref: 'main', limit: 10 });
+    const tip = page.commits.find((c) => c.sha === afterMergeSha);
+    expect(tip?.isHead).toBe(true);
+    expect(tip?.refs).toContainEqual({ name: 'main', kind: 'branch' });
+  });
+
+  it('decorates the merge commit with the real tag, and the feature commit with the still-live feature branch label', async () => {
+    const page = await computeCommitGraph(target, worktreePath, { ref: 'main', limit: 10 });
+    const merge = page.commits.find((c) => c.sha === mergeSha);
+    expect(merge?.refs).toContainEqual({ name: 'v1.0', kind: 'tag' });
+    const featureCommit = page.commits.find((c) => c.sha === featureTipSha);
+    expect(featureCommit?.refs).toContainEqual({ name: 'feature', kind: 'branch' });
+  });
+
+  it('a diverged, never-merged branch (`wip`) shows only its own lineage off the real merge-base, never a commit unique to main', async () => {
+    const page = await computeCommitGraph(target, worktreePath, { ref: 'wip', limit: 10 });
+    expect(page.commits.map((c) => c.sha)).toEqual([wipTipSha, baseSha]);
+    const mainOnlyShas = [mainWorkSha, featureTipSha, mergeSha, afterMergeSha];
+    for (const sha of mainOnlyShas) {
+      expect(page.commits.some((c) => c.sha === sha)).toBe(false);
+    }
+  });
+
+  it('a detached HEAD reports isHead true on exactly that commit, with no branch decoration — real `git log --decorate`\u2019s own bare "HEAD" shape', async () => {
+    await execGit(['checkout', '-q', mainWorkSha]);
+
+    const page = await computeCommitGraph(target, worktreePath, {});
+    const detached = page.commits.find((c) => c.sha === mainWorkSha);
+    expect(detached?.isHead).toBe(true);
+    expect(detached?.refs).toEqual([]);
+    // Real HEAD is genuinely detached — this is not main's tip.
+    expect(mainWorkSha).not.toBe(afterMergeSha);
+  });
+
+  it('pages across the boundary without dropping or duplicating a commit — concatenated pages equal the real full log exactly', async () => {
+    const realOrder = (await execGit(['log', '--topo-order', '--pretty=format:%H', 'main'])).split(
+      '\n',
+    );
+    expect(realOrder).toHaveLength(5); // base, feature, main-work, merge, after-merge — sanity on the fixture itself
+
+    const collected: string[] = [];
+    let offset: number | undefined = 0;
+    for (let guard = 0; guard < 10 && offset !== undefined; guard++) {
+      const page = await computeCommitGraph(target, worktreePath, {
+        ref: 'main',
+        limit: 2,
+        offset,
+      });
+      collected.push(...page.commits.map((c) => c.sha));
+      offset = page.nextOffset ?? undefined;
+    }
+
+    expect(collected).toEqual(realOrder);
+  });
+
+  it('throws GitGraphError for a ref that names no real commit, distinct from an empty/unborn graph', async () => {
+    await expect(
+      computeCommitGraph(target, worktreePath, { ref: 'no-such-branch' }),
+    ).rejects.toThrow(GitGraphError);
+  });
+
+  it('throws GitGraphError for a worktree that is not a git repository at all', async () => {
+    const plainDir = await mkdtemp(join(tmpdir(), 'loombox-git-graph-not-a-repo-'));
+    try {
+      await expect(computeCommitGraph(target, plainDir, {})).rejects.toThrow(GitGraphError);
+    } finally {
+      await rm(plainDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('computeCommitGraph: unborn HEAD and limit clamping (issue #231)', () => {
+  it('resolves an empty graph — never an error — for ref: HEAD (default) on a repo with no commits yet', async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), 'loombox-git-graph-unborn-'));
+    try {
+      const target: ExecutionTarget = new LocalExecutionTarget();
+      await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: worktreePath });
+      await expect(computeCommitGraph(target, worktreePath, {})).resolves.toEqual({
+        commits: [],
+        nextOffset: null,
+      });
+    } finally {
+      await rm(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it(`clamps a caller-chosen limit far above GIT_GRAPH_MAX_LIMIT (${GIT_GRAPH_MAX_LIMIT}) down to it, never returning an unbounded page`, async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), 'loombox-git-graph-clamp-'));
+    try {
+      const target: ExecutionTarget = new LocalExecutionTarget();
+      await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: worktreePath });
+      await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], {
+        cwd: worktreePath,
+      });
+      await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: worktreePath });
+      const commitCount = GIT_GRAPH_MAX_LIMIT + 5;
+      for (let i = 0; i < commitCount; i++) {
+        await execFileAsync('git', ['commit', '-q', '--allow-empty', '-m', `commit ${i}`], {
+          cwd: worktreePath,
+        });
+      }
+
+      const page = await computeCommitGraph(target, worktreePath, { limit: 999_999 });
+      expect(page.commits).toHaveLength(GIT_GRAPH_MAX_LIMIT);
+      expect(page.nextOffset).toBe(GIT_GRAPH_MAX_LIMIT);
+    } finally {
+      await rm(worktreePath, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('clamps a caller-chosen limit of 0 (or negative) up to at least 1, never an empty page from a bad input', async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), 'loombox-git-graph-clamp-min-'));
+    try {
+      const target: ExecutionTarget = new LocalExecutionTarget();
+      await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: worktreePath });
+      await execFileAsync('git', ['config', 'user.email', 'test@loombox.dev'], {
+        cwd: worktreePath,
+      });
+      await execFileAsync('git', ['config', 'user.name', 'loombox test'], { cwd: worktreePath });
+      await execFileAsync('git', ['commit', '-q', '--allow-empty', '-m', 'x'], {
+        cwd: worktreePath,
+      });
+
+      const page = await computeCommitGraph(target, worktreePath, { limit: 0 });
+      expect(page.commits).toHaveLength(1);
+    } finally {
+      await rm(worktreePath, { recursive: true, force: true });
+    }
   });
 });

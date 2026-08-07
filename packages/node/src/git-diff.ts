@@ -1,14 +1,19 @@
 import { posix } from 'node:path';
 
-import type {
-  GitBranchSummaryV1,
-  GitDiffFileStatusV1,
-  GitDiffFileV1,
-  GitHunkActionRequestPayloadV1,
-  GitHunkFileV1,
-  GitHunkLineV1,
-  GitHunkV1,
-  GitStashSummaryV1,
+import {
+  GIT_GRAPH_DEFAULT_LIMIT,
+  GIT_GRAPH_MAX_LIMIT,
+  type GitBranchSummaryV1,
+  type GitDiffFileStatusV1,
+  type GitDiffFileV1,
+  type GitGraphCommitV1,
+  type GitGraphRefKindV1,
+  type GitGraphRefV1,
+  type GitHunkActionRequestPayloadV1,
+  type GitHunkFileV1,
+  type GitHunkLineV1,
+  type GitHunkV1,
+  type GitStashSummaryV1,
 } from '@loombox/protocol';
 import type { ExecutionTarget } from './target';
 
@@ -849,4 +854,172 @@ export async function stashDrop(
       `"git stash drop" failed: ${result.stderr.trim() || result.stdout.trim()}`,
     );
   }
+}
+
+/**
+ * Commit graph / branch tree (SPEC §7.6; issue #231) — `git-diff.ts`'s
+ * newest sibling family. Paging is decided and MEASURED against a real
+ * repo; the full reasoning and numbers live on `@loombox/protocol`'s
+ * `git-graph.ts` file doc comment (the wire pair this drives), not
+ * repeated here.
+ */
+
+/** Thrown only when a commit graph page genuinely could not be computed at all — `git` missing from the target, the worktree isn't a usable git repository, or `ref` names no real commit. Mirrors {@link GitBranchError}'s own "thrown only when genuinely unusable" contract; an unborn `HEAD` is NOT this — see {@link computeCommitGraph}'s own doc comment. */
+export class GitGraphError extends Error {}
+
+/** `git log`'s own field separator for this module's `--pretty=format:` (ASCII Unit Separator, `\x1f`) — chosen over a printable delimiter because an author name/email/subject can legally contain almost anything short of a literal newline; a control character no real commit metadata carries never collides. Same reasoning `parseStatusPorcelainZ` above already applies to `git status -z`'s NUL-separated output. */
+const GIT_LOG_FIELD_SEP = '\x1f';
+/** `git log`'s own record terminator for this module's format (ASCII Record Separator, `\x1e`) — appended after every commit's own fields, one level up from {@link GIT_LOG_FIELD_SEP}, so a commit boundary is never mistaken for content inside `%D`/`%s`. */
+const GIT_LOG_RECORD_SEP = '\x1e';
+/** Seven explicit fields, never `--graph`'s ASCII art (which is rendered text, not a data structure — this whole family's own reason to parse `--pretty=format:` instead): full sha, space-separated parent shas, author name, author email, author date (strict ISO 8601), decoration (branch/tag/HEAD), subject (first line only). */
+const GIT_LOG_FORMAT =
+  ['%H', '%P', '%an', '%ae', '%aI', '%D', '%s'].join(GIT_LOG_FIELD_SEP) + GIT_LOG_RECORD_SEP;
+
+/** Caps one commit's `subject` the same defensive way {@link truncate} caps a diff's text — a pathological single-line commit message should shrink one field, never blow up a whole page's response size. */
+const MAX_GIT_GRAPH_SUBJECT_CHARS = 500;
+
+/** `%D`'s own decoration string (e.g. `"HEAD -> main, origin/main, tag: v1.0"`, `"HEAD"` for a detached checkout, or `""` for an undecorated commit) parsed into {@link GitGraphCommitV1.refs} plus {@link GitGraphCommitV1.isHead} — real git's own three token shapes: a bare `HEAD` (detached, no branch), `HEAD -> <branch>` (attached — both the branch entry AND `isHead`), `tag: <name>`, and anything else (a local branch, or `<remote>/<branch>` when this walk's own `ref` reached a remote-tracking ref). */
+function parseGitLogDecoration(raw: string): { isHead: boolean; refs: GitGraphRefV1[] } {
+  if (!raw) return { isHead: false, refs: [] };
+  let isHead = false;
+  const refs: GitGraphRefV1[] = [];
+  for (const token of raw
+    .split(', ')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)) {
+    if (token === 'HEAD') {
+      isHead = true;
+    } else if (token.startsWith('HEAD -> ')) {
+      isHead = true;
+      refs.push({ name: token.slice('HEAD -> '.length), kind: 'branch' });
+    } else if (token.startsWith('tag: ')) {
+      refs.push({ name: token.slice('tag: '.length), kind: 'tag' });
+    } else {
+      const kind: GitGraphRefKindV1 = token.includes('/') ? 'remoteBranch' : 'branch';
+      refs.push({ name: token, kind });
+    }
+  }
+  return { isHead, refs };
+}
+
+/** Splits `git log --pretty=format:${GIT_LOG_FORMAT}`'s raw stdout back into {@link GitGraphCommitV1}s. `format:` (never `tformat:`) inserts one real `\n` between records but not after the last one — every record already ends in {@link GIT_LOG_RECORD_SEP} regardless, so records are split on that and any single leading `\n` left over from the previous record's own separator is stripped, never trimmed further (a subject can legitimately start/end with a space). Exported so `git-diff.test.ts` can also prove this against captured `git log` output directly, alongside the real-repo integration coverage. */
+export function parseCommitGraphLog(stdout: string): GitGraphCommitV1[] {
+  return stdout
+    .split(GIT_LOG_RECORD_SEP)
+    .map((record) => (record.startsWith('\n') ? record.slice(1) : record))
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const [sha, parentsRaw, authorName, authorEmail, authorDateIso, decoration, subjectRaw] =
+        record.split(GIT_LOG_FIELD_SEP);
+      const { isHead, refs } = parseGitLogDecoration(decoration ?? '');
+      const subject = subjectRaw ?? '';
+      return {
+        sha: sha ?? '',
+        parents: (parentsRaw ?? '').split(' ').filter((p) => p.length > 0),
+        authorName: authorName ?? '',
+        authorEmail: authorEmail ?? '',
+        authorDateIso: authorDateIso ?? '',
+        subject:
+          subject.length > MAX_GIT_GRAPH_SUBJECT_CHARS
+            ? subject.slice(0, MAX_GIT_GRAPH_SUBJECT_CHARS)
+            : subject,
+        refs,
+        isHead,
+      };
+    });
+}
+
+export interface CommitGraphOptions {
+  /** Which ref's own history to walk — defaults to `'HEAD'` ("the session's own repo, right now", `WorktreeDiffViewer`'s same default scope). Resolved via `git rev-parse --verify` before it ever reaches `git log`, both so a bad/renamed ref reports a clean {@link GitGraphError} instead of git's own raw stderr, and so `git log` itself only ever receives a real 40-hex sha — never a caller-controlled string that could otherwise be mistaken for a `git log` option. */
+  ref?: string;
+  /** Page size — clamped to `[1, GIT_GRAPH_MAX_LIMIT]`, defaulting to `GIT_GRAPH_DEFAULT_LIMIT` (both from `@loombox/protocol`'s `git-graph.ts`, the same constants that schema-validate a client's own request). */
+  limit?: number;
+  /** How many commits (from `ref`'s own tip) this page starts after — `0`/omitted for page one, else the previous page's own `nextOffset`. */
+  offset?: number;
+}
+
+export interface CommitGraphPage {
+  commits: GitGraphCommitV1[];
+  /** The `offset` that continues where this page left off, or `null` once a page comes back shorter than the requested limit — the walk reached `ref`'s own root. */
+  nextOffset: number | null;
+}
+
+/**
+ * One page of `options.ref`'s own commit history (`options.ref` defaults
+ * to `'HEAD'`), oldest-git-status-order — real `git log`'s own order,
+ * paged with plain `--skip`/`--max-count` (the "measured, not sha-cursor"
+ * design `@loombox/protocol`'s `git-graph.ts` file doc comment argues
+ * for). `[]`/`nextOffset: null` for `ref: 'HEAD'` on a repo with no
+ * commits yet (an unborn `HEAD`) — never an error, mirroring {@link
+ * listBranches}'s identical "nothing yet" contract; requesting any OTHER
+ * named ref that doesn't resolve IS a real {@link GitGraphError} (a typo,
+ * not "empty"). Throws {@link GitGraphError} only when the page genuinely
+ * could not be computed at all.
+ */
+export async function computeCommitGraph(
+  target: ExecutionTarget,
+  worktreePath: string,
+  options: CommitGraphOptions = {},
+): Promise<CommitGraphPage> {
+  const requestedRef = options.ref?.trim() || 'HEAD';
+  const limit = Math.min(
+    Math.max(Math.trunc(options.limit ?? GIT_GRAPH_DEFAULT_LIMIT), 1),
+    GIT_GRAPH_MAX_LIMIT,
+  );
+  const offset = Math.max(Math.trunc(options.offset ?? 0), 0);
+
+  let resolved;
+  try {
+    resolved = await target.exec('git', [
+      '-C',
+      worktreePath,
+      'rev-parse',
+      '--verify',
+      requestedRef,
+    ]);
+  } catch (error) {
+    throw new GitGraphError(
+      `git is not available on this target: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (resolved.exitCode !== 0) {
+    // An unborn HEAD (no commits yet, but a genuine git repository) is an
+    // empty graph, not an error — see this function's own doc comment;
+    // "not a git repository at all" (no `.git` here or in any parent) is
+    // a real, different failure and must not be swallowed the same way.
+    if (requestedRef === 'HEAD' && !/not a git repository/i.test(resolved.stderr)) {
+      return { commits: [], nextOffset: null };
+    }
+    if (/not a git repository/i.test(resolved.stderr)) {
+      throw new GitGraphError(`"git rev-parse" failed: ${resolved.stderr.trim()}`);
+    }
+    throw new GitGraphError(`no such ref "${requestedRef}"`);
+  }
+  const resolvedSha = resolved.stdout.trim();
+
+  let result;
+  try {
+    result = await target.exec('git', [
+      '-C',
+      worktreePath,
+      'log',
+      '--topo-order',
+      `--skip=${offset}`,
+      `--max-count=${limit + 1}`,
+      `--pretty=format:${GIT_LOG_FORMAT}`,
+      resolvedSha,
+    ]);
+  } catch (error) {
+    throw new GitGraphError(
+      `git is not available on this target: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (result.exitCode !== 0) {
+    throw new GitGraphError(`"git log" failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+
+  const rows = parseCommitGraphLog(result.stdout);
+  const hasMore = rows.length > limit;
+  const commits = hasMore ? rows.slice(0, limit) : rows;
+  return { commits, nextOffset: hasMore ? offset + limit : null };
 }

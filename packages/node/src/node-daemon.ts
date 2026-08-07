@@ -136,6 +136,9 @@ import {
   type GitCommitResponsePayloadV1,
   type GitDiffRequest,
   type GitDiffResponsePayloadV1,
+  type GitGraphRequest,
+  type GitGraphRequestPayloadV1,
+  type GitGraphResponsePayloadV1,
   type GithubConnectCancelRequest,
   type GithubConnectOutcome,
   type GithubConnectStartRequest,
@@ -261,6 +264,7 @@ import { AttachmentResolver, RelayBlobSource, type BlobSource } from './attachme
 import {
   abortMerge,
   applyGitHunkAction,
+  computeCommitGraph,
   computeHunkDiff,
   computeWorktreeDiff,
   createBranch,
@@ -268,6 +272,7 @@ import {
   GitBranchNotFoundError,
   GitDiffError,
   GitDirtyWorktreeError,
+  GitGraphError,
   GitHunkActionError,
   GitMergeConflictError,
   GitStashNotFoundError,
@@ -4054,6 +4059,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'git_diff_request':
         this.handleGitDiffRequest(message);
+        return;
+      case 'git_graph_request':
+        this.handleGitGraphRequest(message);
         return;
       case 'git_hunk_diff_request':
         this.handleGitHunkDiffRequest(message);
@@ -9752,6 +9760,91 @@ export class NodeDaemon extends EventEmitter {
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send({
       type: 'agent_instructions_set_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      requestId,
+      envelope,
+    });
+  }
+
+  /**
+   * Commit graph / branch tree (SPEC §7.6; issue #231) — kept as one
+   * contiguous block appended here, deliberately never interleaved
+   * among the sibling `git_*` handlers above (tonight's own lesson:
+   * near-identical `handleX`/sibling method families interleaved
+   * through this class make a three-way merge produce a broken
+   * hybrid).
+   *
+   * A client asked (via the relay) this node for one page of one
+   * session's commit graph — enveloped like `handleGitBranchCreateRequest`
+   * (this request carries a real caller-chosen filter: `ref`/`limit`/
+   * `offset`, unlike `git_diff_request`'s own no-envelope "asking
+   * carries no content" shape), same "no live bridge needed, always a
+   * reply, never a silent drop" contract as `handleGitDiffRequest`.
+   */
+  private handleGitGraphRequest(message: GitGraphRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitGraphRequest(message)
+      .then((payload) => this.computeCommitGraphForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitGraphResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_graph_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitGraphRequest(
+    message: GitGraphRequest,
+  ): Promise<GitGraphRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitGraphRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Runs `computeCommitGraph` (`./git-diff.ts`) against `routing`'s own
+   * `ExecutionTarget`, project-policy-scoped exactly like {@link
+   * computeGitDiffForBridge} above (both drive real `git` subcommands
+   * the same way). Never throws: a target that can't be resolved, or a
+   * `GitGraphError` from a genuinely uncomputable page, both become an
+   * `outcome: 'error'` payload instead, so {@link handleGitGraphRequest}
+   * always has a response to seal and send back.
+   */
+  private async computeCommitGraphForBridge(
+    routing: SessionRouting,
+    payload: GitGraphRequestPayloadV1,
+  ): Promise<GitGraphResponsePayloadV1> {
+    try {
+      const target = await this.getExecutionTarget(routing.targetId, routing.session.projectPath);
+      const page = await computeCommitGraph(target, routing.session.worktreePath, {
+        ref: payload.ref,
+        limit: payload.limit,
+        offset: payload.offset,
+      });
+      return { outcome: 'ok', commits: page.commits, nextOffset: page.nextOffset };
+    } catch (error) {
+      if (error instanceof GitGraphError) {
+        return { outcome: 'error', message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', message: detail };
+    }
+  }
+
+  private async sendGitGraphResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitGraphResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send({
+      type: 'git_graph_response',
       protocolVersion: PROTOCOL_V1,
       sessionId,
       requestId,
