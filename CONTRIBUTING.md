@@ -298,3 +298,13 @@ between the last two deploys is how to tell.)
 For fast iteration on the web app against real prod infra without cutting a
 release tag for every fix, see `scripts/deploy-web.sh`'s header — it's the
 unofficial, faster sibling of this pipeline, not a replacement for it.
+
+### Deploying to preview
+
+A second, fully isolated relay deployment for testing changes before they
+reach production — its own compose project, its own Postgres, its own
+GitHub OAuth App, sharing nothing with the pipeline above. Not part of the
+tag-triggered pipeline (it's a manual bring-up, not auto-deployed on every
+tag): see `docs/deploy-relay.md`'s "Preview environment" section for the
+full runbook, including the one step that's manual on purpose (GitHub
+OAuth Apps have no creation API).
