@@ -1,5 +1,6 @@
 import type { Readable } from 'svelte/store';
 import type { TerminalClientState } from './relay-client';
+import type { TerminalResyncMarker } from '@loombox/protocol';
 
 /**
  * Chunk-boundary-safe decoding for a display-only terminal stream (SPEC.md
@@ -31,6 +32,12 @@ export interface TerminalClient {
     sessionId: string,
     terminalId: string,
     listener: (chunk: Uint8Array) => void,
+  ): () => void;
+  /** Registers `listener` for a `terminal_resync_marker` (SPEC §7.16; issue #207) — the drop-oldest backpressure notice for a burst that overflowed this terminal's bounded queue. */
+  onTerminalResync(
+    sessionId: string,
+    terminalId: string,
+    listener: (marker: TerminalResyncMarker) => void,
   ): () => void;
 }
 

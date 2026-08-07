@@ -7501,8 +7501,14 @@ export class NodeDaemon extends EventEmitter {
    * {@link openTerminalForBridge} spawns it.
    */
   private wireTerminalSession(sessionId: string, session: TerminalSession): void {
+    // Assigned synchronously, in PTY emission order, right at the source —
+    // never inside `queueTerminalOutput`'s async encrypt/send chain, so a
+    // client (or the relay's `BoundedTerminalOutbox`, SPEC §7.16, issue
+    // #207) can always tell a real gap from ordinary delivery, independent
+    // of whatever timing the encrypt pipeline happens to run at.
+    let nextTerminalOutputSeq = 0;
     session.onData((chunk) => {
-      this.queueTerminalOutput(sessionId, session.terminalId, chunk);
+      this.queueTerminalOutput(sessionId, session.terminalId, nextTerminalOutputSeq++, chunk);
     });
     session.onExit((event) => {
       const closedByClient = this.clientInitiatedTerminalCloses.delete(session.terminalId);
@@ -7521,11 +7527,16 @@ export class NodeDaemon extends EventEmitter {
   }
 
   /** Chains this terminal's `terminal_output` sends (mirrors `forwardSessionEvent`'s `bridge.sendQueue`) so concurrent encrypts can never resolve, and so get sent to the relay, out of the order their chunks arrived in. */
-  private queueTerminalOutput(sessionId: string, terminalId: string, chunk: Uint8Array): void {
+  private queueTerminalOutput(
+    sessionId: string,
+    terminalId: string,
+    seq: number,
+    chunk: Uint8Array,
+  ): void {
     const queueKey = `${sessionId}:${terminalId}`;
     const previous = this.terminalSendQueues.get(queueKey) ?? Promise.resolve();
     const next = previous
-      .then(() => this.sendTerminalOutput(sessionId, terminalId, chunk))
+      .then(() => this.sendTerminalOutput(sessionId, terminalId, seq, chunk))
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
@@ -7538,6 +7549,7 @@ export class NodeDaemon extends EventEmitter {
   private async sendTerminalOutput(
     sessionId: string,
     terminalId: string,
+    seq: number,
     chunk: Uint8Array,
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
@@ -7548,6 +7560,7 @@ export class NodeDaemon extends EventEmitter {
       protocolVersion: PROTOCOL_V1,
       sessionId,
       terminalId,
+      seq,
       envelope,
     });
   }

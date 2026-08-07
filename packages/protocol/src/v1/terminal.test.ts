@@ -14,6 +14,7 @@ import {
   terminalOpened,
   terminalOutput,
   terminalResize,
+  terminalResyncMarker,
 } from './terminal';
 
 const envelope = {
@@ -170,16 +171,33 @@ describe('terminal wire messages carry only clear routing metadata plus the opaq
     );
   });
 
-  it('terminalOutput: same shape as terminalInput, distinct type', () => {
-    expect(
-      terminalOutput.safeParse({
-        type: 'terminal_output',
-        protocolVersion: 1,
-        sessionId: 'session-1',
-        terminalId: 'term-1',
-        envelope,
-      }).success,
-    ).toBe(true);
+  it('terminalOutput: terminalInput shape plus a node-assigned seq (issue #207: the terminal-scoped bounded-queue backpressure rule needs a per-terminal sequence to mark what a drop-oldest overflow skipped)', () => {
+    const message = {
+      type: 'terminal_output' as const,
+      protocolVersion: 1 as const,
+      sessionId: 'session-1',
+      terminalId: 'term-1',
+      seq: 0,
+      envelope,
+    };
+    expect(terminalOutput.safeParse(message).success).toBe(true);
+    expect(Object.keys(message).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'seq', 'sessionId', 'terminalId', 'type'].sort(),
+    );
+  });
+
+  it('rejects terminalOutput missing/negative/non-integer seq', () => {
+    const base = {
+      type: 'terminal_output' as const,
+      protocolVersion: 1 as const,
+      sessionId: 'session-1',
+      terminalId: 'term-1',
+      envelope,
+    };
+    expect(terminalOutput.safeParse(base).success).toBe(false);
+    expect(terminalOutput.safeParse({ ...base, seq: -1 }).success).toBe(false);
+    expect(terminalOutput.safeParse({ ...base, seq: 1.5 }).success).toBe(false);
+    expect(terminalOutput.safeParse({ ...base, seq: 0 }).success).toBe(true);
   });
 
   it('terminalData is a discriminated union of terminal_input/terminal_output', () => {
@@ -198,6 +216,7 @@ describe('terminal wire messages carry only clear routing metadata plus the opaq
         protocolVersion: 1,
         sessionId: 'session-1',
         terminalId: 'term-1',
+        seq: 0,
         envelope,
       }).success,
     ).toBe(true);
@@ -266,5 +285,39 @@ describe('terminal wire messages carry only clear routing metadata plus the opaq
       expect('cols' in result.data).toBe(false);
       expect('rows' in result.data).toBe(false);
     }
+  });
+});
+
+describe('terminalResyncMarker (SPEC §7.16; issue #207)', () => {
+  const valid = {
+    type: 'terminal_resync_marker' as const,
+    protocolVersion: 1 as const,
+    sessionId: 'session-1',
+    terminalId: 'term-1',
+    fromSeq: 5,
+    toSeq: 9,
+    dropped: true as const,
+  };
+
+  it('parses a valid terminalResyncMarker signaling a drop-oldest gap for one terminal', () => {
+    expect(terminalResyncMarker.parse(valid)).toEqual(valid);
+  });
+
+  it('rejects a missing terminalId — a bare sessionId is not enough to name which stream dropped', () => {
+    const { terminalId: _terminalId, ...rest } = valid;
+    expect(() => terminalResyncMarker.parse(rest)).toThrow();
+  });
+
+  it('rejects a missing dropped field', () => {
+    const { dropped: _dropped, ...rest } = valid;
+    expect(() => terminalResyncMarker.parse(rest)).toThrow();
+  });
+
+  it('rejects a non-integer toSeq', () => {
+    expect(() => terminalResyncMarker.parse({ ...valid, toSeq: 1.1 })).toThrow();
+  });
+
+  it('carries no envelope — a dropped seq range is relay-observed routing metadata, never session content', () => {
+    expect('envelope' in valid).toBe(false);
   });
 });

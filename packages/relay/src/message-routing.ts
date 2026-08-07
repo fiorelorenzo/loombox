@@ -137,6 +137,11 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   terminal_resize: { routed: 'client' },
   terminal_close: { routed: 'client' },
   terminal_closed: { routed: 'node' },
+  terminal_resync_marker: {
+    routed: 'not-routed',
+    reason:
+      'relay-constructed drop-oldest backpressure notice for the terminal_output fan-out (SPEC §7.16; issue #207), sent directly by `BoundedTerminalOutbox` — never legitimately arrives inbound.',
+  },
   presence: { routed: 'client' },
   resync_request: { routed: 'client' },
   resync_marker: {

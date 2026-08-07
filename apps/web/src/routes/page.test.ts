@@ -302,6 +302,7 @@ function createFakeClient(scenario: FakeClientScenario = {}) {
     sendTerminalInput: vi.fn(),
     resizeTerminal: vi.fn(),
     onTerminalOutput: vi.fn(() => () => {}),
+    onTerminalResync: vi.fn(() => () => {}),
     queuedPromptsFor: () => makeStore([]),
     staleNoticeFor: () => makeStore(undefined),
     fileTreeFor: () => makeStore(new Map()),

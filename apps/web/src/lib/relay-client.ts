@@ -227,6 +227,7 @@ import {
   type TerminalOpenResultPayloadV1,
   type TerminalOutput as TerminalOutputMessage,
   type TerminalResizePayloadV1,
+  type TerminalResyncMarker,
   type TestRunnerCommandsV1,
   type TestRunnerConfigDetected,
   type TestRunnerConfigResult,
@@ -1718,6 +1719,13 @@ export class RelayClient {
   >();
   /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalOutput}, fired with each decrypted `terminal_output` chunk as it arrives (never buffered here — see {@link TerminalClientState}'s doc comment for why). */
   private readonly terminalOutputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
+  /** Per-terminal promise chain backing {@link handleTerminalOutput}'s strict receipt-order decrypt+dispatch (issue #207) — mirrors {@link sessionUpdateQueue}. Concurrent async envelope-open calls have no ordering guarantee of their own; without this a burst could apply chunk N+1 to xterm.js before chunk N finishes decrypting, scrambling output under exactly the load this hardening targets. `terminal_resync_marker` (no decrypt needed) is chained through the SAME queue so a drop notice lands in its true position relative to the surrounding chunks, not ahead of ones still decrypting. */
+  private readonly terminalOutputQueues = new Map<string, Promise<void>>();
+  /** `${sessionId}:${terminalId}` -> every listener registered via {@link onTerminalResync}, fired with each `terminal_resync_marker` as it arrives (SPEC §7.16; issue #207). */
+  private readonly terminalResyncListeners = new Map<
+    string,
+    Set<(marker: TerminalResyncMarker) => void>
+  >();
   /** Backs {@link runsFor} (SPEC §7.15; issue #244) — one reactive `Map<runId, RunClientState>` per session, mirroring {@link terminals}. */
   private readonly runs = new Map<string, Writable<Map<string, RunClientState>>>();
   /** requestId -> the session/run an in-flight `run_start` this client itself sent is about — the run counterpart of {@link pendingTerminalOpens}. */
@@ -6572,6 +6580,9 @@ export class RelayClient {
       case 'terminal_closed':
         this.handleTerminalClosed(message);
         return;
+      case 'terminal_resync_marker':
+        this.handleTerminalResyncMarker(message);
+        return;
       case 'run_started':
         this.handleRunStarted(message);
         return;
@@ -7928,19 +7939,21 @@ export class RelayClient {
       });
   }
 
-  /** One chunk of an open terminal's output (SPEC §7.5) — decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`, never buffered by this class itself (see `TerminalClientState`'s doc comment). */
+  /** One chunk of an open terminal's output (SPEC §7.5) — chained through {@link terminalOutputQueues} (issue #207) so a burst can never apply chunks to xterm.js out of the order they actually arrived in, then decrypted and fanned out to every listener {@link onTerminalOutput} registered for this exact `sessionId`/`terminalId`. Never buffered by this class itself (see `TerminalClientState`'s doc comment). */
   private handleTerminalOutput(message: TerminalOutputMessage): void {
-    this.envelopeCrypto
-      .open<TerminalDataPayloadV1>(
-        'session',
-        message.sessionId,
-        message.sessionId,
-        message.envelope,
+    const queueKey = `${message.sessionId}:${message.terminalId}`;
+    const previous = this.terminalOutputQueues.get(queueKey) ?? Promise.resolve();
+    const next = previous
+      .then(() =>
+        this.envelopeCrypto.open<TerminalDataPayloadV1>(
+          'session',
+          message.sessionId,
+          message.sessionId,
+          message.envelope,
+        ),
       )
       .then((payload) => {
-        const listeners = this.terminalOutputListeners.get(
-          `${message.sessionId}:${message.terminalId}`,
-        );
+        const listeners = this.terminalOutputListeners.get(queueKey);
         if (!listeners) return;
         const bytes = base64ToBytes(payload.data);
         for (const listener of listeners) listener(bytes);
@@ -7950,6 +7963,19 @@ export class RelayClient {
           `RelayClient: failed to decrypt terminal_output for session ${message.sessionId} terminal ${message.terminalId}: ${errorMessage(error)}`,
         );
       });
+    this.terminalOutputQueues.set(queueKey, next);
+  }
+
+  /** A relay-constructed drop-oldest backpressure notice for this terminal's `terminal_output` stream (SPEC §7.16; issue #207) — no envelope (routing metadata, never content; mirrors `handleResyncMarker`). Chained through the SAME {@link terminalOutputQueues} per-terminal queue `handleTerminalOutput` uses, not dispatched immediately, so it lands in its true position relative to chunks still decrypting rather than jumping ahead of them. Fanned out to every listener {@link onTerminalResync} registered for this exact `sessionId`/`terminalId`. */
+  private handleTerminalResyncMarker(message: TerminalResyncMarker): void {
+    const queueKey = `${message.sessionId}:${message.terminalId}`;
+    const previous = this.terminalOutputQueues.get(queueKey) ?? Promise.resolve();
+    const next = previous.then(() => {
+      const listeners = this.terminalResyncListeners.get(queueKey);
+      if (!listeners) return;
+      for (const listener of listeners) listener(message);
+    });
+    this.terminalOutputQueues.set(queueKey, next);
   }
 
   /** A terminal closed — either this client asked to (SPEC §7.5's `closed_by_client`) or its shell exited on its own. */
@@ -9465,5 +9491,29 @@ export class RelayClient {
       this.reviewCommentStatuses.set(sessionId, store);
     }
     return store;
+  }
+
+  /**
+   * Registers `listener` to be called with each `terminal_resync_marker`
+   * this terminal receives (SPEC §7.16; issue #207) — the drop-oldest
+   * backpressure notice `BoundedTerminalOutbox` sends in place of chunks
+   * it dropped under a burst; `InteractiveTerminal.svelte` feeds these
+   * into a visible gap banner, mirroring {@link onTerminalOutput}'s own
+   * shape. Returns an unsubscribe function; call it (e.g. `onDestroy`)
+   * once the caller stops rendering this terminal.
+   */
+  onTerminalResync(
+    sessionId: string,
+    terminalId: string,
+    listener: (marker: TerminalResyncMarker) => void,
+  ): () => void {
+    const key = `${sessionId}:${terminalId}`;
+    let listeners = this.terminalResyncListeners.get(key);
+    if (!listeners) {
+      listeners = new Set();
+      this.terminalResyncListeners.set(key, listeners);
+    }
+    listeners.add(listener);
+    return () => listeners.delete(listener);
   }
 }

@@ -95,9 +95,11 @@ function fakeClient(): TerminalClient & {
   resizeCalls: Array<{ sessionId: string; terminalId: string; cols: number; rows: number }>;
   closeCalls: Array<{ sessionId: string; terminalId: string }>;
   emitOutput(sessionId: string, terminalId: string, chunk: Uint8Array): void;
+  emitResync(sessionId: string, terminalId: string): void;
 } {
   const terminalStore = writable<Map<string, TerminalClientState>>(new Map());
   const outputListeners = new Map<string, Set<(chunk: Uint8Array) => void>>();
+  const resyncListeners = new Map<string, Set<() => void>>();
   const openCalls: Array<{ sessionId: string; cols: number; rows: number }> = [];
   const inputCalls: Array<{ sessionId: string; terminalId: string; data: Uint8Array | string }> =
     [];
@@ -146,6 +148,20 @@ function fakeClient(): TerminalClient & {
       const listeners = outputListeners.get(`${sessionId}:${terminalId}`);
       if (listeners) for (const listener of listeners) listener(chunk);
     },
+    onTerminalResync(sessionId: string, terminalId: string, listener: () => void) {
+      const key = `${sessionId}:${terminalId}`;
+      let listeners = resyncListeners.get(key);
+      if (!listeners) {
+        listeners = new Set();
+        resyncListeners.set(key, listeners);
+      }
+      listeners.add(listener);
+      return () => listeners!.delete(listener);
+    },
+    emitResync(sessionId: string, terminalId: string) {
+      const listeners = resyncListeners.get(`${sessionId}:${terminalId}`);
+      if (listeners) for (const listener of listeners) listener();
+    },
     setStatus(terminalId: string, state: TerminalClientState) {
       terminalStore.update((map) => {
         const next = new Map(map);
@@ -160,6 +176,7 @@ function fakeClient(): TerminalClient & {
     resizeCalls: typeof resizeCalls;
     closeCalls: typeof closeCalls;
     emitOutput(sessionId: string, terminalId: string, chunk: Uint8Array): void;
+    emitResync(sessionId: string, terminalId: string): void;
     setStatus(terminalId: string, state: TerminalClientState): void;
   };
 }
@@ -272,6 +289,23 @@ describe('InteractiveTerminal (SPEC §7.5; issues #172/#173/#174) — data flow 
     );
 
     expect(instances[0]?.written).toEqual([chunk]);
+  });
+
+  it('terminal_resync_marker -> a visible gap banner is written to the xterm.js instance (SPEC §7.16; issue #207)', () => {
+    const client = fakeClient();
+    render(InteractiveTerminal, { props: { sessionId: 'sess-1', client } });
+
+    let openedTerminalId = '';
+    client.terminalStore.subscribe((map) => {
+      const [id] = map.keys();
+      if (id) openedTerminalId = id;
+    })();
+
+    client.emitResync('sess-1', openedTerminalId);
+
+    expect(instances[0]?.written).toHaveLength(1);
+    const banner = String(instances[0]?.written[0]);
+    expect(banner).toContain('dropped');
   });
 
   it('keystroke -> encrypted send: xterm.js onData fires sendTerminalInput with the typed data', () => {
