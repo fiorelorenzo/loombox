@@ -72,6 +72,47 @@ describe('TrackerModeStore', () => {
     expect(reopened.get('/proj-never-touched')).toBeUndefined();
   });
 
+  describe('list()', () => {
+    it('returns nothing against a fresh state dir', () => {
+      const store = new TrackerModeStore({ stateDir });
+      expect(store.list()).toEqual([]);
+    });
+
+    it('returns every saved project paired with its mode, including native ones', () => {
+      const store = new TrackerModeStore({ stateDir });
+      store.set('/proj-a', githubMode);
+      store.set('/proj-b', jiraMode);
+      store.set('/proj-c', nativeMode);
+      expect(
+        [...store.list()].sort((a, b) => a.projectPath.localeCompare(b.projectPath)),
+      ).toEqual([
+        { projectPath: '/proj-a', mode: githubMode },
+        { projectPath: '/proj-b', mode: jiraMode },
+        { projectPath: '/proj-c', mode: nativeMode },
+      ]);
+    });
+
+    it('reflects the latest overwrite, not a stale earlier mode', () => {
+      const store = new TrackerModeStore({ stateDir });
+      store.set('/proj-a', githubMode);
+      store.set('/proj-a', nativeMode);
+      expect(store.list()).toEqual([{ projectPath: '/proj-a', mode: nativeMode }]);
+    });
+
+    it('silently omits a project whose on-disk value no longer validates, same degrade-to-absent discipline as get()', async () => {
+      const filePath = path.join(stateDir, 'tracker-modes.json');
+      await writeFile(
+        filePath,
+        JSON.stringify({
+          v: 1,
+          projects: { '/proj-good': nativeMode, '/proj-bad': { kind: 'not-a-real-kind' } },
+        }),
+      );
+      const store = new TrackerModeStore({ stateDir });
+      expect(store.list()).toEqual([{ projectPath: '/proj-good', mode: nativeMode }]);
+    });
+  });
+
   describe('on-disk validation', () => {
     it('throws TrackerModeStoreError for structurally invalid JSON', async () => {
       await writeFile(path.join(stateDir, 'tracker-modes.json'), '{not json');
