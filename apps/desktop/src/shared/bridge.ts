@@ -18,6 +18,7 @@ export const BRIDGE_CHANNELS = {
   listSshHostCandidates: 'loombox:listSshHostCandidates',
   provisionTarget: 'loombox:provisionTarget',
   provisionLocalNode: 'loombox:provisionLocalNode',
+  uninstallLocalNode: 'loombox:uninstallLocalNode',
   spawnLocalNode: 'loombox:spawnLocalNode',
   stopLocalNode: 'loombox:stopLocalNode',
   status: 'loombox:status',
@@ -193,6 +194,37 @@ export interface StopLocalNodeResult {
 }
 
 // ---------------------------------------------------------------------------
+// uninstallLocalNode — drives `@loombox/node`'s `uninstallNode()` (issue
+// #814) for real (see `../main/provisioning/uninstall-local-node-bridge
+// .ts`), the counterpart to `provisionLocalNode` above: revokes this
+// machine's resident node on the relay (decision E1-3, "in both modes"),
+// then tears down the local install through the same platform
+// `SupervisorBackend` `provisionLocalNode` used to set it up. Reads this
+// node's own already-on-disk identity + device token itself (main-process
+// side) — unlike `provisionLocalNode`, this never needs a renderer-supplied
+// auth token or AMK, since it authenticates as the resident node it is
+// tearing down, not as the operator's own account session.
+// ---------------------------------------------------------------------------
+
+export interface UninstallLocalNodeRequest {
+  relayUrl: string;
+  /** This node's own id, exactly as shown in its `TargetStatusView` row (`TargetListEntry.nodeId`). */
+  nodeId: string;
+  /** Defaults to `nodeId` on the main-process side, mirroring `ProvisionLocalNodeRequest.deviceId`'s own convention. */
+  deviceId?: string;
+  /** Decision E1-3's explicit opt-out; the device is revoked on the relay either way. */
+  keepData?: boolean;
+}
+
+export interface UninstallLocalNodeResult {
+  /** Whether the local teardown (unit, versioned bundle, and — unless `keepData` — the state dir + keyring entry) succeeded. Independent of `deviceRevoked`: see that field's own doc comment. */
+  ok: boolean;
+  /** Whether the device was confirmed revoked on the relay — `false` doesn't block `ok`, but the caller should say so plainly (an uninstalled-but-not-revoked node is still pairable). */
+  deviceRevoked: boolean;
+  message: string;
+}
+
+// ---------------------------------------------------------------------------
 // status — a snapshot the renderer polls (or requests on demand) to render
 // the tray/menubar's own state without duplicating it.
 // ---------------------------------------------------------------------------
@@ -216,6 +248,7 @@ export interface LoomboxBridgeApi {
   listSshHostCandidates(): Promise<ListSshHostCandidatesResult>;
   provisionTarget(request: ProvisionTargetRequest): Promise<ProvisionTargetResult>;
   provisionLocalNode(request: ProvisionLocalNodeRequest): Promise<ProvisionLocalNodeResult>;
+  uninstallLocalNode(request: UninstallLocalNodeRequest): Promise<UninstallLocalNodeResult>;
   spawnLocalNode(request?: SpawnLocalNodeRequest): Promise<SpawnLocalNodeResult>;
   stopLocalNode(): Promise<StopLocalNodeResult>;
   status(): Promise<BridgeStatus>;

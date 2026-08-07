@@ -120,6 +120,11 @@
     provisionMacLocalNode,
     type ProvisionLocalNodeOutcome,
   } from '$lib/local-node-provision';
+  import {
+    isLocalNodeUninstallAvailable,
+    uninstallLocalNode,
+    type UninstallLocalNodeOutcome,
+  } from '$lib/local-node-uninstall';
   import AddProjectDialog from '$lib/components/AddProjectDialog.svelte';
   import ArchiveSessionDialog from '$lib/components/ArchiveSessionDialog.svelte';
   import AttachmentBar from '$lib/components/AttachmentBar.svelte';
@@ -1876,6 +1881,24 @@
     });
   }
 
+  /**
+   * `TargetStatusView`'s `onUninstallLocalNode` (issue #814): runs the real
+   * `uninstallLocalNode()` IPC round trip via `$lib/local-node-uninstall`.
+   * Unlike `handleProvisionMacLocalNode`, needs no unlocked AMK/auth token
+   * — the main process authenticates as the node itself, from its own
+   * on-disk identity (see that module's own doc comment).
+   */
+  async function handleUninstallLocalNode(request: {
+    nodeId: string;
+    keepData?: boolean;
+  }): Promise<UninstallLocalNodeOutcome> {
+    return uninstallLocalNode({
+      relayUrl,
+      nodeId: request.nodeId,
+      keepData: request.keepData,
+    });
+  }
+
   /** The "Add target" zero-touch provision-and-pair wizard's entry point (SPEC §7.23; issue #408), wired to the Nodes page's own two setup actions (design spec v4 §3.1: "Add target" / "Connect a node" both move here from the old sidebar split menu). This codebase has exactly one such flow today: `AddTargetWizard` already covers both "pair a new node" and "provision its first target" in one guided run (SPEC §7.23's steps 1-3), so both actions open the same wizard rather than a second, not-yet-built one. */
   function openAddTargetWizard(): void {
     addTargetOpen = true;
@@ -2614,6 +2637,9 @@
   /** Whether `AddProjectDialog`'s zero-target empty state should offer "Set up a node on this Mac" (issue #654) — the macOS-local backend is the only one wired today (#658/#659, Linux/Windows local, are separate not-yet-started issues), so this gates on {@link macPlatformActive} too, not just the desktop shell's IPC bridge being present. Same "computed once, never reactive" reasoning as `desktopShellActive`/`macPlatformActive` above. */
   const macLocalNodeProvisioningAvailable =
     macPlatformActive && isMacLocalNodeProvisioningAvailable();
+
+  /** Same gate as `macLocalNodeProvisioningAvailable`, mirrored for uninstall (issue #814) — `../desktop/src/main/provisioning/uninstall-local-node-bridge.ts` resolves the identical macOS-only launchd backend today. */
+  const localNodeUninstallAvailable = macPlatformActive && isLocalNodeUninstallAvailable();
 
   /** SPEC §7.3 "Keyboard & command palette" (issue #132) — the live snapshot of state every registered action's `isAvailable` predicate (and, since #759, `shortcutFor`) reads (`$lib/action-registry.ts`'s own doc comment has the full rule; issue #758). `turnIsActive` already exists above for the composer's Send/Stop swap, reused here rather than re-deriving `transcript?.turnActive`. */
   const actionContext = $derived<ActionContext>({
@@ -4478,6 +4504,9 @@
                   focusTarget={targetStatusFocus}
                   onRefresh={refreshTargetStatus}
                   {relayBuildIdentity}
+                  onUninstallLocalNode={localNodeUninstallAvailable
+                    ? handleUninstallLocalNode
+                    : undefined}
                   onAddTarget={openAddTargetWizard}
                   onConnectNode={openAddTargetWizard}
                   {client}

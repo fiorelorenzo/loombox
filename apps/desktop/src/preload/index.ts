@@ -12,6 +12,8 @@ import {
   type SpawnLocalNodeRequest,
   type SpawnLocalNodeResult,
   type StopLocalNodeResult,
+  type UninstallLocalNodeRequest,
+  type UninstallLocalNodeResult,
 } from '../shared/bridge';
 
 /**
@@ -33,6 +35,8 @@ const api: LoomboxBridgeApi = {
     ipcRenderer.invoke(BRIDGE_CHANNELS.provisionTarget, request),
   provisionLocalNode: (request: ProvisionLocalNodeRequest): Promise<ProvisionLocalNodeResult> =>
     ipcRenderer.invoke(BRIDGE_CHANNELS.provisionLocalNode, request),
+  uninstallLocalNode: (request: UninstallLocalNodeRequest): Promise<UninstallLocalNodeResult> =>
+    ipcRenderer.invoke(BRIDGE_CHANNELS.uninstallLocalNode, request),
   spawnLocalNode: (request?: SpawnLocalNodeRequest): Promise<SpawnLocalNodeResult> =>
     ipcRenderer.invoke(BRIDGE_CHANNELS.spawnLocalNode, request),
   stopLocalNode: (): Promise<StopLocalNodeResult> =>

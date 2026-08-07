@@ -44,7 +44,7 @@ afterEach(async () => {
 });
 
 describe('decommissionSshTarget (issue #90)', () => {
-  it('stops and disables an installed unit, revokes the target from the trusted set, and declines file cleanup by default', async () => {
+  it('disables and removes an installed unit and its versioned bundle, revokes the target from the trusted set, and keeps the resident node state dir by default', async () => {
     const calls: string[] = [];
     const transport = new FakeTransport({
       onExec: (command) => {
@@ -53,8 +53,11 @@ describe('decommissionSshTarget (issue #90)', () => {
         if (command.includes('command -v systemctl')) {
           return { stdout: 'present\n', stderr: '', exitCode: 0 };
         }
-        if (command.startsWith('printf %s "$HOME')) {
+        if (command.startsWith('printf %s "$HOME/.config/systemd/user')) {
           return { stdout: '/home/loombox/.config/systemd/user\n', stderr: '', exitCode: 0 };
+        }
+        if (command.startsWith('printf %s "$HOME/.loombox')) {
+          return { stdout: '/home/loombox/.loombox\n', stderr: '', exitCode: 0 };
         }
         if (command.startsWith('cat ')) {
           return { stdout: '[Unit]\nDescription=x\n', stderr: '', exitCode: 0 };
@@ -72,10 +75,16 @@ describe('decommissionSshTarget (issue #90)', () => {
     expect(result.deviceKeyRevoked).toBe(true);
     expect(result.filesRemoved).toBe(false);
 
-    expect(calls).toContain(`systemctl --user stop '${DEFAULT_UNIT_NAME}'`);
-    expect(calls).toContain(`systemctl --user disable '${DEFAULT_UNIT_NAME}'`);
-    // Declined cleanup: no rm command was ever issued.
-    expect(calls.some((c) => c.startsWith('rm '))).toBe(false);
+    expect(calls).toContain(`systemctl --user disable --now '${DEFAULT_UNIT_NAME}' 2>/dev/null`);
+    // The unit file and versioned bundle are gone even on the default
+    // (keep-data) path now — moving onto the seam means an uninstalled
+    // unit is never left disabled-but-present (decision E1-3).
+    expect(calls).toContain(`rm -f '/home/loombox/.config/systemd/user/${DEFAULT_UNIT_NAME}'`);
+    expect(calls).toContain(
+      `rm -f '/home/loombox/.loombox/current' && rm -rf '/home/loombox/.loombox/versions'`,
+    );
+    // ...but the resident node's own state dir is never touched by default.
+    expect(calls.some((c) => c.includes('.loombox/node'))).toBe(false);
 
     // The target no longer appears as usable — it's gone from the trusted set.
     expect(store.get(CANDIDATE.id)).toBeUndefined();
@@ -110,7 +119,7 @@ describe('decommissionSshTarget (issue #90)', () => {
     expect(store.get(CANDIDATE.id)).toBeUndefined();
   });
 
-  it('accepting file cleanup removes the installed supervisor files and unit file', async () => {
+  it('accepting file cleanup also removes the versioned bundle and the resident node state dir', async () => {
     const calls: string[] = [];
     const transport = new FakeTransport({
       onExec: (command) => {
@@ -122,8 +131,11 @@ describe('decommissionSshTarget (issue #90)', () => {
         if (command.startsWith('printf %s "$HOME/.config/systemd/user')) {
           return { stdout: '/home/loombox/.config/systemd/user\n', stderr: '', exitCode: 0 };
         }
-        if (command.startsWith('printf %s "$HOME/.loombox/supervisor')) {
-          return { stdout: '/home/loombox/.loombox/supervisor\n', stderr: '', exitCode: 0 };
+        if (command.startsWith('printf %s "$HOME/.loombox/node')) {
+          return { stdout: '/home/loombox/.loombox/node\n', stderr: '', exitCode: 0 };
+        }
+        if (command.startsWith('printf %s "$HOME/.loombox')) {
+          return { stdout: '/home/loombox/.loombox\n', stderr: '', exitCode: 0 };
         }
         if (command.startsWith('cat ')) {
           return { stdout: '[Unit]\nDescription=x\n', stderr: '', exitCode: 0 };
@@ -139,8 +151,44 @@ describe('decommissionSshTarget (issue #90)', () => {
     });
 
     expect(result.filesRemoved).toBe(true);
-    expect(calls).toContain(`rm -rf '/home/loombox/.loombox/supervisor'`);
     expect(calls).toContain(`rm -f '/home/loombox/.config/systemd/user/${DEFAULT_UNIT_NAME}'`);
+    expect(calls).toContain(
+      `rm -f '/home/loombox/.loombox/current' && rm -rf '/home/loombox/.loombox/versions'`,
+    );
+    expect(calls).toContain(`rm -rf '/home/loombox/.loombox/node'`);
+  });
+
+  it('accepting file cleanup also removes an explicitly given legacy pre-#817 staged directory', async () => {
+    const calls: string[] = [];
+    const transport = new FakeTransport({
+      onExec: (command) => {
+        calls.push(command);
+        if (command.includes('uname')) return { stdout: 'Linux x86_64', stderr: '', exitCode: 0 };
+        if (command.includes('command -v systemctl')) {
+          return { stdout: 'present\n', stderr: '', exitCode: 0 };
+        }
+        if (command.startsWith('printf %s "$HOME/.config/systemd/user')) {
+          return { stdout: '/home/loombox/.config/systemd/user\n', stderr: '', exitCode: 0 };
+        }
+        if (command.startsWith('printf %s "$HOME/.loombox')) {
+          return { stdout: '/home/loombox/.loombox\n', stderr: '', exitCode: 0 };
+        }
+        if (command.startsWith('cat ')) {
+          return { stdout: '[Unit]\nDescription=x\n', stderr: '', exitCode: 0 };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    });
+    await transport.connect();
+
+    const result = await decommissionSshTarget(transport, store, {
+      targetId: CANDIDATE.id,
+      legacySupervisorBaseDir: '/home/loombox/.loombox/supervisor',
+      removeFiles: true,
+    });
+
+    expect(result.filesRemoved).toBe(true);
+    expect(calls).toContain(`rm -rf '/home/loombox/.loombox/supervisor'`);
   });
 });
 
@@ -185,8 +233,10 @@ describe('decommissionSshTarget (real file cleanup, issue #90)', () => {
       // Decline: nothing is removed.
       const declined = await decommissionSshTarget(transport, store, {
         targetId: CANDIDATE.id,
-        supervisorBaseDir,
+        legacySupervisorBaseDir: supervisorBaseDir,
         unitDir,
+        baseDir: join(homeDir, '.loombox'),
+        stateDir: join(homeDir, '.loombox', 'node'),
         removeFiles: false,
       });
       expect(declined.filesRemoved).toBe(false);
@@ -201,8 +251,10 @@ describe('decommissionSshTarget (real file cleanup, issue #90)', () => {
       // Accept: both the supervisor directory and the unit file are really gone.
       const accepted = await decommissionSshTarget(transport, store, {
         targetId: CANDIDATE.id,
-        supervisorBaseDir,
+        legacySupervisorBaseDir: supervisorBaseDir,
         unitDir,
+        baseDir: join(homeDir, '.loombox'),
+        stateDir: join(homeDir, '.loombox', 'node'),
         removeFiles: true,
       });
       expect(accepted.filesRemoved).toBe(true);
@@ -270,7 +322,7 @@ describe.skipIf(!dockerAvailable)(
 
       const result = await decommissionSshTarget(transport, store, {
         targetId: CANDIDATE.id,
-        supervisorBaseDir: provisionPlan.baseDir,
+        legacySupervisorBaseDir: provisionPlan.baseDir,
         removeFiles: true,
       });
 

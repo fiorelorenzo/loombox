@@ -283,6 +283,24 @@ export class NodeIdentityStore {
       publicKeyBase64: Buffer.from(publicKeyRaw).toString('base64'),
     };
   }
+
+  /**
+   * Deletes this identity's OS-native keyring cache entry, if any (issue
+   * #814's uninstall: "no keyring entry", verified by looking at
+   * `/proc/keys`/the platform equivalent — a plain `rm -rf` of
+   * {@link stateDir} never reaches this, since the OS-native keyring is a
+   * separate store, not a file under it). Never touches the durable file
+   * itself — a caller that also wants that gone removes {@link stateDir}
+   * separately (`SupervisorBackend.uninstall`'s own `!keepData` branch).
+   * No-op, never throws, if no OS backend is available or nothing is
+   * stored under this entry (mirrors `KeyringBackend.delete`'s own
+   * contract) — deliberately safe to call unconditionally.
+   */
+  async forgetOsKeyringEntry(): Promise<void> {
+    const osBackend = await this.getOsBackend();
+    if (!osBackend) return;
+    await osBackend.delete(IDENTITY_KEYRING_SERVICE, this.keyringAccount);
+  }
 }
 
 /** A distinct sentinel (rather than `undefined`) for "the OS backend probe hasn't run yet" — `undefined` itself is the valid "probed, and none available" result. */

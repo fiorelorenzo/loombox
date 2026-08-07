@@ -162,6 +162,20 @@
      * row.
      */
     concurrency?: Map<string, TargetConcurrencySnapshot>;
+    /**
+     * Uninstalls the local resident node behind a `target.kind === 'local'`
+     * row (issue #814, decision E1-3) — a desktop-only IPC action, never a
+     * relay-wire one (`$lib/local-node-uninstall.ts`'s own doc comment
+     * explains why this can't go through `client`: it authenticates as the
+     * node being torn down, using its own on-disk identity, not this
+     * account session). `undefined` outside the desktop shell — that row's
+     * Uninstall action simply doesn't render, mirroring `AddProjectDialog`'s
+     * own `onProvisionLocalNode` gate.
+     */
+    onUninstallLocalNode?: (request: {
+      nodeId: string;
+      keepData?: boolean;
+    }) => Promise<{ ok: boolean; deviceRevoked: boolean; message: string }>;
   }
 
   const {
@@ -173,12 +187,17 @@
     client,
     relayBuildIdentity,
     concurrency = new Map<string, TargetConcurrencySnapshot>(),
+    onUninstallLocalNode,
   }: Props = $props();
 
   /** In-flight Update/Remove calls, keyed by {@link rowKey} — disables that row's own buttons and drives `Button`'s `loading` state without a page-wide spinner. `SvelteSet` (not a plain `Set` wrapped in `$state`, mirrors `FileTreePanel.svelte`'s own `expandedPaths`) so `.add`/`.delete` are reactive in place, no reassignment needed. */
   const busyKeys = new SvelteSet<string>();
   /** Rows currently showing Remove's "are you sure" confirm bar instead of its plain button, keyed by {@link rowKey}. */
   const confirmingRemove = new SvelteSet<string>();
+  /** Rows currently showing Uninstall's "are you sure" confirm bar (issue #814) instead of its plain button, keyed by {@link rowKey} — same pattern as {@link confirmingRemove}, separate set since a local row's Uninstall and an ssh row's Remove never coexist on the same key but keeping them distinct avoids any future ambiguity. */
+  const confirmingUninstall = new SvelteSet<string>();
+  /** Per-row keep-data checkbox state for the Uninstall confirm bar (decision E1-3's explicit opt-out) — unchecked (remove everything) by default, keyed by {@link rowKey}. */
+  let keepDataChoices = $state<Record<string, boolean>>({});
   /** The last Update/Remove outcome message per row, keyed by {@link rowKey} — cleared implicitly the next time either action runs on that row. */
   let actionMessages = $state<Record<string, string>>({});
   let editWizardOpen = $state(false);
@@ -432,6 +451,42 @@
     } finally {
       busyKeys.delete(key);
       confirmingRemove.delete(key);
+    }
+  }
+
+  function startUninstall(target: TargetListEntry): void {
+    keepDataChoices = { ...keepDataChoices, [rowKey(target)]: false };
+    confirmingUninstall.add(rowKey(target));
+  }
+
+  function cancelUninstall(target: TargetListEntry): void {
+    confirmingUninstall.delete(rowKey(target));
+  }
+
+  function toggleKeepData(target: TargetListEntry, checked: boolean): void {
+    keepDataChoices = { ...keepDataChoices, [rowKey(target)]: checked };
+  }
+
+  /** Issue #814, decision E1-3: revokes this node's device on the relay and tears down its local install (see `onUninstallLocalNode`'s own doc comment for exactly what). `keepDataChoices[key]` defaults to `false` (nothing unset yet means the confirm bar was never opened, which never reaches here) — the explicit opt-out `startUninstall` initializes on open. */
+  async function confirmUninstall(target: TargetListEntry): Promise<void> {
+    if (!onUninstallLocalNode) return;
+    const key = rowKey(target);
+    busyKeys.add(key);
+    try {
+      const response = await onUninstallLocalNode({
+        nodeId: target.nodeId,
+        keepData: keepDataChoices[key] ?? false,
+      });
+      actionMessages = { ...actionMessages, [key]: response.message };
+      if (response.ok) onRefresh();
+    } catch (error) {
+      actionMessages = {
+        ...actionMessages,
+        [key]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      busyKeys.delete(key);
+      confirmingUninstall.delete(key);
     }
   }
 
@@ -731,6 +786,64 @@
                           dataTestId={`target-action-remove-${key}`}
                         >
                           Remove
+                        </Button>
+                      {/if}
+                    {/if}
+                    {#if target.kind === 'local' && onUninstallLocalNode}
+                      {#if confirmingUninstall.has(key)}
+                        <span
+                          class="uninstall-confirm"
+                          data-testid={`target-action-uninstall-confirmbar-${key}`}
+                        >
+                          <p
+                            class="uninstall-warning"
+                            data-testid={`target-action-uninstall-warning-${key}`}
+                          >
+                            Uninstalling removes this node completely. Unless you keep your data,
+                            this also permanently deletes every session transcript and project
+                            secret stored on this machine — they exist in clear only here; the relay
+                            only ever holds ciphertext it cannot read, so once removed they cannot
+                            be recovered. Either way, this device is revoked on your account and
+                            will not be able to reconnect.
+                          </p>
+                          <label class="uninstall-keep-data">
+                            <input
+                              type="checkbox"
+                              checked={keepDataChoices[key] ?? false}
+                              onchange={(event) =>
+                                toggleKeepData(target, event.currentTarget.checked)}
+                              data-testid={`target-action-uninstall-keepdata-${key}`}
+                            />
+                            Keep session history and project secrets on this machine
+                          </label>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busyKeys.has(key)}
+                            onclick={() => cancelUninstall(target)}
+                            dataTestId={`target-action-uninstall-cancel-${key}`}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            loading={busyKeys.has(key)}
+                            onclick={() => confirmUninstall(target)}
+                            dataTestId={`target-action-uninstall-confirm-${key}`}
+                          >
+                            Uninstall
+                          </Button>
+                        </span>
+                      {:else}
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={busyKeys.has(key)}
+                          onclick={() => startUninstall(target)}
+                          dataTestId={`target-action-uninstall-${key}`}
+                        >
+                          Uninstall
                         </Button>
                       {/if}
                     {/if}
@@ -1037,6 +1150,27 @@
     gap: var(--space-xs);
     font-size: var(--text-small-size);
     color: var(--color-text-secondary);
+  }
+
+  .uninstall-confirm {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    width: 100%;
+    font-size: var(--text-small-size);
+    color: var(--color-text-secondary);
+  }
+
+  .uninstall-warning {
+    margin: 0;
+    color: var(--color-danger);
+  }
+
+  .uninstall-keep-data {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
   }
 
   .action-message {
