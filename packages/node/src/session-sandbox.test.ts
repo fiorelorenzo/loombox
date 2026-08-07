@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { SandboxUnavailableError, type SandboxCapability } from './linux-sandbox';
 import { resolveSessionSandbox } from './session-sandbox';
@@ -19,6 +19,24 @@ import { resolveSessionSandbox } from './session-sandbox';
  */
 const bwrapUsable = spawnSync('bwrap', ['--version']).status === 0;
 
+/**
+ * A PATH entry that really does hold an executable named `bwrap`, created per
+ * run rather than assumed. Every assertion below that injects its own `probe`
+ * needs the resolver to GET as far as calling it, and the resolver only does
+ * that once it finds a `bwrap` on the PATH it was handed. Pointing those at
+ * `/usr/bin` worked on this dev box and silently short-circuited on a
+ * GitHub-hosted runner, where the real binary is absent: the probe was never
+ * called and the assertion failed for a reason that had nothing to do with
+ * the code under test.
+ */
+let fakeBwrapPathEnv: string;
+beforeAll(async () => {
+  fakeBwrapPathEnv = await mkdtemp(join(tmpdir(), 'loombox-fake-bwrap-'));
+  await writeFile(join(fakeBwrapPathEnv, 'bwrap'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+});
+afterAll(async () => {
+  await rm(fakeBwrapPathEnv, { recursive: true, force: true });
+});
 describe('resolveSessionSandbox', () => {
   describe('platform split', () => {
     it('a non-Linux host is not required to sandbox — returns required: false, no wrapSpawnConfig, and never even looks at capability', () => {
@@ -41,7 +59,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
       expect(resolution.required).toBe(true);
       expect(resolution.capability).toEqual(capability);
@@ -84,7 +102,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
 
       const wrapped = wrapSpawnConfig!({
@@ -106,7 +124,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
       const config = { command: 'omp', args: ['acp'] };
       expect(wrapSpawnConfig!(config)).toEqual(wrapSpawnConfig!(config));
@@ -118,7 +136,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
         extraReadOnlyMounts: ['/opt/mcp-server'],
         extraReadWriteMounts: ['/home/dev/.npm'],
       });
@@ -273,7 +291,7 @@ describe('resolveSessionSandbox', () => {
         workspacePath: '/work/session-1',
         platform: 'linux',
         capability,
-        pathEnv: '/usr/bin',
+        pathEnv: fakeBwrapPathEnv,
       });
       const wrapped = wrapSpawnConfig!({ command: 'true', args: [] });
       // Only the base /usr bind (added unconditionally by

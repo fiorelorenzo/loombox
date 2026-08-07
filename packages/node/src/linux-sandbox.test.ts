@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   buildBubblewrapArgv,
@@ -13,6 +13,24 @@ import {
   type SandboxCapability,
 } from './linux-sandbox';
 
+/**
+ * A PATH entry that really does hold an executable named `bwrap`, created per
+ * run rather than assumed. Every assertion below that injects its own `probe`
+ * needs the resolver to GET as far as calling it, and the resolver only does
+ * that once it finds a `bwrap` on the PATH it was handed. Pointing those at
+ * `/usr/bin` worked on this dev box and silently short-circuited on a
+ * GitHub-hosted runner, where the real binary is absent: the probe was never
+ * called and the assertion failed for a reason that had nothing to do with
+ * the code under test.
+ */
+let fakeBwrapPathEnv: string;
+beforeAll(async () => {
+  fakeBwrapPathEnv = await mkdtemp(join(tmpdir(), 'loombox-fake-bwrap-'));
+  await writeFile(join(fakeBwrapPathEnv, 'bwrap'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+});
+afterAll(async () => {
+  await rm(fakeBwrapPathEnv, { recursive: true, force: true });
+});
 describe('detectSandboxCapability / computeCapability', () => {
   afterEach(() => {
     resetSandboxCapabilityCacheForTests();
@@ -39,7 +57,7 @@ describe('detectSandboxCapability / computeCapability', () => {
   it('reports unavailable, naming the real cause, when bwrap is present but the functional self-test fails — the documented shape of a kernel that refuses unprivileged user namespaces (kernel.unprivileged_userns_clone=0, or an AppArmor restriction)', () => {
     const capability = detectSandboxCapability({
       platform: 'linux',
-      pathEnv: '/usr/bin',
+      pathEnv: fakeBwrapPathEnv,
       probe: () => false,
     });
     expect(capability.available).toBe(false);
@@ -50,7 +68,7 @@ describe('detectSandboxCapability / computeCapability', () => {
   it('reports available with backend "bubblewrap" once the functional self-test actually passes', () => {
     const capability = detectSandboxCapability({
       platform: 'linux',
-      pathEnv: '/usr/bin',
+      pathEnv: fakeBwrapPathEnv,
       probe: () => true,
     });
     expect(capability).toEqual({ available: true, backend: 'bubblewrap' });
@@ -60,7 +78,7 @@ describe('detectSandboxCapability / computeCapability', () => {
     let calls = 0;
     const first = detectSandboxCapability({
       platform: 'linux',
-      pathEnv: '/usr/bin',
+      pathEnv: fakeBwrapPathEnv,
       probe: () => {
         calls += 1;
         return true;
@@ -68,7 +86,7 @@ describe('detectSandboxCapability / computeCapability', () => {
     });
     const second = detectSandboxCapability({
       platform: 'linux',
-      pathEnv: '/usr/bin',
+      pathEnv: fakeBwrapPathEnv,
       probe: () => {
         calls += 1;
         return true;
