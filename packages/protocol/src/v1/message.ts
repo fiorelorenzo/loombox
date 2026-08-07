@@ -21,6 +21,7 @@ import {
   gitBranchSwitchRequest,
   gitBranchSwitchResponse,
 } from './git-branch';
+import { gitPushRequest, gitPushResponse } from './git-push';
 import {
   gitStashDropRequest,
   gitStashDropResponse,
@@ -330,6 +331,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitBranchMergeResponse,
   gitBranchMergeAbortRequest,
   gitBranchMergeAbortResponse,
+  gitPushRequest,
+  gitPushResponse,
   gitStashSaveRequest,
   gitStashSaveResponse,
   gitStashListRequest,

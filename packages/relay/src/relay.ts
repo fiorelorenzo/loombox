@@ -1467,6 +1467,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_stash_list_response':
       case 'git_stash_pop_response':
       case 'git_stash_drop_response':
+      case 'git_push_response':
         // The owning node's reply to a client's git_branch_list_request/
         // git_branch_create_request/git_branch_switch_request/
         // git_branch_merge_request/git_branch_merge_abort_request or
@@ -2317,6 +2318,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_stash_list_request':
       case 'git_stash_pop_request':
       case 'git_stash_drop_request':
+      case 'git_push_request':
         // A client listing branches/stashes, creating/switching/merging a
         // branch, aborting a conflicted merge, or saving/popping/dropping
         // a stash (SPEC §7.6; issue #234) — routed to the owning node
