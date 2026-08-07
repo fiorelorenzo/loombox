@@ -92,6 +92,19 @@ describe('acpToolCallUpdateSchema', () => {
         .success,
     ).toBe(false);
   });
+
+  it("accepts a real-shaped switch_mode tool_call (issue #822: the real ACP v1 ToolKind's tenth member, which Gemini CLI's toAcpToolKind and a future Codex release can both emit)", () => {
+    const result = acpToolCallUpdateSchema.safeParse({
+      kind: 'tool_call',
+      id: 'tc1',
+      title: 'Switch to plan mode',
+      toolKind: 'switch_mode',
+      status: 'completed',
+      rawInput: { modeId: 'plan' },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.toolKind).toBe('switch_mode');
+  });
 });
 
 describe('acpPermissionRequestPayloadSchema', () => {

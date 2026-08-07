@@ -26,7 +26,7 @@ import { matchAnchoredGlob } from './permission-policy';
  *
  * - {@link AgentProfile.deniedToolKinds} — ACP's own small, fixed
  *   `AcpToolKind` taxonomy (`read`/`edit`/`delete`/`move`/`search`/
- *   `execute`/`think`/`fetch`/`other`), the one categorization every
+ *   `execute`/`think`/`fetch`/`switch_mode`/`other`), the one categorization every
  *   correctly-speaking ACP agent already volunteers per call. This is the
  *   closest equivalent to Zed's per-tool boolean map this protocol can
  *   offer without inventing a tool catalog loombox doesn't actually own.

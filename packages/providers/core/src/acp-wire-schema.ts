@@ -50,6 +50,7 @@ const acpToolKindSchema = z.enum([
   'execute',
   'think',
   'fetch',
+  'switch_mode',
   'other',
 ]);
 

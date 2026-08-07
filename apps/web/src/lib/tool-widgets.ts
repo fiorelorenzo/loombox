@@ -84,6 +84,8 @@ export function toolKindIcon(toolKind: AcpToolKind | undefined): IconName {
       return 'tool-think';
     case 'fetch':
       return 'tool-fetch';
+    case 'switch_mode':
+      return 'tool-switch-mode';
     case 'other':
     case undefined:
     default:
