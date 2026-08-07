@@ -13,6 +13,7 @@ import {
   ProjectEnvVarMissingError,
   type AcpMcpServerConfig,
   type AcpPermissionOption,
+  type AcpPermissionOutcome,
   type AcpProvider,
   type AcpPromptContentBlock,
   type AcpSessionWireEvent,
@@ -25,6 +26,7 @@ import {
   type InlineImageHandoffFailureReason,
   type McpServerConfig,
   type McpServerPromptsResult,
+  type PermissionResolveResult,
   type ProjectEnvVarDecl,
 } from '@loombox/providers-core';
 import {
@@ -196,6 +198,7 @@ import {
   type PrMergeRequest,
   type PrMergeRequestPayloadV1,
   type PrMergeResultPayloadV1,
+  type PromptInjectSendResult,
   type PromptInjectV1,
   type PrOpenFailureCategory,
   type PrOpenPreviewRequest,
@@ -441,6 +444,7 @@ import {
 } from './provider-availability';
 import { TargetHealthSampler } from './target-health-sampler';
 import { TestRunnerConfigStore } from './test-runner-config-store';
+import { SessionTitleStore } from './session-title-store';
 import { detectTestRunnerCommands } from './test-runner-detect';
 import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
 import { filterSpendLedgerRows, isFailingRunOutcome } from '@loombox/shared';
@@ -458,6 +462,8 @@ import {
   type LiveTrackerProvider,
 } from './tracker-live-bridge';
 import { LiveTrackerPrLinkageWriter } from './tracker-pr-linkage-live';
+import { TrackerMcpHost, type TrackerWritePermissionResult } from './tracker-mcp-host';
+import type { TrackerMcpToolName } from './tracker-mcp-tools';
 import { asAcpChildProcess, RemoteAgentChildProcess } from './ssh/remote-agent-child';
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import { createRemoteWorktree } from './ssh/remote-worktree';
@@ -854,6 +860,15 @@ export interface NodeDaemonOptions {
    */
   testRunnerConfigStore?: TestRunnerConfigStore;
   /**
+   * This node's per-session display-title cache (issue #706): what
+   * {@link NodeDaemon.reviveSessionInternal} reads to re-`announce()` a
+   * revived session with its real title, rather than a placeholder that
+   * would overwrite the relay's own cached (correct) one on some later
+   * reconnect — see `./session-title-store.ts`'s own doc comment.
+   * Injectable for tests; defaults to a fresh `SessionTitleStore({ stateDir })`.
+   */
+  sessionTitleStore?: SessionTitleStore;
+  /**
    * This node's native tracker store (SPEC §7.10; issue #212, on top of
    * #210's `NativeTrackerStore`): backs `tracker_snapshot_request`/
    * `tracker_write_request` — the kanban/list UI's own read/write path,
@@ -865,6 +880,15 @@ export interface NodeDaemonOptions {
    * defaults to a fresh `NativeTrackerStore({ stateDir })`.
    */
   nativeTrackerStore?: NativeTrackerStore;
+  /**
+   * The node-side MCP host that actually serves the five `tracker_*`
+   * tools an agent session calls against {@link nativeTrackerStore}
+   * (issue #627, completing #211/#212's tool contract). Injectable for
+   * tests; defaults to a fresh `TrackerMcpHost()` — see
+   * `./tracker-mcp-host.ts`'s own doc comment for why this hosts a real
+   * MCP server in-process rather than declaring an external one.
+   */
+  trackerMcpHost?: TrackerMcpHost;
   /**
    * Passed straight through to `discoverSshTargets` (SPEC §7.23 step 1;
    * redesign v2 §3.2; issue #475) when this node handles an
@@ -1117,6 +1141,42 @@ function isPermissionRequestDetail(detail: unknown): detail is { requestId: stri
     detail !== null &&
     typeof (detail as { requestId?: unknown }).requestId === 'string'
   );
+}
+
+/**
+ * A short, human-readable summary of a `tracker_create`/`tracker_update`/
+ * `tracker_link_session` call's raw MCP arguments, folded into the
+ * synthetic permission request's `toolCall.title` ({@link
+ * NodeDaemon.requestTrackerWritePermission}) — the same text a human sees
+ * on the approval card the relay's `permission_request` renders. Never
+ * throws on a shape that doesn't match what the tool's own Zod schema
+ * would accept (that's `tracker-mcp-tools.ts`'s job, downstream of this
+ * approval); this is display-only, so an unexpected shape just falls back
+ * to `JSON.stringify`, still useful to a human deciding allow/deny.
+ */
+function describeTrackerWriteInput(rawInput: unknown): string {
+  if (typeof rawInput !== 'object' || rawInput === null) return JSON.stringify(rawInput);
+  const input = rawInput as Record<string, unknown>;
+  if (typeof input.primaryType === 'string') {
+    const fieldsTitle =
+      typeof input.fields === 'object' && input.fields !== null
+        ? (input.fields as Record<string, unknown>).title
+        : undefined;
+    return typeof fieldsTitle === 'string'
+      ? `${input.primaryType} "${fieldsTitle}"`
+      : input.primaryType;
+  }
+  if (typeof input.id === 'string') return `record ${input.id}`;
+  return JSON.stringify(rawInput);
+}
+
+/** Translates a resolved `session/request_permission` outcome into {@link TrackerWritePermissionResult} — the one place ACP's `optionId`/`kind`/`outcome` wire vocabulary crosses into `tracker-mcp-host.ts`'s own, deliberately ACP-agnostic result shape (see that module's doc comment). Only the `optionId: 'allow'` option `requestTrackerWritePermission` itself offers counts as approval; anything else (the `'deny'` option, a profile's own substituted `reject_once`/`reject_always` option, or the request being cancelled outright) refuses. */
+function trackerWritePermissionFromOutcome(
+  outcome: AcpPermissionOutcome,
+): TrackerWritePermissionResult {
+  if (outcome.outcome === 'selected' && outcome.optionId === 'allow') return { allowed: true };
+  if (outcome.outcome === 'cancelled') return { allowed: false, reason: 'cancelled' };
+  return { allowed: false, reason: 'denied' };
 }
 
 /**
@@ -1713,8 +1773,24 @@ export class NodeDaemon extends EventEmitter {
   private readonly sessionProfiles = new Map<string, string | undefined>();
   /** SPEC §7.15; issue #245 — see `NodeDaemonOptions.testRunnerConfigStore`'s doc comment. */
   private readonly testRunnerConfigStore: TestRunnerConfigStore;
+  /** SPEC §7.1; issue #706 — see `NodeDaemonOptions.sessionTitleStore`'s doc comment. */
+  private readonly sessionTitleStore: SessionTitleStore;
+  /**
+   * In-flight `reviveSessionInternal` attempts, keyed by session id
+   * (issue #706) — a second `prompt_inject` (or any other future revive
+   * trigger) arriving for the same `'disconnected'` session while a spawn
+   * is already underway awaits the SAME promise rather than racing a
+   * second `AgentSupervisor.start()` into the same worktree. Deleted the
+   * moment the attempt settles, success or failure alike, so a later
+   * genuinely-new revive attempt (after this one failed, or after the
+   * session went `'disconnected'` again some other way) is never stuck
+   * replaying a stale result.
+   */
+  private readonly revivingSessions = new Map<string, Promise<SessionBridge>>();
   /** SPEC §7.10; issue #212 — see `NodeDaemonOptions.nativeTrackerStore`'s doc comment. */
   private readonly nativeTrackerStore: NativeTrackerStore;
+  /** SPEC §7.10; issue #627 — see `NodeDaemonOptions.trackerMcpHost`'s doc comment. */
+  private readonly trackerMcpHost: TrackerMcpHost;
   /**
    * Same-folder safety (issue #68, SPEC §7.2) for this node's `ssh:`
    * sessions — a separate instance from `SessionManager`'s own guard
@@ -1905,8 +1981,11 @@ export class NodeDaemon extends EventEmitter {
       options.agentProfileStore ?? new AgentProfileStore({ stateDir: options.stateDir });
     this.testRunnerConfigStore =
       options.testRunnerConfigStore ?? new TestRunnerConfigStore({ stateDir: options.stateDir });
+    this.sessionTitleStore =
+      options.sessionTitleStore ?? new SessionTitleStore({ stateDir: options.stateDir });
     this.nativeTrackerStore =
       options.nativeTrackerStore ?? new NativeTrackerStore({ stateDir: options.stateDir });
+    this.trackerMcpHost = options.trackerMcpHost ?? new TrackerMcpHost();
     this.sshDiscoveryOptions = options.sshDiscoveryOptions;
     this.discoverSshTargetsImpl = options.discoverSshTargetsImpl ?? discoverSshTargets;
     this.sshTargetStore =
@@ -2144,6 +2223,7 @@ export class NodeDaemon extends EventEmitter {
     this.targetHealthSampler.stop();
     this.ciCheckWatcher.stop();
     this.trackerConnectivityWatcher.stop();
+    this.trackerMcpHost.close().catch(() => {});
     this.selfUpdateMonitor?.stop();
     this.terminalSupervisor.closeAll();
     // Unlike a session's remote agent (issue #80's deliberate "this node
@@ -2345,7 +2425,11 @@ export class NodeDaemon extends EventEmitter {
     try {
       const profile = opts.profileId ? this.agentProfileStore.get(opts.profileId) : undefined;
       mcpServers = filterMcpServersForProfile(
-        await this.resolveMcpServers(opts.projectPath, opts.mcpServerConfigs ?? []),
+        await this.resolveMcpServersWithTracker(
+          sessionId,
+          opts.projectPath,
+          opts.mcpServerConfigs ?? [],
+        ),
         profile,
       );
       projectEnv = await this.projectEnvManager.resolveForSession(
@@ -2427,6 +2511,16 @@ export class NodeDaemon extends EventEmitter {
    * onto it as this fork's copied history (design spec
    * `2026-08-05-zed-parity-decisions.md` §3's C6-2; issue #746) — `undefined`
    * for every ordinary creation, which is a no-op.
+   *
+   * `startingReason` is set only by {@link reviveSessionInternal}: the
+   * `'starting'` `session_status` this method always pushes first is where
+   * a revival's own honesty disclosure rides (SPEC §7.1; issue #706) — the
+   * ONE thing distinguishing this launch from an ordinary creation's
+   * identical `'starting'` push is that a real agent process already ran
+   * in this same session once, and the new one spawning now remembers
+   * none of it (only the persisted transcript above it does). `undefined`
+   * for every ordinary creation/fork, which omits `reason` exactly as
+   * before this parameter existed.
    */
   private async launchLocalSession(
     session: Session,
@@ -2440,8 +2534,9 @@ export class NodeDaemon extends EventEmitter {
     /** This project's already-resolved env (issue #258) — see {@link CreateNodeSessionOptions.projectEnvDecls}'s doc comment. `{}` behaves exactly like before this parameter existed. */
     env: Record<string, string>,
     seedTranscriptUpdates?: readonly AcpTranscriptUpdate[],
+    startingReason?: string,
   ): Promise<Session> {
-    await this.sendSessionStatus(session.id, 'starting');
+    await this.sendSessionStatus(session.id, 'starting', startingReason);
 
     let agentSession: AgentSession;
     let failedMcpServers: McpServerStatusEntryV1[];
@@ -2684,6 +2779,102 @@ export class NodeDaemon extends EventEmitter {
     const effective = mergeMcpServerConfigLists(nodeStoreServers, clientDeclared);
     if (effective.length === 0) return [];
     return this.mcpSecretManager.resolveForSession(projectPath, effective);
+  }
+
+  /**
+   * {@link resolveMcpServers}, plus this project's tracker MCP server —
+   * SPEC §7.10; issue #627. Wraps rather than folds into
+   * `resolveMcpServers` itself so that method's own two other callers
+   * (nothing to do with a live session — see its own call sites) stay
+   * exactly as before. Appends only when `projectPath`'s `TrackerMode` is
+   * `{kind:'native'}` (the same `?? {kind:'native'}` default
+   * `resolveTrackerDispatch`/the PR-linkage bridge already use — see
+   * `./tracker-mcp-host.ts`'s own doc comment's "Tool-list honesty"
+   * section for why a `live`-mode project never gets this server at
+   * all): `tracker_*` reads and writes `nativeTrackerStore` directly, so
+   * a `live`-mode session's agent must never even see these tools in its
+   * own `tools/list`, let alone call one and have it silently fail.
+   */
+  private async resolveMcpServersWithTracker(
+    sessionId: string,
+    projectPath: string,
+    clientDeclared: readonly McpServerConfig[],
+  ): Promise<AcpMcpServerConfig[]> {
+    const resolved = await this.resolveMcpServers(projectPath, clientDeclared);
+    const mode = this.trackerModeStore.get(projectPath) ?? { kind: 'native' as const };
+    if (mode.kind !== 'native') return resolved;
+
+    const trackerServer = await this.trackerMcpHost.register({
+      store: this.nativeTrackerStore,
+      projectPath,
+      authorId: this.accountId,
+      sessionId,
+      requestWritePermission: (toolName, rawInput) =>
+        this.requestTrackerWritePermission(sessionId, toolName, rawInput),
+    });
+    return [...resolved, trackerServer];
+  }
+
+  /**
+   * {@link TrackerMcpSessionContext.requestWritePermission}'s real
+   * implementation (issue #627's "writes go through the same permission
+   * path as every other mutating tool call"): enqueues a synthetic
+   * tool-call permission request onto `sessionId`'s own live
+   * `AgentSession.permissions` FIFO queue — the exact queue a REAL
+   * incoming `session/request_permission` from the connected agent
+   * enqueues onto — so the SAME D3-4 profile gate
+   * (`AgentSession`'s own `client.on('permission_request', ...)`
+   * listener, wired from this session's `evaluateToolProfile` at spawn
+   * time) and the SAME relay-visible `permission_request`
+   * (`sendPermissionRequest`, fired off this session's own `'attention'`
+   * listener the moment `setAttention('permission_required', ...)` runs)
+   * apply to a tracker write with zero new code in either place. A
+   * profile denial resolves this synchronously, inside `enqueue()`
+   * itself, before this method's own `enqueue()` call even returns — the
+   * `resolved` listener registered below catches that exactly like a
+   * slower, human-driven resolution.
+   *
+   * Refuses immediately, with no queue entry at all, when this session
+   * has no live agent to attribute the request to (a replay-only/
+   * disconnected session, or a race with the agent process exiting
+   * mid-call) — there is nothing for a human to answer against.
+   */
+  private requestTrackerWritePermission(
+    sessionId: string,
+    toolName: TrackerMcpToolName,
+    rawInput: unknown,
+  ): Promise<TrackerWritePermissionResult> {
+    const bridge = this.bridges.get(sessionId);
+    if (!bridge?.agentSession.isLive) {
+      return Promise.resolve({
+        allowed: false,
+        reason: 'session has no live agent to approve this against',
+      });
+    }
+    const queue = bridge.agentSession.permissions;
+    const requestId = `tracker:${randomUUID()}`;
+    const toolCall: AcpToolCallUpdate = {
+      kind: 'tool_call',
+      id: requestId,
+      title: `${toolName}: ${describeTrackerWriteInput(rawInput)}`,
+      toolKind: 'edit',
+      status: 'pending',
+      rawInput,
+    };
+    const options: AcpPermissionOption[] = [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+    ];
+
+    const { promise, resolve } = Promise.withResolvers<TrackerWritePermissionResult>();
+    const onResolved = (result: PermissionResolveResult) => {
+      if (result.status !== 'resolved' || result.requestId !== requestId) return;
+      queue.off('resolved', onResolved);
+      resolve(trackerWritePermissionFromOutcome(result.outcome));
+    };
+    queue.on('resolved', onResolved);
+    queue.enqueue({ requestId, sessionId: bridge.agentSession.id, toolCall, options });
+    return promise;
   }
 
   /**
@@ -3497,6 +3688,13 @@ export class NodeDaemon extends EventEmitter {
       // set has no reason to outlive the bridge that launched it — see
       // {@link mcpServersBySession}'s own doc comment.
       this.mcpServersBySession.delete(bridge.session.id);
+      // Issue #627: this session's tracker MCP endpoint (if any — only
+      // native-mode projects ever get one) has no reason to outlive the
+      // bridge that launched it either, same reasoning as
+      // `mcpServersBySession` right above. A no-op for a session that
+      // never got one (a `live`-mode project, or one whose spawn failed
+      // before `resolveMcpServersWithTracker` ever ran).
+      this.trackerMcpHost.unregister(bridge.session.id);
     });
   }
 
@@ -3746,8 +3944,16 @@ export class NodeDaemon extends EventEmitter {
    * while nothing else about the session did — see `resolveSessionBranch`'s
    * own doc comment for why that, not a live filesystem watch, is the
    * deliberate answer here.
+   *
+   * Also records `title` into {@link sessionTitleStore} (issue #706) —
+   * every call, idempotently — so a LATER revival of this exact session,
+   * long after this node's own in-memory copy of `title` is gone (a full
+   * process restart), still has the real value to re-`announce()` with
+   * instead of a placeholder that would overwrite the relay's own cached
+   * envelope with garbage.
    */
   private async announce(session: Session, targetId: string, title: string): Promise<void> {
+    this.sessionTitleStore.set(session.id, title);
     const key = await this.getSessionKey(session.id);
     let branch: string | undefined;
     try {
@@ -4860,7 +5066,11 @@ export class NodeDaemon extends EventEmitter {
     // records apply; a future fork-time client declaration would thread
     // through here identically to `createSessionInternal`'s own
     // `opts.mcpServerConfigs`/`opts.projectEnvDecls`.
-    const mcpServers = await this.resolveMcpServers(opts.projectPath, []);
+    const mcpServers = await this.resolveMcpServersWithTracker(
+      opts.sessionId,
+      opts.projectPath,
+      [],
+    );
     const projectEnv = await this.projectEnvManager.resolveForSession(opts.projectPath, []);
 
     let session: Session;
@@ -5024,6 +5234,11 @@ export class NodeDaemon extends EventEmitter {
       });
     }
     await this.sessionManager.removeSession(sessionId, { removeWorktree });
+    // Issue #706: forgets this session's cached title alongside the
+    // record itself (`sessionTitleStore`'s own doc comment) — nothing
+    // will ever revive an archived session, so nothing will ever need it
+    // again, and leaving it around would just grow the file forever.
+    this.sessionTitleStore.remove(sessionId);
   }
 
   /**
@@ -5076,11 +5291,12 @@ export class NodeDaemon extends EventEmitter {
    * the agent process behind it is gone) — a contained re-attach for
    * Files/Terminal/test-runner/run, since none of them ever touched the
    * agent to begin with. `targetId` defaults to `'local'` there, mirroring
-   * `SessionManager.createSession`'s own default. Only `handlePromptInject`
+   * `SessionManager.createSession`'s own default. `handlePromptInject`
    * genuinely needs the live bridge (`bridge.agentSession.prompt()`) and
-   * does not go through this helper — reviving an agent conversation on
-   * demand is a real feature, not a contained fix; see that handler's own
-   * doc comment.
+   * does not go through this helper — for a `'disconnected'` session it
+   * instead spawns one on demand via {@link reviveSessionInternal} (issue
+   * #706), rather than reading a bridge that, by definition, doesn't
+   * exist yet.
    *
    * Returns `undefined` only when `sessionId` isn't one of this node's
    * sessions at all (never created here, or already archived/removed) —
@@ -5253,61 +5469,245 @@ export class NodeDaemon extends EventEmitter {
 
   /**
    * A client injected a follow-up prompt (via the relay) into one of this
-   * node's sessions. Unlike every other handler in this file (issue #702),
-   * this one does NOT fall back to {@link resolveSessionRouting}: prompting
-   * needs a live `bridge.agentSession`, which by definition does not exist
-   * for a session with no live bridge, and reviving one on demand is a
-   * real feature (spawning the provider process, resuming the ACP
-   * session), not a contained data-plumbing fix — filed as issue #706.
-   * `prompt_inject` also carries no reply channel at all on the wire (no
-   * `outcome` field, unlike `terminal_opened`/`fs_list_response`), so
-   * there is nowhere to put a real answer even for the case that IS this
-   * node's business:
+   * node's sessions. Where issue #702 left off: `prompt_inject` carried
+   * no reply channel on the wire at all, so a session with no live agent
+   * behind it dropped every prompt with nothing but a `console.warn` —
+   * the client had no way to ever learn its message went nowhere. Issue
+   * #706 closes both halves of that: a real reply channel
+   * (`prompt_inject_result`, {@link sendPromptInjectResult}), and, for
+   * the one case actually worth reviving, reviving it.
    *
-   * - `sessionId` isn't one of this node's sessions at all: ignored per
-   *   SPEC.md §12, same as every other handler here.
-   * - `sessionId` IS one of this node's sessions but has no live bridge
-   *   (reloaded `'disconnected'` after a restart): logged so it is at
-   *   least visible in this node's own output, then dropped — inventing a
-   *   wire message here would be a protocol change of its own. Once part 2
-   *   of #702 reaches the client, the composer for a `disconnected`
-   *   session is disabled and this branch stops firing in practice.
-   * - `sessionId` IS one of this node's sessions with a live bridge, but
-   *   the session is `'paused'` (SPEC §7.16; issue #251 — a spend cap):
-   *   the agent process is alive (pausing never touches it — see
-   *   `SessionLifecycleState`'s own doc comment), but this node refuses to
-   *   hand it another prompt until an explicit resume, same "no reply
-   *   channel" logged-and-dropped treatment as the disconnected case
-   *   above, since giving `prompt_inject` one is #706's job, not this
-   *   issue's.
+   * - `sessionId` isn't one of this node's sessions at all: still ignored
+   *   per SPEC.md §12, same as every other handler in this file — no
+   *   reply channel exists for a session this node has no opinion on.
+   * - `sessionId` IS one of this node's sessions with a LIVE bridge that
+   *   is `'paused'` (SPEC §7.16; issue #251 — a spend cap): the agent
+   *   process is alive (pausing never touches it — see
+   *   `SessionLifecycleState`'s own doc comment), but this node refuses
+   *   to hand it another prompt until an explicit resume — now answered
+   *   `outcome: 'error'` instead of the old silent drop.
+   * - `sessionId` IS one of this node's sessions with a LIVE bridge that
+   *   is NOT paused: delivered exactly as before this issue
+   *   ({@link deliverPromptViaBridge}), and still gets no reply either
+   *   way — the transcript itself is the feedback (SPEC §7.24's turn
+   *   lifecycle), and a synthetic "ok" for a path that already visibly
+   *   works would just be wire noise.
+   * - `sessionId` IS one of this node's sessions with NO live bridge and
+   *   is `'disconnected'` (reloaded after a restart): revived on demand
+   *   via {@link reviveSessionInternal}, then delivered to the freshly
+   *   spawned bridge exactly like the live case above — the prompt that
+   *   triggered the revival is not lost, it is what the revived agent's
+   *   first turn actually answers. A revival (or post-revival delivery)
+   *   failure is answered `outcome: 'error'` naming why, since the
+   *   client has no other signal yet that anything happened at all.
+   * - `sessionId` IS one of this node's sessions with NO live bridge and
+   *   is NOT `'disconnected'` (i.e. `'ended'` — the only other state
+   *   reachable with no bridge): answered `outcome: 'error'` rather than
+   *   attempting a revival {@link SessionManager.reviveSession} would
+   *   itself refuse.
    */
   private handlePromptInject(message: PromptInjectV1): void {
     const bridge = this.bridges.get(message.sessionId);
-    if (!bridge) {
-      if (this.sessionManager.getSession(message.sessionId)) {
-        console.warn(
-          `NodeDaemon: dropped prompt_inject for session ${message.sessionId}: it has no live agent (disconnected since the last restart), and prompt_inject has no reply channel to report that on — see issue #706`,
-        );
+    if (bridge) {
+      if (bridge.session.state === 'paused') {
+        this.sendPromptInjectResult(message.sessionId, message.promptId, {
+          outcome: 'error',
+          message:
+            'This session is paused on a spend cap — resume it before sending another prompt.',
+        });
+        return;
       }
-      // else: not one of this node's sessions at all; ignore per SPEC.md §12
-      return;
-    }
-    if (bridge.session.state === 'paused') {
-      console.warn(
-        `NodeDaemon: dropped prompt_inject for session ${message.sessionId}: it is paused on a spend cap, and prompt_inject has no reply channel to report that on — see issue #706`,
-      );
-      return;
-    }
-
-    this.assertStillLeaseholder(bridge)
-      .then(() => this.decryptPromptInject(message))
-      .then((payload) => this.deliverPrompt(bridge, payload))
-      .catch((error: unknown) => {
+      this.deliverPromptViaBridge(bridge, message).catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         console.warn(
           `NodeDaemon: failed to handle prompt_inject for session ${message.sessionId}: ${detail}`,
         );
       });
+      return;
+    }
+
+    const session = this.sessionManager.getSession(message.sessionId);
+    if (!session) return; // not one of this node's sessions at all; ignore per SPEC.md §12
+
+    if (session.state !== 'disconnected') {
+      this.sendPromptInjectResult(message.sessionId, message.promptId, {
+        outcome: 'error',
+        message: 'This session has ended — start a new session to continue.',
+      });
+      return;
+    }
+
+    this.reviveSessionInternal(message.sessionId)
+      .then((revivedBridge) => this.deliverPromptViaBridge(revivedBridge, message))
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to revive session ${message.sessionId} for prompt_inject: ${detail}`,
+        );
+        this.sendPromptInjectResult(message.sessionId, message.promptId, {
+          outcome: 'error',
+          message: `Couldn't restart this session's agent: ${detail}`,
+        });
+      });
+  }
+
+  /**
+   * Shared delivery tail for {@link handlePromptInject}'s live-bridge and
+   * just-revived cases alike (issue #706): confirms this node is still the
+   * `ssh:` leaseholder (a no-op for `local` — see
+   * {@link assertStillLeaseholder}'s own doc comment), decrypts, and hands
+   * the prompt to the agent. Never itself sends a `prompt_inject_result` —
+   * the caller decides what a failure here means for THAT specific case (a
+   * live bridge just warns, unchanged from before this issue; a freshly
+   * revived one also reports `outcome: 'error'`, since the client is still
+   * waiting to learn whether the prompt that triggered the revival landed
+   * at all).
+   */
+  private deliverPromptViaBridge(bridge: SessionBridge, message: PromptInjectV1): Promise<void> {
+    return this.assertStillLeaseholder(bridge)
+      .then(() => this.decryptPromptInject(message))
+      .then((payload) => this.deliverPrompt(bridge, payload));
+  }
+
+  /** Sends this session's `prompt_inject_result` (issue #706) — clear, not an encrypted envelope, mirroring `configOptionResult`'s own request/reply pair (see that schema's doc comment for why). */
+  private sendPromptInjectResult(
+    sessionId: string,
+    promptId: string,
+    result: PromptInjectSendResult,
+  ): void {
+    this.relay.send({
+      type: 'prompt_inject_result',
+      protocolVersion: PROTOCOL_V1,
+      sessionId,
+      promptId,
+      result,
+    });
+  }
+
+  /**
+   * Revives a `'disconnected'` local session's agent conversation on
+   * demand (SPEC §7.1 "reconnected"; issue #706): spawns a brand-new
+   * provider process into the session's still-on-disk worktree/branch,
+   * exactly like an ordinary creation, then transitions
+   * `SessionManager`'s record back to `'running'` — but only once that
+   * spawn has actually succeeded (a failed attempt leaves the record
+   * `'disconnected'`, exactly where it was, so a later retry — another
+   * prompt — or {@link reannounceAll}'s own reconnect sweep both keep
+   * treating it honestly; see {@link SessionManager.reviveSession}'s own
+   * doc comment for why this ordering, not `createSession`'s eager
+   * `'running'`, is deliberate here).
+   *
+   * Deliberately does NOT attempt to feed the new agent process any
+   * memory of the old conversation: `SessionLifecycleState`'s own
+   * `'disconnected'` doc comment already establishes that a node restart
+   * means "the agent process ... is simply gone", and pretending a fresh
+   * `session/new` remembers anything the old process knew would be
+   * exactly the false continuity issues #204/#249 already ruled out — an
+   * absent thing says so, never quietly papered over. The session's
+   * PERSISTED TRANSCRIPT is entirely unaffected either way: it lives in
+   * the relay's own resync ring under this session's own id
+   * (`packages/relay/src/relay.ts`), independent of which agent process
+   * is currently behind it, so a client keeps seeing every prior turn;
+   * only the new agent's own understanding of them is what's actually
+   * gone — which is why the `startingReason` passed to
+   * {@link launchLocalSession} below carries exactly that disclosure to
+   * the client the moment this starts, not after the fact.
+   *
+   * In-flight attempts are coalesced per session ({@link revivingSessions}) —
+   * a second `prompt_inject` (or any other future revive trigger)
+   * arriving for the same session while a spawn is already underway
+   * awaits the SAME promise rather than racing a second
+   * `AgentSupervisor.start()` into the same worktree.
+   *
+   * Throws (never partially revives — no bridge, no `'running'`
+   * transition) for: a session this node's `SessionManager` doesn't
+   * currently hold; one not currently `'disconnected'` (a live/paused
+   * session has no need to revive; an `'ended'` one cannot); a non-
+   * `'local'` target (an `ssh:` session is never recorded in
+   * `SessionManager` to begin with — see `Session.target`'s own doc
+   * comment — so it can never actually reach this branch, but the check
+   * stays as the same defensive, honest-error contract every other
+   * target-kind guard in this file already has); or any ordinary spawn
+   * failure {@link launchLocalSession} itself already throws for (a
+   * bad/unregistered provider id — e.g. a custom agent's spawn recipe,
+   * which lived only in `AgentSupervisor`'s in-memory provider map and so
+   * did not survive the restart either — a sandboxed spawn refusal, an
+   * MCP secret gap). SPEC §7.16's concurrency governance still applies
+   * exactly as it does to an ordinary creation: over the cap, this queues
+   * rather than bypassing it.
+   */
+  private async reviveSessionInternal(sessionId: string): Promise<SessionBridge> {
+    const inFlight = this.revivingSessions.get(sessionId);
+    if (inFlight) return inFlight;
+
+    const attempt = this.reviveSessionAttempt(sessionId).finally(() => {
+      this.revivingSessions.delete(sessionId);
+    });
+    this.revivingSessions.set(sessionId, attempt);
+    return attempt;
+  }
+
+  private async reviveSessionAttempt(sessionId: string): Promise<SessionBridge> {
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new Error(`session ${sessionId} is not known to this node`);
+    }
+    if (session.state !== 'disconnected') {
+      throw new Error(`session ${sessionId} is not disconnected (currently "${session.state}")`);
+    }
+    if (session.target !== 'local') {
+      throw new Error(`cannot revive a "${session.target}" session`);
+    }
+
+    const targetId = session.targetId ?? 'local';
+    const title = this.sessionTitleStore.get(sessionId) ?? 'Revived session';
+    const launchOpts = { provider: session.provider, targetId, title };
+    const mcpServers = await this.resolveMcpServers(session.projectPath, []);
+    const projectEnv = await this.projectEnvManager.resolveForSession(session.projectPath, []);
+    const startingReason =
+      'Reviving this session: the node restarted, so this starts a brand-new agent process in the same workspace. It does not remember earlier turns — only the transcript above does.';
+
+    if (this.concurrencyGate.tryAcquire(targetId)) {
+      await this.launchLocalSession(
+        session,
+        launchOpts,
+        mcpServers,
+        projectEnv,
+        undefined,
+        startingReason,
+      );
+    } else {
+      // SPEC §7.16, issue #252: over the cap, queue rather than bypassing
+      // governance — mirrors `createSessionInternal`'s own overflow path.
+      await this.sendSessionStatus(session.id, 'queued');
+      await new Promise<void>((resolve) => {
+        this.concurrencyGate.enqueue(targetId, session.id, () => {
+          this.launchLocalSession(
+            session,
+            launchOpts,
+            mcpServers,
+            projectEnv,
+            undefined,
+            startingReason,
+          )
+            .catch((error: unknown) => {
+              console.warn(
+                `NodeDaemon: revived session ${session.id} failed to start after dequeuing: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            })
+            .finally(() => resolve());
+        });
+      });
+    }
+
+    const bridge = this.bridges.get(sessionId);
+    if (!bridge) {
+      throw new Error(`session ${sessionId} failed to revive`);
+    }
+    this.sessionManager.reviveSession(sessionId);
+    return bridge;
   }
 
   /**

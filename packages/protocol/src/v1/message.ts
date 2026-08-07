@@ -83,6 +83,7 @@ import {
   configOptionResult,
   permissionRequest,
   permissionResponse,
+  promptInjectResult,
   promptInjectV1,
 } from './steering';
 import { targetAnnounce, targetList, targetListRequest, targetStatus } from './targets';
@@ -240,6 +241,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   sessionForkResponse,
   sessionUpdateEnvelopeV1,
   promptInjectV1,
+  promptInjectResult,
   permissionRequest,
   permissionResponse,
   configOption,

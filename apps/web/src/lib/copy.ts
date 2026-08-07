@@ -54,6 +54,10 @@ export function itemCopyText(item: TranscriptItem): string {
     return `— History gap: updates ${item.fromSeq}\u2013${item.toSeq} were dropped by the relay and can't be recovered —`;
   }
 
+  if (item.type === 'revival') {
+    return `— ${item.reason} —`;
+  }
+
   const parts: string[] = [`Tool: ${item.title ?? item.toolKind ?? item.id}`];
   if (item.status) parts.push(`Status: ${item.status}`);
   if (item.diff) {

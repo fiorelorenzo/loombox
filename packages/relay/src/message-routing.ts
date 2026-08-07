@@ -70,6 +70,7 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   session_fork_response: { routed: 'node' },
   session_update: { routed: 'node' },
   prompt_inject: { routed: 'client' },
+  prompt_inject_result: { routed: 'node' },
   permission_request: { routed: 'node' },
   permission_response: { routed: 'client' },
   config_option: { routed: 'client' },

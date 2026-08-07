@@ -74,6 +74,7 @@
   import ToolCallBurstGroup from './ToolCallBurstGroup.svelte';
   import ToolCallRow from './ToolCallRow.svelte';
   import TranscriptGap from './TranscriptGap.svelte';
+  import TranscriptRevival from './TranscriptRevival.svelte';
 
   /** A request to bring one specific item into the mounted window and scroll it into view (issue #740's turn-review "jump to this file's diff"), even when it's currently outside the range `windowing.svelte.ts` mounts. `token` must be bumped on every request, including a repeat click on an already-visible row's `id` — a bare `id` prop wouldn't re-trigger the `$effect` below on an unchanged value. */
   export interface TranscriptJumpTarget {
@@ -442,6 +443,8 @@
         />
       {:else if item.type === 'gap'}
         <TranscriptGap {item} />
+      {:else if item.type === 'revival'}
+        <TranscriptRevival {item} />
       {:else}
         {#if itemNesting && itemNesting.depth > 0}
           <div class="nesting-label" data-testid="tool-call-nesting-label">

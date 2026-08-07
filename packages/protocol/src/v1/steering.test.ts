@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { wireMessageV1 } from './message';
 import {
   configOption,
   configOptionResult,
   permissionDecision,
   permissionRequest,
   permissionResponse,
+  promptInjectResult,
   promptInjectV1,
 } from './steering';
 
@@ -146,5 +148,53 @@ describe('configOptionResult (issue #718)', () => {
   it('rejects a missing category', () => {
     const { category: _category, ...rest } = valid;
     expect(() => configOptionResult.parse(rest)).toThrow();
+  });
+});
+
+describe('promptInjectResult (issue #706)', () => {
+  const valid = {
+    type: 'prompt_inject_result',
+    protocolVersion: 1,
+    sessionId: 'sess-1',
+    promptId: 'p1',
+    result: { outcome: 'ok' as const },
+  };
+
+  it('parses a valid ok result', () => {
+    expect(promptInjectResult.parse(valid)).toEqual(valid);
+  });
+
+  it('parses a valid error result carrying why the prompt could not be delivered', () => {
+    const errorResult = {
+      ...valid,
+      result: {
+        outcome: 'error' as const,
+        message: "Couldn't restart this session's agent: spawn ENOENT",
+      },
+    };
+    expect(promptInjectResult.parse(errorResult)).toEqual(errorResult);
+  });
+
+  it('rejects an error result with no message (the whole point is carrying the reason)', () => {
+    expect(() => promptInjectResult.parse({ ...valid, result: { outcome: 'error' } })).toThrow();
+  });
+
+  it('rejects an outcome outside ok/error', () => {
+    expect(() => promptInjectResult.parse({ ...valid, result: { outcome: 'reviving' } })).toThrow();
+  });
+
+  it('rejects a missing promptId', () => {
+    const { promptId: _promptId, ...rest } = valid;
+    expect(() => promptInjectResult.parse(rest)).toThrow();
+  });
+
+  it('slots into wireMessageV1, which is what makes it reachable at all (a merge that drops it from the union would fail here first)', () => {
+    expect(() => wireMessageV1.parse(valid)).not.toThrow();
+    const errorResult = {
+      ...valid,
+      result: { outcome: 'error' as const, message: 'revival failed' },
+    };
+    expect(() => wireMessageV1.parse(errorResult)).not.toThrow();
+    expect(wireMessageV1.parse(valid).type).toBe('prompt_inject_result');
   });
 });
