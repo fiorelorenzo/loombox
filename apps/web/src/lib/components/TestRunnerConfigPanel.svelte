@@ -23,13 +23,14 @@
    * crashing on the one render frame before that's true.
    */
   import type { TestRunnerCommandsV1 } from '@loombox/protocol';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import Field from './ui/Field.svelte';
   import Input from './ui/Input.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The three calls this panel needs off `RelayClient` — see the file doc comment's DI note. */
   export interface TestRunnerConfigClient {
@@ -81,11 +82,20 @@
       saved = await currentClient.getTestRunnerConfig(currentSessionId);
       syncDraftsFromSaved();
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = loadErrorMessage('The runner config', err);
     } finally {
       loading = false;
     }
   }
+
+  /** One tagged value, not two independent flags — issue #650. */
+  const savedState = $derived<AsyncPanelState<TestRunnerCommandsV1>>(
+    loading
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : { status: 'loaded', data: saved },
+  );
 
   // Reloads whenever the selected session (or, in a test, the injected
   // client) changes — `ProjectConfigPanel`'s "config" tab stays mounted
@@ -152,66 +162,62 @@
   {:else}
     <Card elevation="raised" padding="md" class="config-section">
       <section class="commands">
-        {#if loadError}
-          <ErrorNotice
-            message={`Could not load the saved commands: ${loadError}`}
-            retryable
-            onRetry={() => void (sessionId && client && load(sessionId, client))}
-          />
-        {/if}
         {#if saveError}
           <ErrorNotice message={`Could not save: ${saveError}`} />
         {/if}
-        {#if loading}
-          <p class="loading" data-testid="test-runner-config-loading">
-            <WovenLoader size="sm" label="Loading" />
-            Loading saved commands…
-          </p>
-        {:else}
-          {#each COMMAND_FIELDS as field (field.key)}
-            <form class="command-form" onsubmit={(event) => handleFieldSubmit(field.key, event)}>
-              <Field label={field.label}>
-                {#snippet children({ id, describedBy, errorId, invalid, required })}
-                  <div class="command-row">
-                    <Input
-                      {id}
-                      {describedBy}
-                      {errorId}
-                      {invalid}
-                      {required}
-                      monospace
-                      placeholder="e.g. pnpm test"
-                      bind:value={drafts[field.key]}
-                      dataTestId={`test-runner-${field.key}-input`}
-                    />
+        <AsyncPanel
+          state={savedState}
+          loadingLabel="Loading"
+          loadingTestId="test-runner-config-loading"
+          loadingText="Loading saved commands…"
+          onRetry={() => void (sessionId && client && load(sessionId, client))}
+        >
+          {#snippet content()}
+            {#each COMMAND_FIELDS as field (field.key)}
+              <form class="command-form" onsubmit={(event) => handleFieldSubmit(field.key, event)}>
+                <Field label={field.label}>
+                  {#snippet children({ id, describedBy, errorId, invalid, required })}
+                    <div class="command-row">
+                      <Input
+                        {id}
+                        {describedBy}
+                        {errorId}
+                        {invalid}
+                        {required}
+                        monospace
+                        placeholder="e.g. pnpm test"
+                        bind:value={drafts[field.key]}
+                        dataTestId={`test-runner-${field.key}-input`}
+                      />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        loading={savingKey === field.key}
+                        disabled={drafts[field.key].trim().length === 0}
+                        dataTestId={`test-runner-${field.key}-save`}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  {/snippet}
+                </Field>
+                {#if suggestions[field.key]}
+                  <p class="suggestion" data-testid={`test-runner-${field.key}-suggestion`}>
+                    Detected: <code>{suggestions[field.key]}</code>
                     <Button
-                      type="submit"
+                      variant="secondary"
                       size="sm"
-                      loading={savingKey === field.key}
-                      disabled={drafts[field.key].trim().length === 0}
-                      dataTestId={`test-runner-${field.key}-save`}
+                      onclick={() => void acceptSuggestion(field.key)}
+                      dataTestId={`test-runner-${field.key}-accept`}
                     >
-                      Save
+                      Accept
                     </Button>
-                  </div>
-                {/snippet}
-              </Field>
-              {#if suggestions[field.key]}
-                <p class="suggestion" data-testid={`test-runner-${field.key}-suggestion`}>
-                  Detected: <code>{suggestions[field.key]}</code>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onclick={() => void acceptSuggestion(field.key)}
-                    dataTestId={`test-runner-${field.key}-accept`}
-                  >
-                    Accept
-                  </Button>
-                </p>
-              {/if}
-            </form>
-          {/each}
-        {/if}
+                  </p>
+                {/if}
+              </form>
+            {/each}
+          {/snippet}
+        </AsyncPanel>
 
         {#if detectError}
           <ErrorNotice message={`Could not auto-detect commands: ${detectError}`} />
@@ -273,14 +279,5 @@
   .suggestion code {
     font-family: var(--font-mono);
     color: var(--color-text-primary);
-  }
-
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 </style>

@@ -160,6 +160,23 @@ describe('PermissionPolicyPanel (SPEC §7.17; issue #751)', () => {
     );
   });
 
+  it('a node that never answers reads as "The saved policy didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = fakeClient({
+      getPermissionPolicy: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('RelayClient: timed out waiting for permission_policy_get_response'),
+        ),
+    });
+    render(PermissionPolicyPanel, {
+      props: { projectPath: '/proj-a', sessionId: 'sess-1', client },
+    });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('permission_policy_get_response');
+    expect(notice.textContent).toContain("The saved policy didn't answer in time.");
+  });
+
   it('subscribes to live violations on mount and unsubscribes on unmount', async () => {
     const unsubscribe = vi.fn();
     const client = fakeClient({

@@ -39,10 +39,11 @@
     CheckpointRestoreResultPayloadV1,
     GitCheckpointV1,
   } from '@loombox/protocol';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Dialog from './ui/Dialog.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The two calls this dialog needs off `RelayClient` — both resolve their whole outcome union rather than throwing for a named error, `RelayClient`'s own documented contract for every checkpoint call. */
   export interface CheckpointRestoreClient {
@@ -93,11 +94,26 @@
     try {
       preview = await currentClient.previewCheckpointRestore(currentSessionId, checkpointId);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = loadErrorMessage('This restore preview', err);
     } finally {
       loading = false;
     }
   }
+
+  /** One tagged value, not three independent flags — issue #650. `preview?.outcome === 'error'` (a structured, already-human reply) and a caught transport `loadError` both render identically (a retryable `ErrorNotice`), so both fold into the same `error` status. */
+  const previewState = $derived<
+    AsyncPanelState<Extract<CheckpointRestorePreviewResultPayloadV1, { outcome: 'ok' }>['preview']>
+  >(
+    loading
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : preview?.outcome === 'error'
+          ? { status: 'error', message: preview.message, retryable: true }
+          : preview?.outcome === 'ok'
+            ? { status: 'loaded', data: preview.preview }
+            : { status: 'loading' },
+  );
 
   // Resets every time the dialog opens for a (possibly different)
   // checkpoint, same "open is this effect's only reactive read"
@@ -141,78 +157,70 @@
     Restore to <strong>{checkpoint.message}</strong>, taken {formatDate(checkpoint.createdAt)}?
   </p>
 
-  {#if loading}
-    <p class="loading" data-testid="checkpoint-restore-loading">
-      <WovenLoader size="sm" label="Loading" />
-      Checking what this restore would do…
-    </p>
-  {:else if loadError}
-    <ErrorNotice
-      message={`Could not preview this restore: ${loadError}`}
-      retryable
+  {#if loading || loadError || preview}
+    <AsyncPanel
+      state={previewState}
+      loadingLabel="Loading"
+      loadingTestId="checkpoint-restore-loading"
+      loadingText="Checking what this restore would do…"
       onRetry={() => void (client && load(sessionId, checkpoint.id, client))}
-    />
-  {:else if preview?.outcome === 'error'}
-    <ErrorNotice
-      message={preview.message}
-      retryable
-      onRetry={() => void (client && load(sessionId, checkpoint.id, client))}
-    />
-  {:else if preview?.outcome === 'ok'}
-    {@const info = preview.preview}
-    <p class="checkpoint-restore-preview" data-testid="checkpoint-restore-preview">
-      {#if info.hasUncommittedChangesToDiscard}
-        This will discard the worktree's current uncommitted changes{info.isWorkInPlace
-          ? " — this session runs directly in your project folder, so those may be your own edits, not just the agent's"
-          : ''} and reset every file to exactly this checkpoint's state.
-      {:else}
-        There is nothing uncommitted to discard right now — restoring will still reset every file to
-        exactly this checkpoint's state.
-      {/if}
-      {#if info.commitsSinceCheckpoint > 0}
-        {info.commitsSinceCheckpoint} real {info.commitsSinceCheckpoint === 1
-          ? 'commit'
-          : 'commits'} made since this checkpoint will stay untouched in the branch's history.
-      {/if}
-    </p>
+    >
+      {#snippet content(info)}
+        <p class="checkpoint-restore-preview" data-testid="checkpoint-restore-preview">
+          {#if info.hasUncommittedChangesToDiscard}
+            This will discard the worktree's current uncommitted changes{info.isWorkInPlace
+              ? " — this session runs directly in your project folder, so those may be your own edits, not just the agent's"
+              : ''} and reset every file to exactly this checkpoint's state.
+          {:else}
+            There is nothing uncommitted to discard right now — restoring will still reset every
+            file to exactly this checkpoint's state.
+          {/if}
+          {#if info.commitsSinceCheckpoint > 0}
+            {info.commitsSinceCheckpoint} real {info.commitsSinceCheckpoint === 1
+              ? 'commit'
+              : 'commits'} made since this checkpoint will stay untouched in the branch's history.
+          {/if}
+        </p>
 
-    {#if restoreOutcome?.outcome === 'ok'}
-      <p class="checkpoint-restore-result" data-testid="checkpoint-restore-result">
-        Restored. {restoreOutcome.result.discardedUncommittedChanges
-          ? 'Uncommitted changes were discarded.'
-          : 'There was nothing uncommitted to discard.'}
-        {restoreOutcome.result.commitsPreserved > 0
-          ? `${restoreOutcome.result.commitsPreserved} ${restoreOutcome.result.commitsPreserved === 1 ? 'commit stays' : 'commits stay'} untouched.`
-          : ''}
-      </p>
-      <div class="actions">
-        <Button onclick={handleClose} dataTestId="checkpoint-restore-done">Done</Button>
-      </div>
-    {:else}
-      {#if restoreOutcome?.outcome === 'error'}
-        <ErrorNotice message={restoreOutcome.message} />
-      {:else if restoreOutcome?.outcome === 'confirmation_required'}
-        <ErrorNotice
-          message="The worktree changed since this preview loaded — reload and try again."
-          retryable
-          onRetry={() => void (client && load(sessionId, checkpoint.id, client))}
-        />
-      {/if}
-      {#if restoreError}
-        <ErrorNotice message={restoreError} />
-      {/if}
-      <div class="actions">
-        <Button variant="secondary" onclick={handleClose} disabled={restoring}>Cancel</Button>
-        <Button
-          variant="danger"
-          onclick={confirmRestore}
-          loading={restoring}
-          dataTestId="checkpoint-restore-confirm"
-        >
-          Restore checkpoint
-        </Button>
-      </div>
-    {/if}
+        {#if restoreOutcome?.outcome === 'ok'}
+          <p class="checkpoint-restore-result" data-testid="checkpoint-restore-result">
+            Restored. {restoreOutcome.result.discardedUncommittedChanges
+              ? 'Uncommitted changes were discarded.'
+              : 'There was nothing uncommitted to discard.'}
+            {restoreOutcome.result.commitsPreserved > 0
+              ? `${restoreOutcome.result.commitsPreserved} ${restoreOutcome.result.commitsPreserved === 1 ? 'commit stays' : 'commits stay'} untouched.`
+              : ''}
+          </p>
+          <div class="actions">
+            <Button onclick={handleClose} dataTestId="checkpoint-restore-done">Done</Button>
+          </div>
+        {:else}
+          {#if restoreOutcome?.outcome === 'error'}
+            <ErrorNotice message={restoreOutcome.message} />
+          {:else if restoreOutcome?.outcome === 'confirmation_required'}
+            <ErrorNotice
+              message="The worktree changed since this preview loaded — reload and try again."
+              retryable
+              onRetry={() => void (client && load(sessionId, checkpoint.id, client))}
+            />
+          {/if}
+          {#if restoreError}
+            <ErrorNotice message={restoreError} />
+          {/if}
+          <div class="actions">
+            <Button variant="secondary" onclick={handleClose} disabled={restoring}>Cancel</Button>
+            <Button
+              variant="danger"
+              onclick={confirmRestore}
+              loading={restoring}
+              dataTestId="checkpoint-restore-confirm"
+            >
+              Restore checkpoint
+            </Button>
+          </div>
+        {/if}
+      {/snippet}
+    </AsyncPanel>
   {/if}
 {/snippet}
 
@@ -236,15 +244,6 @@
   .checkpoint-restore-result {
     margin: 0;
     color: var(--color-text-primary);
-  }
-
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 
   .actions {

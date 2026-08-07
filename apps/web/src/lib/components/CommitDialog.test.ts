@@ -143,6 +143,30 @@ describe('CommitDialog (SPEC §7.6 commit workflow with AI-generated commit mess
     );
   });
 
+  it('a draft request that times out reads as "The commit draft didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = fakeClient({
+      requestGitCommitDraft: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('RelayClient: timed out waiting for git_commit_draft_response'),
+        ),
+    });
+    render(CommitDialog, {
+      props: { open: true, sessionId: 'sess-1', client, onClose: vi.fn(), onCommitted: vi.fn() },
+    });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('git_commit_draft_response');
+    expect(notice.textContent).toContain("The commit draft didn't answer in time.");
+
+    // Retrying still works, and hand-typing still commits even after a
+    // failed draft — the same guarantee the structured-reply failure case
+    // above already covers.
+    const input = screen.getByTestId('commit-message-input') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'Hand-typed message' } });
+    expect((screen.getByTestId('commit-confirm') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('shows the sha and lets Done close the dialog on a successful commit \u2014 a second click cannot fire twice', async () => {
     const onClose = vi.fn();
     const client = fakeClient();

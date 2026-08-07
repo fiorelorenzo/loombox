@@ -269,6 +269,22 @@ describe('PrOpenDialog (SPEC §7.14; issue #238)', () => {
     );
   });
 
+  it('a preview request that times out reads as "This pull-request preview didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = fakeClient({
+      previewPrOpen: vi
+        .fn()
+        .mockRejectedValue(new Error('RelayClient: timed out waiting for pr_open_preview_result')),
+    });
+    render(PrOpenDialog, {
+      props: { open: true, session: makeSession(), client, onClose: vi.fn() },
+    });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('pr_open_preview_result');
+    expect(notice.textContent).toContain("This pull-request preview didn't answer in time.");
+    expect(screen.queryByTestId('pr-open-title-input')).toBeNull();
+  });
+
   it('re-loads a fresh preview each time it re-opens for a (possibly different) session', async () => {
     const previewPrOpen = vi
       .fn()

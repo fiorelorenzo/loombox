@@ -286,4 +286,21 @@ describe('AgentInstructionsPanel (SPEC §7.18; issue #260)', () => {
       expect(screen.getByTestId('ui-error-notice').textContent).toContain('node unreachable'),
     );
   });
+
+  it('a node that never answers reads as "Agent instructions didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = fakeClient({
+      getAgentInstructions: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('RelayClient: timed out waiting for agent_instructions_get_response'),
+        ),
+    });
+    render(AgentInstructionsPanel, {
+      props: { projectPath: '/proj-a', sessionId: 'sess-1', client },
+    });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('agent_instructions_get_response');
+    expect(notice.textContent).toContain("Agent instructions didn't answer in time.");
+  });
 });

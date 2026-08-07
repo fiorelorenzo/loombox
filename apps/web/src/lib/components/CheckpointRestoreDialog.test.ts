@@ -193,6 +193,30 @@ describe('CheckpointRestoreDialog (SPEC §7.20; issue #268/#603)', () => {
     expect(screen.queryByTestId('checkpoint-restore-confirm')).toBeNull();
   });
 
+  it('a preview request that times out reads as "This restore preview didn\'t answer in time...", never the raw wire message (issue #650)', async () => {
+    const client = fakeClient({
+      previewCheckpointRestore: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('RelayClient: timed out waiting for checkpoint_restore_preview_result'),
+        ),
+    });
+    render(CheckpointRestoreDialog, {
+      props: {
+        open: true,
+        sessionId: 'sess_1',
+        checkpoint: makeCheckpoint(),
+        client,
+        onClose: vi.fn(),
+      },
+    });
+
+    const notice = await waitFor(() => screen.getByTestId('ui-error-notice'));
+    expect(notice.textContent).not.toContain('checkpoint_restore_preview_result');
+    expect(notice.textContent).toContain("This restore preview didn't answer in time.");
+    expect(screen.queryByTestId('checkpoint-restore-confirm')).toBeNull();
+  });
+
   it('clicking "Restore checkpoint" sends confirm: true and shows what was actually discarded/preserved on success', async () => {
     const client = fakeClient({
       restoreCheckpoint: vi.fn().mockResolvedValue({

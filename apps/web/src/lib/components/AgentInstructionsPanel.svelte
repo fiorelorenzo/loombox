@@ -35,13 +35,14 @@
     AgentInstructionsSetRequestPayloadV1,
     AgentInstructionsSetResponsePayloadV1,
   } from '@loombox/protocol';
+  import AsyncPanel from './ui/AsyncPanel.svelte';
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
   import EmptyState from './ui/EmptyState.svelte';
   import Field from './ui/Field.svelte';
   import TextArea from './ui/TextArea.svelte';
-  import WovenLoader from './WovenLoader.svelte';
+  import { loadErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
   /** The two calls this panel needs off `RelayClient` — see the file doc comment's DI note. */
   export interface AgentInstructionsClient {
@@ -113,12 +114,21 @@
       }
       files = result.files;
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      loadError = loadErrorMessage('Agent instructions', err);
       files = [];
     } finally {
       loading = false;
     }
   }
+
+  /** One tagged value, not two independent flags — issue #650. No `loaded` content of its own: everything below (the create hint, conflict banner, save error, editor) reads `selected`/`draft`/`creating`/`conflict` directly, never `files`, so this only ever drives loading vs error vs "show the editor". */
+  const filesState = $derived<AsyncPanelState<undefined>>(
+    loading
+      ? { status: 'loading' }
+      : loadError
+        ? { status: 'error', message: loadError, retryable: true }
+        : { status: 'loaded', data: undefined },
+  );
 
   // Reloads whenever the selected session (or, in a test, the injected
   // client) changes — `ProjectConfigPanel`'s "config" tab stays mounted
@@ -196,71 +206,66 @@
         {/each}
       </div>
 
-      {#if loadError}
-        <ErrorNotice
-          message={`Could not load agent instructions: ${loadError}`}
-          retryable
-          onRetry={() => void (sessionId && client && loadFiles(sessionId, client))}
-        />
-      {/if}
+      <AsyncPanel
+        state={filesState}
+        loadingLabel="Loading"
+        loadingTestId="agent-instructions-loading"
+        loadingText={`Loading ${selected}…`}
+        onRetry={() => void (sessionId && client && loadFiles(sessionId, client))}
+      >
+        {#snippet content()}
+          {#if creating}
+            <p class="hint" data-testid="agent-instructions-create-hint">
+              {selected} doesn't exist yet — start typing and save to create it.
+            </p>
+          {/if}
 
-      {#if loading}
-        <p class="loading" data-testid="agent-instructions-loading">
-          <WovenLoader size="sm" label="Loading" />
-          Loading {selected}…
-        </p>
-      {:else}
-        {#if creating}
-          <p class="hint" data-testid="agent-instructions-create-hint">
-            {selected} doesn't exist yet — start typing and save to create it.
-          </p>
-        {/if}
-
-        {#if conflict !== undefined}
-          <ErrorNotice
-            message={conflict === null
-              ? `${selected} was deleted on disk since you started editing — your draft below was NOT saved.`
-              : `${selected} changed on disk since you started editing — your draft below was NOT saved.`}
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            onclick={() => void reloadLatest()}
-            dataTestId="agent-instructions-reload"
-          >
-            Reload latest version
-          </Button>
-        {/if}
-
-        {#if saveError}
-          <ErrorNotice message={`Could not save ${selected}: ${saveError}`} />
-        {/if}
-
-        <Field label={selected}>
-          {#snippet children({ id, describedBy, errorId, invalid })}
-            <TextArea
-              {id}
-              {describedBy}
-              {errorId}
-              {invalid}
-              bind:value={draft}
-              monospace
-              rows={12}
-              dataTestId="agent-instructions-editor"
+          {#if conflict !== undefined}
+            <ErrorNotice
+              message={conflict === null
+                ? `${selected} was deleted on disk since you started editing — your draft below was NOT saved.`
+                : `${selected} changed on disk since you started editing — your draft below was NOT saved.`}
             />
-          {/snippet}
-        </Field>
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={() => void reloadLatest()}
+              dataTestId="agent-instructions-reload"
+            >
+              Reload latest version
+            </Button>
+          {/if}
 
-        <Button
-          size="sm"
-          loading={saving}
-          disabled={saveDisabled}
-          onclick={() => void handleSave()}
-          dataTestId="agent-instructions-save"
-        >
-          {creating ? `Create ${selected}` : 'Save'}
-        </Button>
-      {/if}
+          {#if saveError}
+            <ErrorNotice message={`Could not save ${selected}: ${saveError}`} />
+          {/if}
+
+          <Field label={selected}>
+            {#snippet children({ id, describedBy, errorId, invalid })}
+              <TextArea
+                {id}
+                {describedBy}
+                {errorId}
+                {invalid}
+                bind:value={draft}
+                monospace
+                rows={12}
+                dataTestId="agent-instructions-editor"
+              />
+            {/snippet}
+          </Field>
+
+          <Button
+            size="sm"
+            loading={saving}
+            disabled={saveDisabled}
+            onclick={() => void handleSave()}
+            dataTestId="agent-instructions-save"
+          >
+            {creating ? `Create ${selected}` : 'Save'}
+          </Button>
+        {/snippet}
+      </AsyncPanel>
     </Card>
   {/if}
 </div>
@@ -288,14 +293,5 @@
     margin: 0;
     font-size: var(--text-small-size);
     color: var(--color-text-muted);
-  }
-
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: var(--text-small-size);
   }
 </style>
