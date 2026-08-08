@@ -1,5 +1,52 @@
 # @loombox/supervisor
 
+## 0.4.0
+
+### Minor Changes
+
+- 4f73638: Fork a past session, not just a live one (SPEC §7.19; issue #264)
+
+  Issue #746 (design spec `2026-08-05-zed-parity-decisions.md` §3 C6-2) already landed forking any turn of a currently-running session into a new one. #264 is the archive-facing sibling: the SAME `session_fork_request`/`forkSession()` call, but the source has no live agent anymore — it ended, its agent process exited on its own, or this node restarted since. That source still has real state worth honoring (its persisted transcript, its worktree, its branch), just not the live `AgentSession` the original fork path assumed.
+
+  Reuses the existing fork mechanism end to end rather than adding a second one — same wire message, same `NodeDaemon.forkSessionInternal`, same `SessionManager.forkSession`, same client-side `forkSession()`/fork button. What changes is only where `forkSessionInternal` reads the source's transcript from when `this.bridges` has nothing for it:
+
+  - `Session` (`@loombox/node`'s `session-manager.ts`) gains a persisted `acpSessionId` field — the ACP-level session id (`AgentSession.id`, a separate id space from `Session.id` by protocol necessity) its on-disk transcript lives under in `@loombox/supervisor`'s `TranscriptStore`. Set once by `NodeDaemon.finishSessionCreation` the moment a session's first agent actually starts, and never cleared — this is what lets a fork long after that agent is gone still find its history, across a node restart included (it round-trips through `SessionStore`'s `sessions.json` exactly like every other `Session` field).
+  - `AgentSupervisor` gains `readPersistedTranscriptUpdates(acpSessionId)`, a pure disk read via `TranscriptStore.readTranscriptUpdates()` that requires no live or even previously-reloaded `AgentSession` — the archive-facing counterpart to `get()`/`reloadPersistedSessions()`.
+  - `NodeDaemon.forkSessionInternal`: a live source reads its transcript from the bridge exactly as before; a past source (no bridge) reads the identical `AcpTranscriptUpdate[]` shape off disk instead, via the source's own recorded `acpSessionId`. From `cutTranscriptAtTurn` onward the two cases are indistinguishable.
+  - `SessionManager.forkSession` gains three pre-flight checks, run before any git command: the source's project folder exists, its own worktree exists, and its branch still exists. A past session can genuinely outlive its own workspace — the folder moved, the worktree got manually cleaned up — and `git worktree add`/the worktree-copy step would fail on either case too, just as a raw git/fs error. The refusal now names exactly what's missing (`CannotForkSessionError`, surfaced to the client as the fork's own visible reason) instead of failing obscurely.
+  - `forkSessionInternal` also refuses cleanly when the source id isn't tracked by this node at all (archived, or owned by a different node) and when a past source never reached a live agent in the first place (no `acpSessionId` ever recorded) — both are named refusals, not a hang or a generic error.
+
+  No wire protocol change: `session_fork_request`/`session_fork_response` are unchanged, and the web client's existing per-turn fork button (already rendered on a past session's read-only transcript, per issue #730's agentless notice) already sends the same `forkSession(sessionId, turnId)` call — it just failed with "no active agent to fork from" before this change, for every non-live source, which is precisely the case this issue asks to fix.
+
+  Tests: `packages/node/src/session-manager.test.ts` (new `setAcpSessionId` suite, new `forkSession` pre-flight-check refusals for a missing project folder/worktree/branch, and a restart-survival test), `packages/supervisor/src/agent-supervisor-persistence.test.ts` (new `readPersistedTranscriptUpdates` suite), and `packages/node/src/node-daemon.test.ts` (end-to-end: a real node, a real echo agent, a real node restart via `close()` + a fresh `NodeDaemon` on the same state dir, then `forkSession()` against the now-bridge-less source succeeds and the fork's seeded transcript matches turn 1 exactly; plus a worktree-gone refusal test).
+
+  Verified: `pnpm --filter @loombox/node exec vitest run` (160 files, 1742 tests), `pnpm --filter @loombox/supervisor exec vitest run` (8 files, 75 tests), `pnpm --filter @loombox/node typecheck`, `pnpm --filter @loombox/supervisor typecheck`, `pnpm exec eslint` on every changed file (clean), and the full `pnpm format:check` (clean).
+
+- 304c608: Filesystem-snapshot checkpoint & rollback for non-git projects (SPEC §7.20/§6; issue #267)
+
+  A project that isn't a git repository previously had no checkpoint/rollback at all — exactly the case where an agent doing something destructive is least recoverable. This adds `@loombox/supervisor`'s `FsSnapshotCheckpointStore`: a content-hash checkpoint engine with the identical public surface as `GitCheckpointStore` (`checkpoint`/`listCheckpoints`/`previewRestore`/`restore`/`deleteCheckpoint`/`deleteAllCheckpoints`/`filesAffectedByRestore`, same return shapes), so a caller never needs to know which engine it's holding.
+
+  - `checkpoint()` walks the whole working set (no ignore rules exist for a plain folder) and refuses outright, before hashing anything, once the tree crosses 20,000 files or 250 MB (`MAX_FS_SNAPSHOT_FILES`/`MAX_FS_SNAPSHOT_BYTES`) — a cheap stat-only pass, so a refusal never pays for hashing content about to be discarded. `restore()`/`previewRestore()`/`filesAffectedByRestore()` are never capped: a working set that outgrew the cap since its own last checkpoint must stay rollback-able.
+  - Content is deduplicated by sha256 into a per-session content-addressed blob store outside the project folder; `hashFile` streams file content rather than buffering whole files into memory.
+  - `@loombox/node`'s `NodeDaemon.getCheckpointStore` now picks the right engine per session: an isolated-worktree session is always git (no probe needed — `SessionManager` only ever forks a worktree off a real repo), a `workInPlace` session probes once via the new `isGitWorktree()` export (extracted from `GitCheckpointStore`'s own probe). Every checkpoint wire handler and the client dialogs above them stay unaware which engine answered — no new wire messages, no new client-facing branching.
+  - `@loombox/protocol`'s `checkpoint.ts` gains one new named `CheckpointErrorTypeV1` member, `snapshot_too_large`, mirroring the new `SnapshotTooLargeError` the same way the existing git-specific reasons mirror `GitCheckpointStore`'s error classes. Additive only.
+
+  Verified: `pnpm --filter @loombox/supervisor exec vitest run` (9 files, 90 tests), `pnpm --filter @loombox/node exec vitest run` (170 files, 1851 tests, 1 skipped), `pnpm --filter @loombox/protocol exec vitest run src/v1/checkpoint.test.ts` (19 tests), all green. Full `pnpm test` run (required — touches `packages/protocol`). `typecheck` on `supervisor`/`node`/`protocol`, `eslint` on every changed file, and `format:check` all clean.
+
+### Patch Changes
+
+- Updated dependencies [0ca76ea]
+- Updated dependencies [24c9e77]
+- Updated dependencies [b39f9c1]
+- Updated dependencies [c1c852d]
+- Updated dependencies [b389ef8]
+- Updated dependencies [18f2885]
+- Updated dependencies [827b157]
+  - @loombox/providers-core@0.6.0
+  - @loombox/providers-codex@0.1.1
+  - @loombox/providers-claude@0.1.1
+  - @loombox/providers-ohmypi@0.1.6
+
 ## 0.3.0
 
 ### Minor Changes

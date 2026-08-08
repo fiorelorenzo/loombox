@@ -1,5 +1,30 @@
 # @loombox/shared
 
+## 0.4.0
+
+### Minor Changes
+
+- 8ed4dd1: A board move on a live-mode tracker project (issue #651's kanban board, issue #696) now actually writes the moved-to category back through the external tracker, instead of forwarding a raw `workflowCategory`/`state` field patch the provider would ignore or reject. `TrackerTransition` gains an optional `targetCategory` (`@loombox/shared`) — the `WorkflowCategoryV1` a discovered transition lands on — which `GithubTrackerBackend`/`JiraTrackerBackend` both derive from the exact same mapping their own reads already use (`deriveGithubWorkflowCategory`/`deriveJiraWorkflowCategory`), never a second, hand-duplicated table. `NodeDaemon.applyLiveTrackerWrite`'s `update` op now runs every write through the new `applyLiveTrackerCategoryMove` (`tracker-live-bridge.ts`): a plain field edit or a same-category resubmit still forwards straight to `TrackerBackend.update`, but a genuine category move reads the item's current category, discovers its available transitions, posts the one matching the requested category, and only then patches the remaining fields. A move to a category no discovered transition reaches now surfaces as a typed `tracker_write_response` error (`LiveTrackerCategoryMoveError`) rather than silently succeeding at the wrong thing or reporting a success the board never actually landed.
+
+### Patch Changes
+
+- Updated dependencies [0edc522]
+- Updated dependencies [c301908]
+- Updated dependencies [304c608]
+- Updated dependencies [c0491de]
+- Updated dependencies [4284906]
+- Updated dependencies [7542bb1]
+- Updated dependencies [5977937]
+- Updated dependencies [91491bc]
+- Updated dependencies [b6fee51]
+- Updated dependencies [b389ef8]
+- Updated dependencies [4785b56]
+- Updated dependencies [7104b07]
+- Updated dependencies [18f2885]
+- Updated dependencies [7cb3efa]
+- Updated dependencies [d0a563e]
+  - @loombox/protocol@0.9.0
+
 ## 0.3.0
 
 ### Minor Changes

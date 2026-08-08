@@ -1,5 +1,26 @@
 # @loombox/crypto
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [0edc522]
+- Updated dependencies [c301908]
+- Updated dependencies [304c608]
+- Updated dependencies [c0491de]
+- Updated dependencies [4284906]
+- Updated dependencies [7542bb1]
+- Updated dependencies [5977937]
+- Updated dependencies [91491bc]
+- Updated dependencies [b6fee51]
+- Updated dependencies [b389ef8]
+- Updated dependencies [4785b56]
+- Updated dependencies [7104b07]
+- Updated dependencies [18f2885]
+- Updated dependencies [7cb3efa]
+- Updated dependencies [d0a563e]
+  - @loombox/protocol@0.9.0
+
 ## 0.1.1
 
 ### Patch Changes

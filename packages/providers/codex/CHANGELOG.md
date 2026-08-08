@@ -1,5 +1,32 @@
 # @loombox/providers-codex
 
+## 0.1.1
+
+### Patch Changes
+
+- 0ca76ea: Core-level `session/load` fallback for agents with no ACP v1 session-lifecycle methods beyond the deprecated one (SPEC.md §5.5; issue #843, filed by issue #272's Gemini spike)
+
+  Issue #272's live probe against the real, published `npx -y @google/gemini-cli@0.54.0 --acp` found Gemini CLI genuinely implements none of ACP v1's `session/resume`/`list`/`close`/`delete` (`-32601 "Method not found"`, the identical code a deliberately bogus method name gets) — only the older, superseded `session/load`, gated by its own `loadSession` flag rather than the `sessionCapabilities` object issue #821 already taught `deriveFeatureFlags` to read. The spike's own note said the fix, if taken, belongs at the `packages/providers/core` level, not per-provider, since every ACP agent that hasn't migrated off `session/load` yet benefits identically. This ships that fix:
+
+  - `packages/providers/core/src/client.ts`'s `AcpClient.resumeSession()` now branches on the connected agent's real negotiated capabilities: real `session/resume` (`sessionCapabilities.resume` present) is tried first exactly as before; an agent that advertises `loadSession` but not `sessionCapabilities.resume` gets `session/load` instead, sent with the real ACP v1 `LoadSessionRequest` shape (`sessionId`+`cwd`+`mcpServers`, the new `ResumeSessionOptions` third parameter — defaulting to `[]`, same shape as `newSession`'s `NewSessionOptions`). Both paths run through the exact same `session/update`-notification reducer already proven for `session/resume` (SPEC.md §7.24), since `session/load` is documented to replay history the same way. An agent advertising neither is refused up front with an actionable error rather than reaching the agent's own `-32601`.
+  - `packages/providers/core/src/capabilities.ts`'s `deriveFeatureFlags` widens `supportsResume` to `sessionCapabilities.resume != null || loadSession === true`: since the fallback above makes `session/load`-only resume genuinely work, reporting `supportsResume: false` in that case would be capability reporting saying what we wish were true rather than what's genuinely available — the opposite of what issue #821 established this flag for. `supportsAdditionalDirectories`/`supportsSessionDelete` are unaffected: `session/load` has no equivalent fallback for either.
+  - New fixture `packages/providers/core/test/fixtures/gemini-like-acp-agent.mjs`, byte-shaped after the real, live-recorded probe (`packages/providers/gemini/test/fixtures/gemini-acp-live-probe.json`, `docs/research/gemini-acp-completeness.md`): `loadSession: true`, no `sessionCapabilities` at all, `session/load` implemented (replays a deliberately-gapped history), `session/resume`/`list`/`close`/`delete` genuinely unimplemented (same `-32601` the real binary returns). New `packages/providers/core/src/gemini-like-conformance.test.ts` proves a resumed session round-trips history correctly and stays usable for a live follow-up `session/prompt` turn through this fixture, with no bespoke Gemini adapter code loaded — matching SPEC.md §5.5's "Gemini rides the generic tier" design.
+  - `packages/providers/core/test/fixtures/resumable-acp-agent.mjs` (issue #176's original session/resume fixture) now advertises `sessionCapabilities: { resume: {}, list: {} }` instead of just `loadSession: true` — it genuinely implements `session/resume`/`session/list`, not `session/load`, so the old capability shape would have been exactly the dishonest-reporting bug this issue exists to fix, and would have silently made `resumeSession()` take the new fallback branch against a fixture that doesn't implement it.
+  - `packages/providers/codex/src/codex-acp-capabilities.test.ts` and `packages/providers/gemini/src/gemini-acp-capabilities.test.ts`: the pre-#843 assertions that `supportsResume` stays `false` for a `loadSession`-only agent are flipped to `true`, since that's now genuinely accurate. Real Codex (which sets both `loadSession` and `sessionCapabilities.resume`) is unaffected either way.
+
+  Claude's and Codex's own conformance/capability suites are untouched and stay green: both fixtures already set `sessionCapabilities.resume`, so `resumeSession()` takes the unchanged real-`session/resume` branch exactly as before.
+
+  Verified: `pnpm --filter @loombox/providers-core exec vitest run` (26 files, 318 tests), `pnpm --filter @loombox/providers-codex exec vitest run` (7 files, 46 tests), `pnpm --filter @loombox/providers-gemini exec vitest run` (2 files, 9 tests), `pnpm --filter @loombox/providers-claude exec vitest run` (6 files, 30 tests, unaffected/green), `pnpm --filter @loombox/providers-generic exec vitest run` and `pnpm --filter @loombox/providers-ohmypi exec vitest run` (unaffected/green), `typecheck` on `providers-core`/`providers-codex`/`providers-gemini`/`providers-claude`/`providers-generic`/`providers-ohmypi`/`node`/`web` (all clean), `pnpm exec eslint` on every changed file (clean), and the full `pnpm format:check` (clean).
+
+- Updated dependencies [0ca76ea]
+- Updated dependencies [24c9e77]
+- Updated dependencies [b39f9c1]
+- Updated dependencies [c1c852d]
+- Updated dependencies [b389ef8]
+- Updated dependencies [18f2885]
+- Updated dependencies [827b157]
+  - @loombox/providers-core@0.6.0
+
 ## 0.1.0
 
 ### Minor Changes
