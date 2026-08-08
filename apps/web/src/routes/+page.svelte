@@ -5,6 +5,8 @@
   import { cubicOut } from 'svelte/easing';
   import type { TransitionConfig } from 'svelte/transition';
   import { env as publicEnv } from '$env/dynamic/public';
+  import { version as webBuildVersion } from '$app/environment';
+  import { applyUpdate, bundleIsStale, pwaUpdateAvailable } from '$lib/pwa-update';
   import type {
     AcpAvailableCommand,
     AcpConfigOption,
@@ -200,6 +202,7 @@
   import CommitGraphViewer from '$lib/components/CommitGraphViewer.svelte';
   import WorktreeDiffViewer from '$lib/components/WorktreeDiffViewer.svelte';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
+  import UpdateAvailableToast from '$lib/components/UpdateAvailableToast.svelte';
 
   // #381: `PUBLIC_LOOMBOX_RELAY_URL` (SvelteKit `$env/dynamic/public`, read
   // from the deployed process's real environment — see deploy/web/README.md
@@ -3182,6 +3185,26 @@
     targetStatusEntries.filter((target) => buildIdentityMismatch(relayBuildIdentity, target.build))
       .length,
   );
+  /**
+   * Issue #657: whether this tab's own bundle is stale, feeding
+   * `UpdateAvailableToast` near the end of this file's markup. Two
+   * independent signals ($lib/pwa-update.ts's own doc comment covers
+   * both in full): a waiting service worker (pwaUpdateAvailable, wired
+   * from +layout.svelte) and a straight commit comparison against what
+   * this account's relay is currently serving (bundleIsStale,
+   * webBuildVersion vs relayBuildIdentity), which also covers the
+   * Electron desktop shell's webview, where no service worker ever runs.
+   * updateToastDismissed is reset by nothing else on purpose: once
+   * dismissed for this tab's lifetime, it stays dismissed, so the notice
+   * never re-nags after a person has already seen it and chosen "not now".
+   */
+  let updateToastDismissed = $state(false);
+  /** Mirrors `$lib/pwa-update.ts`'s `pwaUpdateAvailable` singleton store, same "subscribe once in the top-level onMount" pattern as `narrowViewport`/`relayBuildIdentity` above rather than a `$store` auto-subscription, so every subscription in this component starts and stops in the same place. */
+  let pwaUpdateAvailableValue = $state(false);
+  const staleBuild = $derived(
+    !updateToastDismissed &&
+      (pwaUpdateAvailableValue || bundleIsStale(webBuildVersion, relayBuildIdentity)),
+  );
   /** How many OTHER sessions across the account are currently `'queued'` (issue #730's "waiting for a concurrency slot"), for the status bar's own right-zone segment (issue #736) — read straight off the same live `sessionStatuses` map every row's own badge already uses, not a separate subscription. */
   const queuedSessionCount = $derived(
     Array.from(sessionStatuses.values()).filter((value) => value === 'queued').length,
@@ -3924,6 +3947,12 @@
     const actionFromUrl = urlParams.get('action');
     if (actionFromUrl) pendingPushActionFromUrl = actionFromUrl;
 
+    // Issue #657: the PWA "new version ready" signal (see this file's own
+    // staleBuild doc comment).
+    const unsubscribePwaUpdateAvailable = pwaUpdateAvailable.subscribe((value) => {
+      pwaUpdateAvailableValue = value;
+    });
+
     // Narrow-viewport permission footer (SPEC §7.3; issue #134).
     const unsubscribeNarrow = isNarrowViewport().subscribe((value) => (narrowViewport = value));
 
@@ -4014,6 +4043,7 @@
       });
 
     return () => {
+      unsubscribePwaUpdateAvailable();
       unsubscribeProjects();
       unsubscribeAuthSession();
       unsubscribeNarrow();
@@ -5891,6 +5921,10 @@
   onClose={closeReviewChanges}
   onOpenFile={openFileTab}
 />
+
+{#if staleBuild}
+  <UpdateAvailableToast onReload={applyUpdate} onDismiss={() => (updateToastDismissed = true)} />
+{/if}
 
 <style>
   /* The pre-cockpit screens (checking session / sign-in / onboarding) own

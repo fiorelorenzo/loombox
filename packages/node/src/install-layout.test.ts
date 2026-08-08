@@ -10,6 +10,7 @@ import {
   createLocalInstallLayoutDriver,
   createRemoteInstallLayoutDriver,
   createTarGzArchive,
+  createWindowsInstallLayoutDriver,
   rollbackVersion,
 } from './install-layout';
 
@@ -109,6 +110,81 @@ describe('createLocalInstallLayoutDriver (issue #817, decision A1-2)', () => {
     const target = await readlink(path.join(baseDir, 'current'));
     expect(path.isAbsolute(target)).toBe(false);
     expect(target).toBe(path.join('versions', '1.0.0'));
+  });
+});
+
+describe('createWindowsInstallLayoutDriver (issue #659) — same real node:fs I/O, on this POSIX test host', () => {
+  // `baseDir` here is a real, disk-usable POSIX path (this driver's own
+  // internal `path.join` is the ambient, platform ADAPTIVE `node:path` —
+  // `path.win32` on a real Windows host, `path.posix` here — never forced
+  // to `path.win32` explicitly, which this file's own doc comment on
+  // `createWindowsInstallLayoutDriver` explains would make it unusable
+  // against a real filesystem from any non-Windows test runner). What's
+  // genuinely exercised for real below: an absolute (not relative)
+  // activation target, and the rmdir-falls-back-to-unlink swap on a
+  // repeated activation — the two behaviors that actually differ from
+  // `createLocalInstallLayoutDriver`. Real junction semantics are not
+  // exercisable here at all; see this suite's own last test.
+  let baseDir: string;
+
+  beforeEach(async () => {
+    baseDir = await mkdtemp(path.join(tmpdir(), 'loombox-install-layout-windows-'));
+  });
+
+  afterEach(async () => {
+    await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it('has no current version on a fresh baseDir', async () => {
+    const driver = createWindowsInstallLayoutDriver();
+    expect(await driver.currentVersion(baseDir)).toBeUndefined();
+    expect(await driver.listStagedVersions(baseDir)).toEqual([]);
+  });
+
+  it('stages, activates, re-activates a second version, and rolls back — the same real bytes moving as the local driver, with a real repeated current-swap in between', async () => {
+    const driver = createWindowsInstallLayoutDriver();
+
+    await driver.stageVersion(baseDir, '1.0.0', await fixtureArchive('v1'));
+    await driver.activateVersion(baseDir, '1.0.0');
+    expect(await driver.currentVersion(baseDir)).toBe('1.0.0');
+    await expect(readFile(path.join(baseDir, 'current', 'marker.txt'), 'utf8')).resolves.toBe('v1');
+
+    // The repeated activation below is what actually exercises the
+    // rmdir-ENOTDIR-falls-back-to-unlink path this driver's own doc
+    // comment describes: `current` already exists (as a plain symlink, on
+    // this POSIX host) and must be swapped out for the new target.
+    await driver.stageVersion(baseDir, '2.0.0', await fixtureArchive('v2'));
+    await driver.activateVersion(baseDir, '2.0.0');
+    expect(await driver.currentVersion(baseDir)).toBe('2.0.0');
+    await expect(readFile(path.join(baseDir, 'current', 'marker.txt'), 'utf8')).resolves.toBe('v2');
+
+    await rollbackVersion(driver, baseDir, '1.0.0');
+    expect(await driver.currentVersion(baseDir)).toBe('1.0.0');
+    await expect(readFile(path.join(baseDir, 'current', 'marker.txt'), 'utf8')).resolves.toBe('v1');
+  });
+
+  it('refuses to activate a version that was never staged', async () => {
+    const driver = createWindowsInstallLayoutDriver();
+    await expect(driver.activateVersion(baseDir, '9.9.9')).rejects.toThrow(/not staged/);
+  });
+
+  it('refuses to remove the currently active version', async () => {
+    const driver = createWindowsInstallLayoutDriver();
+    await driver.stageVersion(baseDir, '1.0.0', await fixtureArchive('v1'));
+    await driver.activateVersion(baseDir, '1.0.0');
+
+    await expect(driver.removeVersion(baseDir, '1.0.0')).rejects.toThrow(/current/);
+    expect(await driver.listStagedVersions(baseDir)).toEqual(['1.0.0']);
+  });
+
+  it('the current target is absolute, unlike the local (POSIX) driver\u2019s deliberately relative one — junctions require it', async () => {
+    const driver = createWindowsInstallLayoutDriver();
+    await driver.stageVersion(baseDir, '1.0.0', await fixtureArchive('v1'));
+    await driver.activateVersion(baseDir, '1.0.0');
+
+    const target = await readlink(path.join(baseDir, 'current'));
+    expect(path.isAbsolute(target)).toBe(true);
+    expect(target).toBe(path.join(baseDir, 'versions', '1.0.0'));
   });
 });
 

@@ -52,3 +52,56 @@ export async function runMigrations(
   }
   return ran;
 }
+
+/**
+ * The result of asking whether it is safe to roll the schema back past
+ * `targetId` (issue #657). `toRollBack` is every applied migration strictly
+ * after the target, newest first, exactly the set `runMigrations(pg,
+ * 'down')` would undo to reach that point. `blockedBy` is the subset of
+ * those that are `reversible: false`; `allowed` is `blockedBy.length ===
+ * 0`. A caller that overrides a refusal already has both lists in hand to
+ * report honestly, rather than a bare boolean.
+ */
+export interface RollbackAssessment {
+  allowed: boolean;
+  toRollBack: string[];
+  blockedBy: string[];
+}
+
+/**
+ * Whether it is safe to roll the relay's schema back to (i.e. undo every
+ * applied migration strictly after) `targetId`, the schema-side half of
+ * `scripts/deploy-prod.sh`'s rollback (issue #657). `targetId` is normally
+ * the last migration id the ROLLBACK-TARGET relay image's own
+ * `migrations.ts` knows about (`migrate-cli.ts`'s `list` subcommand reads
+ * that off the image with no DB involved); omitted, it means "roll back to
+ * before this relay ran any migration at all".
+ *
+ * Reads `_migrations` for what is actually applied, never assumes the
+ * full `migrations` array is, matching `runMigrations`' own "no-op unless
+ * applied" contract, so a partially-migrated or freshly-seeded database is
+ * assessed honestly rather than against a name it was fast-forwarded past.
+ * Pure knowledge, never itself destructive: this never calls `down`.
+ * `runMigrations(pg, 'down')` still does that, only after a caller has
+ * checked `allowed` here (or made an informed decision to override it).
+ * Classifying a migration `reversible: false` is not a ban, only a fact
+ * this function surfaces instead of leaving to a comment no automation
+ * reads.
+ */
+export async function assessRollback(pg: PgLike, targetId?: string): Promise<RollbackAssessment> {
+  await ensureMigrationsTable(pg);
+
+  const targetIndex = targetId ? migrations.findIndex((m) => m.id === targetId) : -1;
+  if (targetId && targetIndex === -1) {
+    throw new Error(`assessRollback: unknown target migration id "${targetId}"`);
+  }
+
+  const { rows } = await pg.query<{ id: string }>(`SELECT id FROM _migrations`);
+  const applied = new Set(rows.map((row) => row.id));
+
+  const afterTarget = migrations.filter((m, index) => index > targetIndex && applied.has(m.id));
+  const toRollBack = [...afterTarget].reverse().map((m) => m.id);
+  const blockedBy = afterTarget.filter((m) => !m.reversible).map((m) => m.id);
+
+  return { allowed: blockedBy.length === 0, toRollBack, blockedBy };
+}

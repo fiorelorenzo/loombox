@@ -734,6 +734,8 @@ export {
 export type { WireMessageV1 } from './message';
 export { parseWireMessageV1, safeParseWireMessageV1, wireMessageV1 } from './message';
 
+export { withEnvelope } from './wire-envelope';
+
 export type { AttentionHint, AttentionHintClass } from './attention';
 export { attentionHint, attentionHintClass } from './attention';
 
@@ -1297,6 +1299,7 @@ export type {
   TrackerWriteResultV1,
 } from './tracker-records';
 export {
+  categorizeKnownStatusName,
   groupByWorkflowCategory,
   resolveWorkflowCategory,
   WORKFLOW_CATEGORIES_V1,

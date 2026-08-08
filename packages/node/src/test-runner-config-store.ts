@@ -15,9 +15,10 @@
  * global-plus-override shape there is nothing to inherit from.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const TEST_RUNNER_CONFIG_FILE_NAME = 'test-runner-config.json';
@@ -41,10 +42,6 @@ export class TestRunnerConfigError extends Error {
     super(`test runner config store: ${message}`);
     this.name = 'TestRunnerConfigError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const COMMAND_KEYS = ['test', 'lint', 'build'] as const;
@@ -135,18 +132,12 @@ export class TestRunnerConfigStore {
   }
 
   private readFile(): TestRunnerConfigFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: TEST_RUNNER_CONFIG_SCHEMA_VERSION, projects: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new TestRunnerConfigError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: TEST_RUNNER_CONFIG_SCHEMA_VERSION, projects: {} },
+      validateFile,
+      (message) => new TestRunnerConfigError(message),
+    );
   }
 
   private writeFile(file: TestRunnerConfigFileV1): void {
