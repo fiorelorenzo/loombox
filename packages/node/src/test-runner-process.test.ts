@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RemoteProcessRunner } from './ssh/remote-process-runner';
 import {
@@ -10,6 +10,16 @@ import {
   type RemoteSessionsSandbox,
 } from './ssh/remote-sessions-test-sandbox';
 import { isSafeRunId, startLocalRun, startSshRun, type RunExitResult } from './test-runner-process';
+
+// Mocked for the platform-dispatch suite below only — every other test in
+// this file runs on `process.platform` as-is (Linux, in CI and here) and
+// never touches this module. See `./windows/windows-job-runner.ts`'s own
+// test file for everything Windows-specific: script/argv construction and
+// `startWindowsLocalRun`'s own `RunHandle` contract with `spawn` mocked.
+vi.mock('./windows/windows-job-runner', () => ({
+  startWindowsLocalRun: vi.fn(() => ({ cancel: vi.fn(() => Promise.resolve()) })),
+}));
+import { startWindowsLocalRun } from './windows/windows-job-runner';
 
 /** Collects every `onOutput`/`onExit` call in arrival order, decoding output chunks as UTF-8 text for easy assertion. */
 function collectRun(): {
@@ -150,6 +160,38 @@ describe('startLocalRun', () => {
     const handle = startLocalRun({ command: 'exit 0', onOutput: run.onOutput, onExit: run.onExit });
     await run.exit();
     await expect(handle.cancel()).resolves.toBeUndefined();
+  });
+});
+
+describe('startLocalRun platform dispatch (issue #940 — the seam itself, not the Windows mechanism)', () => {
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    vi.mocked(startWindowsLocalRun).mockClear();
+  });
+
+  it('dispatches to windows-job-runner.ts on win32, with the exact same StartRunOptions, never spawning a POSIX process group', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const run = collectRun();
+    const options = { command: 'pnpm test', onOutput: run.onOutput, onExit: run.onExit };
+
+    const handle = startLocalRun(options);
+
+    expect(startWindowsLocalRun).toHaveBeenCalledWith(options);
+    expect(startWindowsLocalRun).toHaveBeenCalledTimes(1);
+    await handle.cancel();
+  });
+
+  it('never dispatches to windows-job-runner.ts off win32', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    const run = collectRun();
+
+    const handle = startLocalRun({ command: 'exit 0', onOutput: run.onOutput, onExit: run.onExit });
+
+    expect(startWindowsLocalRun).not.toHaveBeenCalled();
+    await run.exit();
+    await handle.cancel();
   });
 });
 
