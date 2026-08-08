@@ -18,6 +18,8 @@ const EXPECTED_NAMES = [
   'more',
   'plus',
   'refresh',
+  'play',
+  'pause',
   'check',
   'alert',
   'health-ok',
