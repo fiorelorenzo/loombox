@@ -70,10 +70,69 @@ export interface TrackerTransition {
   readonly targetCategory?: WorkflowCategoryV1;
 }
 
-/** One board `TrackerBackend.listBoards` exposes (Jira agile board or a GitHub Projects v2 board). */
+/**
+ * One column on a board's own discovered status field (issue #218) — a
+ * GitHub Projects v2 single-select field option, or (future) a Jira
+ * board column. `targetCategory` is always populated, never optional:
+ * a column only ever exists inside a `TrackerBoardStatusField` that
+ * `github-projects-v2.ts`'s `discoverGithubBoardFields` has *already*
+ * confirmed every option maps onto a real {@link WorkflowCategoryV1} —
+ * see that function's own doc comment for why a field with even one
+ * unrecognized option is rejected outright rather than surfaced with a
+ * partially-mapped column list.
+ */
+export interface TrackerBoardColumn {
+  readonly id: string;
+  readonly name: string;
+  readonly targetCategory: WorkflowCategoryV1;
+}
+
+/**
+ * A board's own discovered status field (issue #218) — GitHub Projects
+ * v2 defines no built-in "Status" concept, only whatever single-select
+ * field(s) a project's own author happened to create, so this is never
+ * assumed to exist under a fixed name; it is the ONE single-select
+ * field (if any) whose options all resolved to a {@link WorkflowCategoryV1}
+ * (see `TrackerBoardColumn`'s own doc comment). `id`/`name` are that
+ * field's own GraphQL node id/display name, not a loombox-invented one.
+ */
+export interface TrackerBoardStatusField {
+  readonly id: string;
+  readonly name: string;
+  readonly columns: readonly TrackerBoardColumn[];
+}
+
+/** One iteration on a board's own discovered iteration field (issue #218) — a GitHub Projects v2 `ProjectV2IterationField` iteration, field-for-field off `ProjectV2IterationFieldIteration` (`docs.github.com/public/fpt/schema.docs.graphql`, line 42344). */
+export interface TrackerBoardIteration {
+  readonly id: string;
+  readonly title: string;
+  readonly startDate: string;
+  readonly duration: number;
+}
+
+/** A board's own discovered iteration field (issue #218) — GitHub Projects v2's sprint analog. At most one per board today: `discoverGithubBoardFields` takes the first `ProjectV2IterationField` it finds, since a project defining more than one is not a shape this backend has a documented tie-break for yet (unlike the status field, where a same-named-"status" tie-break exists — see that function's own doc comment). */
+export interface TrackerBoardIterationField {
+  readonly id: string;
+  readonly name: string;
+  readonly iterations: readonly TrackerBoardIteration[];
+}
+
+/**
+ * One board `TrackerBackend.listBoards` exposes (Jira agile board or a
+ * GitHub Projects v2 board). `statusField`/`iterationField` are both
+ * optional and independent — a board can have neither, either, or both.
+ * `statusFieldUnavailableReason` is set (a concrete, board-specific
+ * explanation) exactly when `statusField` is absent, so a caller asking
+ * "why can't this board move by category" gets a real answer instead of
+ * a bare `undefined` to guess at (issue #218's "degrade honestly rather
+ * than inventing one" acceptance criterion).
+ */
 export interface TrackerBoard {
   readonly id: string;
   readonly name: string;
+  readonly statusField?: TrackerBoardStatusField;
+  readonly statusFieldUnavailableReason?: string;
+  readonly iterationField?: TrackerBoardIterationField;
 }
 
 /**

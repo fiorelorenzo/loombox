@@ -216,12 +216,31 @@ const LOCAL_STATUS_CATEGORIES_V1: Readonly<Record<string, WorkflowCategoryV1>> =
 };
 
 /**
+ * The vocabulary half of {@link resolveWorkflowCategory} split out on its
+ * own (issue #218): looks a normalized status/option NAME up in
+ * {@link LOCAL_STATUS_CATEGORIES_V1} and returns `undefined`, never a
+ * fallback, when nothing matches — `resolveWorkflowCategory` itself still
+ * defaults an unmatched native status to `new` (a native record always
+ * has *some* status, so "unrecognized" and "not started" collapse on
+ * purpose there), but a live GitHub Projects v2 board discovering its
+ * own single-select field (`@loombox/node`'s `github-projects-v2.ts`)
+ * needs the true tri-state answer: a field whose options don't ALL
+ * resolve is not a status field at all, and guessing `new` for the
+ * leftover options would be exactly the "assume a universal Status
+ * field" mistake that discovery is supposed to avoid. One vocabulary,
+ * reused by both callers, never a second hand-written table.
+ */
+export function categorizeKnownStatusName(value: string): WorkflowCategoryV1 | undefined {
+  return LOCAL_STATUS_CATEGORIES_V1[value.trim().toLowerCase()];
+}
+
+/**
  * Resolves `record`'s workflow category through its own type's
  * `workflowStatus` role, normalized (trimmed, lower-cased) and looked up
- * in {@link LOCAL_STATUS_CATEGORIES_V1}. A record with no resolvable
- * status value at all (an unmapped role, or an empty string) lands in
- * `new` — the same fallback an unrecognized non-empty status gets, one
- * rule rather than two.
+ * in {@link LOCAL_STATUS_CATEGORIES_V1} via {@link categorizeKnownStatusName}.
+ * A record with no resolvable status value at all (an unmapped role, or
+ * an empty string) lands in `new` — the same fallback an unrecognized
+ * non-empty status gets, one rule rather than two.
  */
 export function resolveWorkflowCategory(
   record: TrackerRecordV1,
@@ -229,7 +248,7 @@ export function resolveWorkflowCategory(
 ): WorkflowCategoryV1 {
   const value = resolveRoleValue(record, types, 'workflowStatus');
   if (typeof value !== 'string' || value.length === 0) return 'new';
-  return LOCAL_STATUS_CATEGORIES_V1[value.trim().toLowerCase()] ?? 'new';
+  return categorizeKnownStatusName(value) ?? 'new';
 }
 
 /**
