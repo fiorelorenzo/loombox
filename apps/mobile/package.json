@@ -3,14 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "types": "./src/index.ts",
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "node scripts/build-www.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vitest run"
+    "lint": "eslint src scripts",
+    "test": "vitest run",
+    "cap:sync": "cap sync",
+    "cap:add:android": "cap add android",
+    "cap:add:ios": "cap add ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "8.5.0",
+    "@capacitor/ios": "^8.5.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.0",
+    "esbuild": "^0.28.1"
   }
 }
