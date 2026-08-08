@@ -12,6 +12,8 @@ import {
   type BlobDownloadResponse,
   type BuildIdentityV1,
   type CompatibilityWindowV1,
+  type NodeIdentityConflict,
+  type NodeIdentityConflictWarning,
   type NodeSelfUpdateSummaryV1,
   type ConnectedAccountList,
   type KeymapResult,
@@ -98,6 +100,8 @@ interface BaseConnection {
   socket: WsWebSocket;
   deviceId: string;
   accountId: string;
+  /** This connection's remote address (`request.ip`, captured once at `initialize`) — used only for `claimNodeRouting`'s conflict log line (issue #933): naming which physical peer showed up matters far more once two connections are already fighting over one identity than it does day to day. */
+  remoteAddress: string;
 }
 
 interface NodeConnection extends BaseConnection {
@@ -108,6 +112,10 @@ interface NodeConnection extends BaseConnection {
   buildIdentity?: BuildIdentityV1;
   /** This node's latest self-update check (issue #656), from its `node_self_update_status` push — `undefined` until the first one arrives on this connection, or for a node that predates the field. Connection-scoped, exactly like `buildIdentity` above: never persisted, since a disconnected node has nothing live to report. */
   selfUpdate?: NodeSelfUpdateSummaryV1;
+  /** This device's persisted ECDH identity key, base64 (`initialize.devicePublicKey` — issue #64/#655's sibling field). Compared across connections claiming the same nodeId (issue #933's `claimNodeRouting`) to tell a reconnect from a rival without any timing heuristic: the SAME install reconnecting presents the SAME key every time, a genuinely different device cannot. Connection-scoped exactly like `buildIdentity`: the live socket's own announced key, never a persisted `TargetStore` property. */
+  devicePublicKey: string;
+  /** Set the moment `claimNodeRouting` refuses a DIFFERENT-device rival trying to claim a nodeId this connection already owns (issue #933) — mirrors `buildIdentity`/`selfUpdate`: connection-scoped, sticky until this connection itself disconnects, never persisted in `TargetStore`. Read back into `target_list`'s own `identityConflict` field (`targets.ts`) so a client watching that node sees the same warning the relay logged. */
+  identityConflict?: NodeIdentityConflictWarning;
 }
 
 interface ClientConnection extends BaseConnection {
@@ -1042,6 +1050,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   async function handleInitialize(
     socket: WsWebSocket,
     raw: string,
+    remoteAddress: string,
   ): Promise<Connection | undefined> {
     let parsed: unknown;
     try {
@@ -1137,14 +1146,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             socket,
             deviceId: message.deviceId,
             accountId,
+            remoteAddress,
             nodeIds: new Set(),
             buildIdentity: message.buildIdentity,
+            devicePublicKey: message.devicePublicKey,
           }
         : {
             kind: 'client',
             socket,
             deviceId: message.deviceId,
             accountId,
+            remoteAddress,
             subscriptions: new Set(),
             outbox: new BoundedClientOutbox((item, done) => {
               sendJson(socket, item);
@@ -1452,6 +1464,108 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     sendDirect(connection, response);
   }
 
+  /**
+   * Issue #933, the relay-side follow-up from #929's 15-hour duplicate-node
+   * incident (#937 already closed the same-machine half with a state-dir
+   * lock — this is the half a lock can never see, since the two
+   * connections aren't on the same machine). Called by both
+   * `target_announce` and `session_announce` below, right before either
+   * would otherwise hand `registry.nodeConnectionsByNodeId` to a plain
+   * `Map.set()`: that used to happen unconditionally, so whichever
+   * connection announced a nodeId LAST simply took over routing, with no
+   * check and no signal to anyone — exactly how #929 stayed invisible for
+   * 15 hours, since two different node processes both claimed
+   * `devbox-node-1` and the relay had no opinion.
+   *
+   * The rule: `devicePublicKey` (an ECDH identity persisted by
+   * `NodeIdentityStore` and reused across restarts, issue #64 — announced
+   * on every `initialize`, #655's sibling field) tells a reconnect from a
+   * rival apart without any timing heuristic, because it's the one thing a
+   * genuinely different device cannot present:
+   *
+   * - No existing claim, or the SAME connection re-announcing (the normal
+   *   case every time a node's target list changes) — claims/keeps the
+   *   entry, nothing else happens.
+   * - A DIFFERENT connection already owns it, SAME devicePublicKey —
+   *   reconnect: a flaky network dropped a socket and the same physical
+   *   node came back before the relay's own close/timeout noticed the old
+   *   one was dead. The new connection takes over exactly like before this
+   *   issue; the OLD one is told why (`node_identity_conflict`, outcome
+   *   `'superseded'`) and closed (4410). Nothing is logged and
+   *   `identityConflict` is never touched — this stays exactly as
+   *   unremarkable as it always was.
+   * - A DIFFERENT connection already owns it, DIFFERENT devicePublicKey —
+   *   rival: a different device claiming an identity another connection
+   *   already holds live, the actual #929 failure mode (or a plain
+   *   misconfiguration). The relay refuses the NEWCOMER rather than the
+   *   incumbent: whatever session an operator is actually driving over the
+   *   existing connection should not be yanked out from under them by a
+   *   connection that only just showed up, and "whoever's still there
+   *   wins" is exactly the policy that would have masked #929's own
+   *   crashed-but-not-yet-evicted duplicate for even longer. The rejected
+   *   connection is told why (`node_identity_conflict`, outcome
+   *   `'rejected'`) and closed (4409); the relay logs a warning naming
+   *   both connections' accountId/deviceId/remoteAddress (this issue's own
+   *   "log the collision loudly" ask), and marks the SURVIVING
+   *   connection's `identityConflict` — mirrored onto every target row it
+   *   owns via `target_list` (`targets.ts`) — so a client watching that
+   *   node sees it was just fought over, rather than both sides looking
+   *   perfectly healthy the way they did for 15 hours.
+   *
+   * Returns whether `connection` may proceed to persist/route this
+   * announce; `false` means the caller must return immediately without
+   * touching `store.targets`/`store.sessions` — a rejected rival's payload
+   * is never even considered, so it can never silently reassign a target's
+   * recorded owner (accountId included) out from under the incumbent.
+   */
+  function claimNodeRouting(nodeId: string, connection: NodeConnection): boolean {
+    const existing = registry.nodeConnectionsByNodeId.get(nodeId);
+    if (!existing || existing === connection) {
+      registry.nodeConnectionsByNodeId.set(nodeId, connection);
+      return true;
+    }
+    if (existing.devicePublicKey === connection.devicePublicKey) {
+      registry.nodeConnectionsByNodeId.set(nodeId, connection);
+      const notice: NodeIdentityConflict = {
+        type: 'node_identity_conflict',
+        protocolVersion: PROTOCOL_V1,
+        nodeId,
+        outcome: 'superseded',
+        message: `a new connection for nodeId ${nodeId} took over routing (same device reconnecting)`,
+      };
+      sendDirect(existing, notice);
+      existing.socket.close(4410, 'superseded by a reconnect');
+      return true;
+    }
+    const notice: NodeIdentityConflict = {
+      type: 'node_identity_conflict',
+      protocolVersion: PROTOCOL_V1,
+      nodeId,
+      outcome: 'rejected',
+      message: `nodeId ${nodeId} is already live from a different device`,
+    };
+    sendDirect(connection, notice);
+    connection.socket.close(4409, 'node identity conflict');
+    app.log.warn(
+      {
+        nodeId,
+        incumbent: {
+          accountId: existing.accountId,
+          deviceId: existing.deviceId,
+          remoteAddress: existing.remoteAddress,
+        },
+        rival: {
+          accountId: connection.accountId,
+          deviceId: connection.deviceId,
+          remoteAddress: connection.remoteAddress,
+        },
+      },
+      'relay: rival connection rejected — a different device tried to claim a nodeId another connection already holds live (issue #933)',
+    );
+    existing.identityConflict = { rivalDeviceId: connection.deviceId, detectedAt: Date.now() };
+    return false;
+  }
+
   async function handleNodeMessage(
     connection: NodeConnection,
     message: WireMessageV1,
@@ -1460,9 +1574,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
     switch (message.type) {
       case 'target_announce': {
+        if (!claimNodeRouting(message.nodeId, connection)) return;
         store.targets.announce(message.nodeId, connection.accountId, message.targets);
         connection.nodeIds.add(message.nodeId);
-        registry.nodeConnectionsByNodeId.set(message.nodeId, connection);
         return;
       }
       case 'target_status': {
@@ -1481,12 +1595,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
+        if (!claimNodeRouting(message.session.nodeId, connection)) return;
         await store.sessions.announce({
           meta: message.session,
           privateEnvelope: message.privateEnvelope,
         });
         connection.nodeIds.add(message.session.nodeId);
-        registry.nodeConnectionsByNodeId.set(message.session.nodeId, connection);
         return;
       }
       case 'connected_account_announce': {
@@ -2179,6 +2293,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               ...(health ? { health } : {}),
               ...(nodeConnection?.buildIdentity ? { build: nodeConnection.buildIdentity } : {}),
               ...(nodeConnection?.selfUpdate ? { selfUpdate: nodeConnection.selfUpdate } : {}),
+              // Issue #933: mirrored from the owning connection's own
+              // `identityConflict`, exactly like `build`/`selfUpdate` above
+              // — absent unless a rival has actually been rejected while
+              // THIS connection was live.
+              ...(nodeConnection?.identityConflict
+                ? { identityConflict: nodeConnection.identityConflict }
+                : {}),
               // Issue #255: forwarded verbatim from the node's own
               // `target_announce`, exactly like `providers` above — absent
               // for a node that predates it.
@@ -3269,7 +3390,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   app.register(fastifyWebsocket);
 
   app.register(async (instance) => {
-    instance.get(RELAY_WS_PATH, { websocket: true }, (socket: WsWebSocket) => {
+    instance.get(RELAY_WS_PATH, { websocket: true }, (socket: WsWebSocket, request) => {
       let connection: Connection | undefined;
       // Every store call is now awaited (the Postgres swap makes that
       // unavoidable — see `store.ts`'s `Awaitable` doc comment), so a frame
@@ -3283,7 +3404,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
       async function processFrame(text: string): Promise<void> {
         if (!connection) {
-          connection = await handleInitialize(socket, text);
+          connection = await handleInitialize(socket, text, request.ip);
           return;
         }
 
