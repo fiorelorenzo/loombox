@@ -2765,3 +2765,53 @@ describe('session replay (issue #265)', () => {
     vi.useRealTimers();
   });
 });
+
+describe('update toast (issue #657, a stale bundle tells the user instead of swapping silently)', () => {
+  it('shows once this relay is serving a build different from the one this tab was built from, and stays gone once dismissed', async () => {
+    const { client } = mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+    expect(screen.queryByTestId('update-available-toast')).toBeNull();
+
+    // apps/web/vitest-stubs/app-environment.ts stubs $app/environment's
+    // version to 'vitest-stub-version', so any other commit reads as stale.
+    client.relayBuildIdentity.set({ version: '0.9.0', commit: 'a-newer-deployed-commit' });
+
+    const toast = await screen.findByTestId('update-available-toast');
+    expect(toast.textContent).toContain('new version');
+
+    await fireEvent.click(screen.getByTestId('update-toast-dismiss'));
+    expect(screen.queryByTestId('update-available-toast')).toBeNull();
+  });
+
+  it('never shows while the relay build identity is unknown or matches this tab exactly', async () => {
+    const { client } = mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+
+    client.relayBuildIdentity.set({ version: '0.9.0', commit: 'vitest-stub-version' });
+    expect(screen.queryByTestId('update-available-toast')).toBeNull();
+  });
+
+  it('Reload is a real click, not an automatic reload, and only fires the reload path once clicked', async () => {
+    // jsdom's window.location.reload is not configurable, so vi.spyOn on
+    // it directly throws "Cannot redefine property". Replacing the whole
+    // window.location object (its own property IS configurable) is the
+    // standard workaround.
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, reload },
+    });
+
+    const { client } = mountCockpit({ sessions: [makeSession()] });
+    await screen.findByTestId('cockpit-session-title');
+    client.relayBuildIdentity.set({ version: '0.9.0', commit: 'a-newer-deployed-commit' });
+    await screen.findByTestId('update-available-toast');
+    expect(reload).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByTestId('update-toast-reload'));
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+  });
+});

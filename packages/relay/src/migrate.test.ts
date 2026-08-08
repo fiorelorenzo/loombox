@@ -12,7 +12,7 @@ function freshPg(): PgLike {
 }
 
 /**
- * Marks `_migrations` as applied only through `targetId` — a partially-
+ * Marks `_migrations` as applied only through `targetId`, a partially
  * migrated database, without depending on real `down` SQL to get there
  * (`assessRollback` only ever reads `_migrations`' bookkeeping rows, never
  * the schema itself, so deleting the later rows by hand is a faithful,
@@ -156,7 +156,7 @@ describe('assessRollback (#657: migration reversibility gate)', () => {
     );
   });
 
-  it('never calls down itself — the applied set is unchanged after an assessment either way', async () => {
+  it('never calls down itself, the applied set is unchanged after an assessment either way', async () => {
     const pg = freshPg();
     await runMigrations(pg, 'up');
 

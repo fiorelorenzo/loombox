@@ -188,8 +188,8 @@ rollback() {
   if [ "$RELAY_ROLLBACK_TAGGED" = true ]; then
     # Issue #657: this deploy's relay already self-migrated forward on
     # boot (main.ts's runMigrations up), and the CURRENTLY LIVE relay
-    # container -- still running, still the one that actually applied
-    # them -- is the only place that honestly knows what's in
+    # container, still running, still the one that actually applied
+    # them, is the only place that honestly knows what's in
     # `_migrations`. The pre-deploy image tagged above only knows the
     # migrations ITS OWN (older) migrations.ts shipped with; asking it
     # (`migrate list`, no DB touched) for the last one it recognises is

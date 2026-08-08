@@ -6,22 +6,22 @@ import { migrations } from './migrations';
 /**
  * Runnable migration entry point (#96): `pnpm --filter @loombox/relay run
  * migrate` (or `migrate down`), driven by `DATABASE_URL`. Meant to run once
- * on relay boot / the Docker image entrypoint, ahead of `main.ts` — it is
+ * on relay boot / the Docker image entrypoint, ahead of `main.ts`. It is
  * idempotent, so re-running it there on every start is safe.
  *
- * Two more subcommands (issue #657), both `scripts/deploy-prod.sh`'s
- * `rollback()` actually calls, not just documentation:
+ * Two more subcommands (issue #657), both actually called by
+ * `scripts/deploy-prod.sh`'s `rollback()`, not just documentation:
  *
- * - `migrate list` — no `DATABASE_URL` needed, prints every migration THIS
+ * - `migrate list`, no `DATABASE_URL` needed, prints every migration THIS
  *   image's own `migrations.ts` knows about, `[{"id","reversible"}, ...]`.
  *   Run against the pre-deploy relay image via `docker run --entrypoint`
  *   (no live container required), it answers "how far does the rollback
  *   target's own code actually go".
- * - `migrate assess-rollback [targetId]` — prints a
+ * - `migrate assess-rollback [targetId]`, prints a
  *   `RollbackAssessment` (`{"allowed","toRollBack","blockedBy"}`) and exits
  *   non-zero when `allowed` is false, so a caller that only checks the
  *   exit code (as `deploy-prod.sh` does) still refuses correctly without
- *   parsing JSON. Needs `DATABASE_URL` — run against the CURRENTLY LIVE
+ *   parsing JSON. Needs `DATABASE_URL`, run against the CURRENTLY LIVE
  *   relay, the one that actually knows what's applied.
  */
 async function main(): Promise<void> {

@@ -18,19 +18,19 @@ export interface Migration {
   up: string;
   down: string;
   /**
-   * Issue #657: whether `down` — or, equivalently, leaving this migration's
+   * Issue #657: whether `down`, or equivalently leaving this migration's
    * schema change in place while code that predates it runs against the
-   * result — is safe. `true` means a pure additive change: nothing built
+   * result, is safe. `true` means a pure additive change: nothing built
    * before this migration ever depended on the table/column it adds
    * either way, so `down` cleanly removes it and older code is unaffected
    * whether `down` runs or not. `false` means `down` (or skipping it and
    * just running old code against the new schema) can destroy or orphan
-   * data with no way back — see the migration's own comment for why.
+   * data with no way back. See the migration's own comment for why.
    *
    * This is read by `assessRollback` (`migrate.ts`) and, through it,
    * `migrate-cli.ts`'s `assess-rollback` subcommand, which
    * `scripts/deploy-prod.sh`'s `rollback()` actually calls before flipping
-   * the relay image back — data the deploy path can act on, not a comment
+   * the relay image back: data the deploy path can act on, not a comment
    * it can't read. An irreversible migration is not forbidden by this
    * flag; it only means a rollback that would cross it gets refused
    * instead of silently proceeding into a schema neither side agreed to.
@@ -309,12 +309,12 @@ export const migrations: readonly Migration[] = [
     // the one-time backfill above (`id = token_hash`, deterministic and
     // therefore replayable), every token minted AFTER this migration gets
     // its own real `id` from the caller (`store-postgres.ts`'s
-    // `insert(input)` — see its own comment), independent of `token_hash`
+    // `insert(input)`, see its own comment), independent of `token_hash`
     // and not derivable from it. Rolling this back after such a token
     // exists permanently loses the only handle `revoke(id, accountId)`
     // has on it, and the pre-migration insert statement a rolled-back
     // relay would run has no `id` column to satisfy `id SET NOT NULL`
-    // with in the first place — it fails outright, not silently.
+    // with in the first place: it fails outright, not silently.
     reversible: false,
   },
   {

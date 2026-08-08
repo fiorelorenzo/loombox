@@ -13,7 +13,16 @@ export default defineConfig({
   plugins: [
     sveltekit(),
     SvelteKitPWA({
-      registerType: 'autoUpdate',
+      // 'prompt' (issue #657, was 'autoUpdate'): autoUpdate makes
+      // vite-plugin-pwa's own registerSW call a bare
+      // `window.location.reload()` the instant a new service worker
+      // activates, with no prompt and no way to defer it, a forced
+      // reload mid-session, exactly what #657's acceptance says is worse
+      // than the drift it fixes. 'prompt' only flips
+      // `$lib/pwa-update.ts`'s `pwaUpdateAvailable` and waits for a real
+      // click (`UpdateAvailableToast`'s Reload button, wired in
+      // `+layout.svelte`).
+      registerType: 'prompt',
       // Do NOT auto-inject the SW-registration <script> into the HTML head
       // (vite-pwa's default 'auto'): that registers the service worker
       // independently of app code, so it can't be gated. Registration is
