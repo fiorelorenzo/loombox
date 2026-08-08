@@ -16,7 +16,7 @@
  * an operator looking at one project's settings never asked for.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -24,6 +24,7 @@ import {
   type PermissionPolicy,
   type PermissionRuleSet,
 } from './permission-policy';
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const PERMISSION_POLICY_FILE_NAME = 'permission-policy.json';
@@ -40,10 +41,6 @@ export class PermissionPolicyError extends Error {
     super(`permission policy store: ${message}`);
     this.name = 'PermissionPolicyError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateStringArray(raw: unknown, context: string): string[] {
@@ -132,18 +129,12 @@ export class PermissionPolicyStore {
   }
 
   private readFile(): PermissionPolicyFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: PERMISSION_POLICY_SCHEMA_VERSION, projects: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new PermissionPolicyError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: PERMISSION_POLICY_SCHEMA_VERSION, projects: {} },
+      validateFile,
+      (message) => new PermissionPolicyError(message),
+    );
   }
 
   private writeFile(file: PermissionPolicyFileV1): void {

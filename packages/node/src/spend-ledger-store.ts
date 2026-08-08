@@ -26,9 +26,10 @@
  * the pure grouping logic this store's rows feed into.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const SPEND_LEDGER_FILE_NAME = 'spend-ledger.json';
@@ -55,10 +56,6 @@ export class SpendLedgerError extends Error {
     super(message);
     this.name = 'SpendLedgerError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -153,18 +150,12 @@ export class SpendLedgerStore {
   }
 
   private readFile(): SpendLedgerFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: SPEND_LEDGER_SCHEMA_VERSION, rows: [] };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new SpendLedgerError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: SPEND_LEDGER_SCHEMA_VERSION, rows: [] },
+      validateFile,
+      (message) => new SpendLedgerError(message),
+    );
   }
 
   private writeFile(file: SpendLedgerFileV1): void {

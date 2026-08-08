@@ -17,11 +17,12 @@
  * append-log design.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { snippetV1, type SnippetV1 } from '@loombox/protocol';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const SNIPPET_FILE_NAME = 'snippets.json';
@@ -38,10 +39,6 @@ export class SnippetError extends Error {
     super(`snippet store: ${message}`);
     this.name = 'SnippetError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateFile(parsed: unknown, filePath: string): SnippetFileV1 {
@@ -100,16 +97,12 @@ export class SnippetStore {
   }
 
   private readFile(): SnippetFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: SNIPPET_SCHEMA_VERSION, snippets: [] };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new SnippetError(`file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`);
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: SNIPPET_SCHEMA_VERSION, snippets: [] },
+      validateFile,
+      (message) => new SnippetError(message),
+    );
   }
 
   private writeFile(file: SnippetFileV1): void {

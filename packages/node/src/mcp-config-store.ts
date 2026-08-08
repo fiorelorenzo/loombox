@@ -20,7 +20,7 @@
  * `effectiveServers()`/secret-resolution calls on too.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -30,6 +30,7 @@ import {
   type McpServerConfigRecord,
 } from '@loombox/providers-core';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const MCP_CONFIG_FILE_NAME = 'mcp-servers.json';
@@ -212,18 +213,12 @@ export class McpConfigStore {
   }
 
   private readFile(): McpConfigFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: MCP_CONFIG_SCHEMA_VERSION, global: [], projects: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new McpConfigError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: MCP_CONFIG_SCHEMA_VERSION, global: [], projects: {} },
+      validateFile,
+      (message) => new McpConfigError(message),
+    );
   }
 
   private writeFile(file: McpConfigFileV1): void {

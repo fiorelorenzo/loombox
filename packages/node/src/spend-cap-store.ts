@@ -18,9 +18,10 @@
  * (no saved entry) already means exactly that.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const SPEND_CAP_FILE_NAME = 'spend-caps.json';
@@ -37,10 +38,6 @@ export class SpendCapError extends Error {
     super(`spend cap store: ${message}`);
     this.name = 'SpendCapError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateCapUsd(raw: unknown, context: string): number {
@@ -108,18 +105,12 @@ export class SpendCapStore {
   }
 
   private readFile(): SpendCapFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: SPEND_CAP_SCHEMA_VERSION, projects: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new SpendCapError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: SPEND_CAP_SCHEMA_VERSION, projects: {} },
+      validateFile,
+      (message) => new SpendCapError(message),
+    );
   }
 
   private writeFile(file: SpendCapFileV1): void {
