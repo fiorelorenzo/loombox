@@ -4,7 +4,12 @@ import { Client, type ConnectConfig } from 'ssh2';
 
 import { wrapForLoginShell } from './login-shell';
 import type { PortForwardTransport } from './port-forward-transport';
-import type { RemoteExecOptions, RemoteExecResult, RemoteTransport } from './remote-transport';
+import {
+  shQuote,
+  type RemoteExecOptions,
+  type RemoteExecResult,
+  type RemoteTransport,
+} from './remote-transport';
 import type { ShellChannel, ShellChannelOptions, ShellTransport } from './shell-transport';
 
 /**
@@ -159,10 +164,35 @@ export class Ssh2Transport implements RemoteTransport, PortForwardTransport, She
   }
 
   /**
-   * Opens an interactive shell with a remote PTY allocated (issue #172's
-   * `ssh:` terminal backend, SPEC §16 grounding): `ssh2`'s `Client.shell()`
-   * with `PseudoTtyOptions`, the same wire mechanism a plain `ssh host`
-   * (no command) uses. Wraps the raw `ClientChannel` into the small
+   * Opens an interactive shell with a remote PTY allocated, already
+   * running in `options.cwd` (issue #172's `ssh:` terminal backend, SPEC
+   * §16 grounding; the `cwd` mechanism is issue #704). `ssh2`'s
+   * `Client.shell()` has no `cwd` of its own — the earlier fix here typed
+   * a `cd <cwd> && clear\n` as the channel's first INPUT once the shell
+   * was already running, which the remote PTY's own line discipline
+   * echoes straight back (the same thing that echoes anything else you
+   * type), landing in the terminal's scrollback above the real first
+   * prompt. `Client.exec()` doesn't have that problem: it takes a PTY
+   * (`pty: {...}`, the same `PseudoTtyOptions` `.shell()` took) exactly
+   * like `.shell()` does, but the COMMAND itself is a wire-protocol
+   * argument, never something "typed" into the channel — nothing the line
+   * discipline echoes exists to echo. `cd <cwd> && exec "$SHELL" -l`
+   * (`exec`, not `;`, so the login shell REPLACES this process rather
+   * than running underneath it — the same PID, environment and job
+   * control an actual `ssh -t host` login would give you) is exactly the
+   * "ssh into a directory" idiom every OpenSSH server already supports:
+   * `$SHELL` is the account's configured login shell (sshd/PAM export it
+   * into every session, interactive or not — the same value `.shell()`
+   * itself would have picked), and `-l` sources its login profile files,
+   * matching a real interactive login rather than the bare non-login
+   * shell a plain `exec` would start. Deliberately no `wrapForLoginShell`
+   * wrapper here (unlike `exec()` above): that wraps the whole script in
+   * `bash -lc`, which would run `cd`/`exec` inside a THROWAWAY bash that
+   * then execs the real shell — one extra hop for no benefit, since
+   * `exec "$SHELL" -l` already sources the target shell's own profile,
+   * and bare `$VAR` (unlike `${VAR:-default}`) parses identically in
+   * every common login shell, POSIX or not (fish included), so this
+   * never assumes bash. Wraps the raw `ClientChannel` into the small
    * {@link ShellChannel} contract this directory's terminal adapter
    * (`./ssh-pty-adapter.ts`) needs — `stdout` and `stderr` both feed the
    * same `onData` (a real PTY has no separate stderr stream; `ssh2` still
@@ -177,9 +207,11 @@ export class Ssh2Transport implements RemoteTransport, PortForwardTransport, She
       throw new Error('Ssh2Transport: not connected; call connect() first');
     }
 
+    const command = `cd ${shQuote(options.cwd)} && exec "$SHELL" -l`;
     const stream = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => {
-      client.shell(
-        { term: 'xterm-256color', cols: options.cols, rows: options.rows },
+      client.exec(
+        command,
+        { pty: { term: 'xterm-256color', cols: options.cols, rows: options.rows } },
         (err, shellStream) => {
           if (err) {
             reject(err instanceof Error ? err : new Error(String(err)));

@@ -110,6 +110,23 @@
   import { onDestroy, onMount } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { Terminal } from '@xterm/xterm';
+  // Issue #704: xterm.js ships its OWN dynamic per-instance style block
+  // (row colors, cursor blink) via JS regardless of this import, which is
+  // why the terminal "worked" at all without it — but the STATIC
+  // structural rules (`.xterm-helpers`'s own `position: absolute`,
+  // `.xterm-char-measure-element`'s `visibility: hidden`) only exist in
+  // this stylesheet. Without it, xterm's internal DOM-renderer character-
+  // width probe (a hidden row it renders offscreen to measure glyph
+  // widths, one weight/style variant per hidden span) rendered fully
+  // visible, in normal document flow, right above the real prompt — a
+  // row of ~30 repeated characters (whichever glyph the probe last
+  // measured) that looked exactly like garbled shell output but was
+  // never bytes from any shell at all. Every terminal open on every
+  // target hit this identically (it is pure client-side layout, entirely
+  // independent of local vs. `ssh:`), which is why "local" looked
+  // implicated too even though its own channel writes nothing before
+  // attaching.
+  import '@xterm/xterm/css/xterm.css';
   import { FitAddon } from '@xterm/addon-fit';
   import type { TerminalClient } from '$lib/terminal';
   import type { TerminalClientState } from '$lib/relay-client';
