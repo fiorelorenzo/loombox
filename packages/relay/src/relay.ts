@@ -8,6 +8,7 @@ import {
   isBelowCompatWindow,
   negotiateVersion,
   safeParseWireMessageV1,
+  withEnvelope,
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type BuildIdentityV1,
@@ -862,11 +863,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   /** SPEC §7.26, issue #221/#631: `connected_account_list_request`'s reply, shared by both `handleClientMessage` and `handleNodeMessage` — a node needs its own account's registry exactly like a client does (`@loombox/node`'s `resolveTrackerBackend`, issue #631, is the first node-side consumer), scoped identically to `connection.accountId` either way. One implementation rather than two near-identical case bodies is what keeps a future change here (an added field, a different scoping rule) from landing in only one of the two call sites. */
   async function sendConnectedAccountList(connection: Connection): Promise<void> {
     const accounts = await store.connectedAccounts.listForAccount(connection.accountId);
-    const response: ConnectedAccountList = {
-      type: 'connected_account_list',
-      protocolVersion: PROTOCOL_V1,
+    const response: ConnectedAccountList = withEnvelope('connected_account_list', {
       accounts: [...accounts],
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -1157,13 +1156,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     if (connection.kind === 'node') registry.nodes.add(connection);
     else registry.clients.add(connection);
 
-    const initResult: InitializeResult = {
-      type: 'initialize_result',
-      protocolVersion: PROTOCOL_V1,
+    const initResult: InitializeResult = withEnvelope('initialize_result', {
       negotiatedVersion: negotiated,
       capabilities: [...RELAY_CAPABILITIES],
       ...(relayBuildIdentity ? { buildIdentity: relayBuildIdentity } : {}),
-    };
+    });
     sendDirect(connection, initResult);
     return connection;
   }
@@ -1180,7 +1177,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // never deliver another frame. Same for both roles, hence here rather
       // than in the node/client switches below.
       case 'ping': {
-        const reply: Pong = { type: 'pong', protocolVersion: PROTOCOL_V1, nonce: message.nonce };
+        const reply: Pong = withEnvelope('pong', { nonce: message.nonce });
         sendDirect(connection, reply);
         return true;
       }
@@ -1279,11 +1276,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return true;
         }
-        const response: NewDeviceBootstrapResponse = {
-          type: 'new_device_bootstrap_response',
-          protocolVersion: PROTOCOL_V1,
+        const response: NewDeviceBootstrapResponse = withEnvelope('new_device_bootstrap_response', {
           wrappedAmk,
-        };
+        });
         sendDirect(connection, response);
         return true;
       }
@@ -1328,12 +1323,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             );
           }
         }
-        const response: AmkEpochFetchResponse = {
-          type: 'amk_epoch_fetch_response',
-          protocolVersion: PROTOCOL_V1,
+        const response: AmkEpochFetchResponse = withEnvelope('amk_epoch_fetch_response', {
           deviceId: connection.deviceId,
           pending: responsePending,
-        };
+        });
         sendDirect(connection, response);
         return true;
       }
@@ -1375,13 +1368,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       app.log.warn({ sessionId: message.sessionId, ref: message.ref }, 'relay: blob not found');
       return;
     }
-    const response: BlobDownloadResponse = {
-      type: 'blob_download_response',
-      protocolVersion: PROTOCOL_V1,
+    const response: BlobDownloadResponse = withEnvelope('blob_download_response', {
       sessionId: message.sessionId,
       ref: message.ref,
       envelope,
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -1420,15 +1411,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             ttlMs,
             now,
           );
-    const response: LeaseResult = {
-      type: 'lease_result',
-      protocolVersion: PROTOCOL_V1,
+    const response: LeaseResult = withEnvelope('lease_result', {
       requestId: message.requestId,
       sessionId: message.sessionId,
       result: outcome.granted
         ? { outcome: 'granted', expiresAt: outcome.lease.expiresAt }
         : { outcome: 'denied', heldBy: outcome.heldBy, expiresAt: outcome.expiresAt },
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -1442,13 +1431,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       message.sessionId,
       message.nodeId,
     );
-    const response: LeaseReleaseResult = {
-      type: 'lease_release_result',
-      protocolVersion: PROTOCOL_V1,
+    const response: LeaseReleaseResult = withEnvelope('lease_release_result', {
       requestId: message.requestId,
       sessionId: message.sessionId,
       released,
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -2191,12 +2178,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             });
           }
         }
-        const response: TargetList = {
-          type: 'target_list',
-          protocolVersion: PROTOCOL_V1,
+        const response: TargetList = withEnvelope('target_list', {
           requestId: message.requestId,
           targets,
-        };
+        });
         sendDirect(connection, response);
         return;
       }
@@ -2206,11 +2191,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           session: record.meta,
           privateEnvelope: record.privateEnvelope,
         }));
-        const response: SessionListV1 = {
-          type: 'session_list',
-          protocolVersion: PROTOCOL_V1,
-          sessions,
-        };
+        const response: SessionListV1 = withEnvelope('session_list', { sessions });
         sendDirect(connection, response);
         return;
       }
@@ -2230,12 +2211,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // `envelope: null` (never an error) is "this account has never
         // saved one yet"; every action still uses its built-in default.
         const envelope = await store.keymaps.get(connection.accountId);
-        const response: KeymapResult = {
-          type: 'keymap_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: KeymapResult = withEnvelope('keymap_result', {
           requestId: message.requestId,
           envelope: envelope ?? null,
-        };
+        });
         sendDirect(connection, response);
         return;
       }
@@ -2246,12 +2225,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // `apps/web/src/lib/keymap.ts`'s client-side `validateKeymapCandidate`
         // checked it against the live registry before this was ever sent.
         await store.keymaps.set(connection.accountId, message.envelope);
-        const response: KeymapResult = {
-          type: 'keymap_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: KeymapResult = withEnvelope('keymap_result', {
           requestId: message.requestId,
           envelope: message.envelope,
-        };
+        });
         sendDirect(connection, response);
         // Issue #760's "a merge story for the same account editing from
         // two tabs": last full write wins here at the relay, but every
@@ -2280,14 +2257,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           return;
         }
         const saved = await store.sessionViewStates.get(message.sessionId);
-        const response: SessionViewStateResult = {
-          type: 'session_view_state_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: SessionViewStateResult = withEnvelope('session_view_state_result', {
           requestId: message.requestId,
           sessionId: message.sessionId,
           envelope: saved?.envelope ?? null,
           revision: saved?.revision ?? 0,
-        };
+        });
         sendDirect(connection, response);
         return;
       }
@@ -2304,14 +2279,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           envelope: message.envelope,
           revision: message.revision,
         });
-        const response: SessionViewStateResult = {
-          type: 'session_view_state_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: SessionViewStateResult = withEnvelope('session_view_state_result', {
           requestId: message.requestId,
           sessionId: message.sessionId,
           envelope: message.envelope,
           revision: message.revision,
-        };
+        });
         sendDirect(connection, response);
         // Mirrors `keymap_set_request`'s own cross-tab/cross-device push
         // (issue #760) — a device live right now on this session sees the
@@ -2335,12 +2308,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           return;
         }
         subscribeClientToSession(connection, message.sessionId);
-        const announce: SessionAnnounceV1 = {
-          type: 'session_announce',
-          protocolVersion: PROTOCOL_V1,
+        const announce: SessionAnnounceV1 = withEnvelope('session_announce', {
           session: record.meta,
           privateEnvelope: record.privateEnvelope,
-        };
+        });
         sendDirect(connection, announce);
         return;
       }
@@ -2357,13 +2328,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             { sessionId: message.sessionId },
             'relay: session_archive_request for unknown/foreign session',
           );
-          const errorResponse: SessionArchiveResponse = {
-            type: 'session_archive_response',
-            protocolVersion: PROTOCOL_V1,
+          const errorResponse: SessionArchiveResponse = withEnvelope('session_archive_response', {
             requestId: message.requestId,
             sessionId: message.sessionId,
             result: { outcome: 'error', message: `unknown session ${message.sessionId}` },
-          };
+          });
           sendDirect(connection, errorResponse);
           return;
         }
@@ -2413,13 +2382,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             { targetId: message.targetId },
             'relay: session_fork_request for unknown/foreign target',
           );
-          const errorResponse: SessionForkResponse = {
-            type: 'session_fork_response',
-            protocolVersion: PROTOCOL_V1,
+          const errorResponse: SessionForkResponse = withEnvelope('session_fork_response', {
             requestId: message.requestId,
             sessionId: message.sessionId,
             result: { outcome: 'error', message: `unknown target ${message.targetId}` },
-          };
+          });
           sendDirect(connection, errorResponse);
           return;
         }
@@ -2985,24 +2952,20 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
         const result = await store.sessions.getEntriesSince(message.sessionId, message.sinceSeq);
         if (result.droppedFromSeq !== undefined && result.droppedToSeq !== undefined) {
-          const marker: ResyncMarker = {
-            type: 'resync_marker',
-            protocolVersion: PROTOCOL_V1,
+          const marker: ResyncMarker = withEnvelope('resync_marker', {
             sessionId: message.sessionId,
             fromSeq: result.droppedFromSeq,
             toSeq: result.droppedToSeq,
             dropped: true,
-          };
+          });
           sendDirect(connection, marker);
         }
         for (const entry of result.entries) {
-          const replay: SessionUpdateEnvelopeV1 = {
-            type: 'session_update',
-            protocolVersion: PROTOCOL_V1,
+          const replay: SessionUpdateEnvelopeV1 = withEnvelope('session_update', {
             sessionId: message.sessionId,
             seq: entry.seq,
             envelope: entry.envelope,
-          };
+          });
           sendDirect(connection, replay);
         }
         return;
