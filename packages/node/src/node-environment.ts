@@ -34,6 +34,11 @@ export function defaultLaunchdLabel(environment: NodeEnvironment): string {
   return environment === 'production' ? 'dev.loombox.node' : `dev.loombox.node-${environment}`;
 }
 
+/** `windows-provisioning.ts`'s `DEFAULT_WINDOWS_TASK_NAME` for `'production'`, unchanged (`\loombox\node` — a Task Scheduler folder path, this platform's nearest equivalent of a reverse-DNS label); a distinct, still-recognizable name per non-production environment otherwise, same trailing-suffix convention as {@link defaultUnitName}. */
+export function defaultWindowsTaskName(environment: NodeEnvironment): string {
+  return environment === 'production' ? '\\loombox\\node' : `\\loombox\\node-${environment}`;
+}
+
 /**
  * The install root's own directory name under the home dir — `.loombox`
  * for `'production'` (unchanged: every existing local backend's own

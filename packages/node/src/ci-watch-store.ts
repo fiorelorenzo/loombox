@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { CiWatchEntry } from './ci-check-watcher';
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 /* ---------------------------------------------------------------------
@@ -34,10 +35,6 @@ export class CiWatchStoreError extends Error {
     super(`ci watch store: ${message}`);
     this.name = 'CiWatchStoreError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateEntry(raw: unknown, context: string): CiWatchEntry {
@@ -132,18 +129,12 @@ export class CiWatchStore {
   }
 
   private readFile(): CiWatchFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: CI_WATCH_SCHEMA_VERSION, sessions: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new CiWatchStoreError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: CI_WATCH_SCHEMA_VERSION, sessions: {} },
+      validateFile,
+      (message) => new CiWatchStoreError(message),
+    );
   }
 
   private writeFile(file: CiWatchFileV1): void {

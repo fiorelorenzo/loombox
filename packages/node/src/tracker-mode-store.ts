@@ -33,11 +33,12 @@
  * degrade in isolation.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { safeParseTrackerMode, type TrackerMode } from '@loombox/protocol';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const TRACKER_MODE_FILE_NAME = 'tracker-modes.json';
@@ -148,19 +149,12 @@ export class TrackerModeStore {
   }
 
   private readFile(): TrackerModeFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: TRACKER_MODE_SCHEMA_VERSION, projects: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new TrackerModeStoreError(
-        `config file "${this.filePath}" is not valid JSON: ${detail}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: TRACKER_MODE_SCHEMA_VERSION, projects: {} },
+      validateFile,
+      (message) => new TrackerModeStoreError(message),
+    );
   }
 
   private writeFile(file: TrackerModeFileV1): void {

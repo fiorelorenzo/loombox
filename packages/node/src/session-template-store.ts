@@ -19,11 +19,12 @@
  * append-log design.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { sessionTemplateV1, type SessionTemplateV1 } from '@loombox/protocol';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const SESSION_TEMPLATE_FILE_NAME = 'session-templates.json';
@@ -40,10 +41,6 @@ export class SessionTemplateError extends Error {
     super(`session template store: ${message}`);
     this.name = 'SessionTemplateError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateFile(parsed: unknown, filePath: string): SessionTemplateFileV1 {
@@ -100,18 +97,12 @@ export class SessionTemplateStore {
   }
 
   private readFile(): SessionTemplateFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: SESSION_TEMPLATE_SCHEMA_VERSION, templates: [] };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new SessionTemplateError(
-        `file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: SESSION_TEMPLATE_SCHEMA_VERSION, templates: [] },
+      validateFile,
+      (message) => new SessionTemplateError(message),
+    );
   }
 
   private writeFile(file: SessionTemplateFileV1): void {

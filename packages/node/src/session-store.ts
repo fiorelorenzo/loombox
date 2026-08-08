@@ -14,9 +14,10 @@
  * high-frequency write path, so there is no need for anything fancier.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 import type { Session, SessionLifecycleState } from './session-manager';
 
@@ -34,10 +35,6 @@ export class SessionStoreError extends Error {
     super(`session store: ${message}`);
     this.name = 'SessionStoreError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const VALID_STATES: SessionLifecycleState[] = ['running', 'paused', 'ended', 'disconnected'];
@@ -142,16 +139,12 @@ export class SessionStore {
 
   /** Every persisted session record, in whatever state they were last saved in. Returns `[]` if no file exists yet (a fresh node). */
   load(): Session[] {
-    if (!existsSync(this.filePath)) return [];
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new SessionStoreError(
-        `file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath).sessions;
+    return loadJsonFile(
+      this.filePath,
+      { v: SESSION_STORE_SCHEMA_VERSION, sessions: [] },
+      validateFile,
+      (message) => new SessionStoreError(message),
+    ).sessions;
   }
 
   /** Replaces the on-disk record set wholesale with `sessions` — the caller (`SessionManager`) always passes its complete current set, never a delta. */

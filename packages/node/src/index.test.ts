@@ -4,20 +4,30 @@ import {
   createLaunchdSupervisorBackend,
   createLocalFsNodeReleaseSource,
   createNodeLaunchdIo,
+  createNodeWindowsTaskIo,
   createSystemdSshSupervisorBackend,
+  createWindowsInstallLayoutDriver,
+  createWindowsSupervisorBackend,
   DEFAULT_LAUNCHD_LABEL,
+  DEFAULT_WINDOWS_TASK_NAME,
+  defaultWindowsTaskName,
   executeLaunchdProvisioning,
+  executeWindowsTaskProvisioning,
   generateLaunchdPlist,
+  generateWindowsLauncherScript,
+  generateWindowsTaskXml,
   installGracefulShutdown,
   NODE_BUNDLE_ENTRY_FILE,
   PACKAGE_NAME,
   planLaunchdProvisioning,
+  planWindowsTaskProvisioning,
   provisionLocalNode,
   relayHttpBaseUrl,
   resolveAccountIdViaRelay,
   run,
   runLocalGuidedSetup,
   start,
+  winQuoteArg,
 } from './index';
 
 describe('@loombox/node', () => {
@@ -49,5 +59,18 @@ describe('@loombox/node', () => {
     expect(typeof createLocalFsNodeReleaseSource).toBe('function');
     expect(typeof provisionLocalNode).toBe('function');
     expect(NODE_BUNDLE_ENTRY_FILE).toBe('node.mjs');
+  });
+
+  it('exposes the Task Scheduler provisioning surface and SupervisorBackend for a Windows-local node (issue #659)', () => {
+    expect(typeof generateWindowsTaskXml).toBe('function');
+    expect(typeof generateWindowsLauncherScript).toBe('function');
+    expect(typeof winQuoteArg).toBe('function');
+    expect(typeof planWindowsTaskProvisioning).toBe('function');
+    expect(typeof executeWindowsTaskProvisioning).toBe('function');
+    expect(typeof createNodeWindowsTaskIo).toBe('function');
+    expect(typeof createWindowsSupervisorBackend).toBe('function');
+    expect(typeof createWindowsInstallLayoutDriver).toBe('function');
+    expect(DEFAULT_WINDOWS_TASK_NAME).toBe('\\loombox\\node');
+    expect(defaultWindowsTaskName('production')).toBe(DEFAULT_WINDOWS_TASK_NAME);
   });
 });

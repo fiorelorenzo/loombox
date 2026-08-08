@@ -711,6 +711,8 @@ export {
 export type { WireMessageV1 } from './message';
 export { parseWireMessageV1, safeParseWireMessageV1, wireMessageV1 } from './message';
 
+export { withEnvelope } from './wire-envelope';
+
 export type { AttentionHint, AttentionHintClass } from './attention';
 export { attentionHint, attentionHintClass } from './attention';
 
