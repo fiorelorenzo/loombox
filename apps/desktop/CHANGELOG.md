@@ -1,5 +1,78 @@
 # @loombox/desktop
 
+## 0.3.0
+
+### Minor Changes
+
+- 03d047b: Side-by-side production/preview desktop installs (issue #866, epic #863)
+
+  One `electron-builder.ts` config, parameterised by `LOOMBOX_DESKTOP_ENV` (`production`, the default, or `preview`), produces two distinct artifacts instead of a forked config that would drift.
+
+  - `src/main/environment.ts` is the single table every value that has to differ lives in: `appId` (`com.loombox.desktop` vs `com.loombox.desktop.preview`), `productName` (`loombox` vs `loombox Preview` — dock, menu bar, window title, tray tooltip and menu items), the `userData` directory name (`loombox` vs `loombox-preview`, set explicitly via `app.setPath('userData', …)` rather than left to Electron's own productName-derived default, which doesn't vary in dev), the deep-link scheme (`loombox` vs `loombox-preview`, registered via `electron-builder.ts`'s `protocols` and `app.setAsDefaultProtocolClient`), and the default PWA origin (`app.loombox.dev` vs `preview.loombox.dev`).
+  - `src/main/chrome-badge.ts` + `src/main/window.ts`: a preview-only ribbon stamped onto the loaded page from the main process on every real navigation, independent of the PWA's own content — the "obvious at a glance" marker beyond the title bar.
+  - `electron-builder.ts` also sets `executableName` explicitly (electron-builder's own Linux default comes from `package.json`'s `name` field, not `productName`) and a per-environment `directories.output` (`release/production/` vs `release/preview/`) so packaging both from one checkout never has the second run's staging directory clobber the first's.
+  - `apps/desktop/package.json` gains `dev:preview` and `package:{mac,linux,win}:preview` scripts, each just the existing script with `LOOMBOX_DESKTOP_ENV=preview` — every existing invocation is unchanged and still builds production.
+
+  `preview.loombox.dev` does not resolve yet (#865 builds the preview web deployment); pointing a preview build's default at it now is still correct.
+
+  Verified: `pnpm --filter @loombox/desktop exec vitest run` (12 files, 64 passed — `environment.test.ts` and `chrome-badge.test.ts` are new, `config.test.ts` gained preview-URL cases), `pnpm --filter @loombox/desktop typecheck` (0 errors, now also covering `electron-builder.ts`), `pnpm exec eslint` on every changed file (clean), full `pnpm format:check` (clean). A real `electron-builder --linux --dir` dry run ran for both `LOOMBOX_DESKTOP_ENV` values on this devbox: `electron-builder.ts` loads through electron-builder's own config loader (not just this package's test harness) and produced two independently populated trees, `release/production/linux-unpacked/loombox` and `release/preview/linux-unpacked/loombox-preview`.
+
+  Not verified here, and cannot be from this headless Linux devbox: both `.app`s actually installed and launched side by side on a real Mac, each with its own Dock entry; signing into one and confirming the other's `localStorage`/AMK stays untouched; a `loombox://…` link opening production and a `loombox-preview://…` link opening preview. Needs `pnpm run package:mac` / `package:mac:preview` and `scripts/mac-desktop.sh` on the real Mac.
+
+- f80dbe9: macOS-local resident node provisioning, and the supervisor-backend seam every platform fills in (issue #654, epic #653)
+
+  Importing a local project on macOS with no node yet now installs, starts, pairs, and announces one — the desktop app's own "Set up a node on this Mac" control, no shell.
+
+  - `packages/node/src/supervisor-backend.ts` is new: the platform seam every resident-node backend implements — `install`/`start`/`stop`/`status`/`uninstall`/`survivesReboot`, nothing above it spelling `unit`, `plist`, `systemctl`, or `launchctl`. Two implementations wired: `packages/node/src/launchd/launchd-supervisor-backend.ts` (macOS-local, wrapping the existing `launchd-provisioning.ts` plan/execute mechanism unchanged) and `packages/node/src/ssh/systemd-supervisor-backend.ts` (the `ssh:` path, wrapping the existing `systemd-provisioning.ts` unchanged). #658 (Linux local) and #659 (Windows local) each add one new file implementing this same interface.
+  - `packages/node/src/local/provision-local-node.ts` is new: composes the shared zero-touch pairing primitives the `ssh:` reference (`provision-and-pair.ts`) already uses — `target_identity`, `mint_node_token`, `amk_handoff`, all reused unchanged — with a `SupervisorBackend.install()` call for THIS machine, dispatched through an injected backend so #658/#659 only ever add a backend, never touch this orchestration.
+  - `packages/node/src/node-release.ts` is new: `createLocalFsNodeReleaseSource`, the A1-2 versioned-bundle (`~/.loombox/versions/<version>/` + `current` symlink) fetch side for a locally-staged release.
+  - `apps/desktop/src/main/provisioning/provision-local-node-bridge.ts` + a new `provisionLocalNode` IPC channel (`apps/desktop/src/shared/bridge.ts`, `apps/desktop/src/preload/index.ts`, `apps/desktop/src/main/ipc/handlers.ts`) wire the above for real: resolves the node-bundle version from `@loombox/node`'s own `package.json`, a real launchd `SupervisorBackend`, and a real local-filesystem `fetchArchive`.
+  - `apps/web/src/lib/local-node-provision.ts` is new: the renderer-side trigger, reached only from inside the desktop shell on macOS. `apps/web/src/lib/components/AddProjectDialog.svelte`'s zero-target empty state offers "Set up a node on this Mac" there instead of the plain no-nodes message; `+page.svelte` supplies the callback using this device's own already-unlocked auth token and AMK (decision C1-2: a one-shot device token plus wrapped AMK, consumed and deleted on the node's first boot, no durable secret at rest). Everywhere else (a PWA tab, another platform, not yet signed in) the empty state is unchanged.
+  - Decision D1-1 ("the desktop app is the only install surface, no CLI") holds: nothing here adds a `loombox-node` CLI or a headless-host install path.
+
+  Verified: `pnpm --filter @loombox/node exec vitest run` (149 files, 1627 passed, 1 skipped), `pnpm --filter @loombox/node typecheck` (0 errors), `pnpm --filter @loombox/desktop exec vitest run` (10 files, 40 passed), `pnpm --filter @loombox/desktop typecheck` (0 errors), `pnpm --filter @loombox/web exec vitest run` (169 files, 2070 passed), `pnpm --filter @loombox/web typecheck` (0 errors), `pnpm exec eslint` on every changed file (clean), full `pnpm format:check` (clean).
+
+  Not verified here, and cannot be from this machine (Linux devbox): the plist is asserted as a string in `launchd-supervisor-backend.test.ts`/`launchd-provisioning.test.ts`, never loaded by real `launchd`; `createLaunchdSupervisorBackend`'s `launchctl` calls only ever run against a fake `LaunchdIo` in tests; the full "import a project → node installed, running, paired, announced" path has not run end to end against a real filesystem/keychain/launchd. Needs `scripts/mac-desktop.sh` on the real Mac.
+
+- 3ead9d7: Uninstall on the supervisor-backend seam (issue #814, epic #653; decision E1-3): `uninstallNode()` revokes a node's own device on the relay and tears down its local install through the platform's `SupervisorBackend`, removing the state dir and OS keyring entry by default (`keepData` is the explicit opt-out). `packages/node/src/ssh/decommission.ts` moves onto the same seam instead of hand-rolling its own systemctl/rm sequence, so the unit and its versioned bundle are now genuinely gone by default too. The desktop app's Nodes page gains a real Uninstall action on a local node's own row, behind a confirmation that names what is destroyed (session history and project secrets, unrecoverable from the relay) and a keep-data checkbox.
+- 91491bc: Issue #657 (epic #653): the relay now declares and enforces a compatibility window, and the desktop shell updates itself.
+
+  `@loombox/protocol` gains `compatibilityWindowV1` (a relay's declared oldest-served node/client build, both bounds independently optional) and `isBelowCompatWindow`, backed by `compareBuildVersions` — the one place in this package allowed to compare build versions by order rather than equality, unlike #655's `buildIdentityMismatch`. `@loombox/node`'s `ssh/target-update-monitor.ts` now re-exports `compareBuildVersions` as its own `compareVersions` instead of keeping a second copy of the identical algorithm.
+
+  `@loombox/relay` reads the window from `LOOMBOX_MIN_NODE_VERSION`/`LOOMBOX_MIN_CLIENT_VERSION` (both unset by default — no behavior change for any relay running today) and refuses, via the existing `update_required` path #108 already uses for an incompatible protocol version, a peer whose `buildIdentity.version` is strictly below the floor for its role. A peer at or above the floor is unaffected — #655's own "Behind" badge is still what surfaces that gap, not a refusal. `/health` now echoes `build`/`compatWindow` when the relay is configured with either, so "is this deployment self-consistent" is answerable with one unauthenticated `curl`, no SSH — see `docs/deploy-relay.md`'s new "production update path" section and `scripts/check-relay-freshness.sh`.
+
+  `@loombox/desktop` now updates itself via `electron-updater` against a GitHub Releases feed (`electron-builder.ts`'s new `publish` config, channel-split so production and preview builds can never cross-update). `autoDownload`/`autoInstallOnAppQuit` are forced off: the tray's "Check for Updates" only ever detects a newer build, and "Restart to Update" is the one explicit, user-consented click that downloads and installs (epic #653's "no auto-update without consent"). Unverified from this headless devbox — real launchd/Squirrel/AppImage update mechanics only exercise on a real install; see the desktop README's "Self-update" section for exactly what is and isn't proven.
+
+### Patch Changes
+
+- Updated dependencies [24c9e77]
+- Updated dependencies [c301908]
+- Updated dependencies [4f73638]
+- Updated dependencies [304c608]
+- Updated dependencies [c0491de]
+- Updated dependencies [4284906]
+- Updated dependencies [7542bb1]
+- Updated dependencies [ac4167f]
+- Updated dependencies [8ed4dd1]
+- Updated dependencies [f80dbe9]
+- Updated dependencies [5977937]
+- Updated dependencies [3ead9d7]
+- Updated dependencies [465de4f]
+- Updated dependencies [2bc3501]
+- Updated dependencies [98463e9]
+- Updated dependencies [91491bc]
+- Updated dependencies [b6fee51]
+- Updated dependencies [b389ef8]
+- Updated dependencies [4785b56]
+- Updated dependencies [f57b4d5]
+- Updated dependencies [7104b07]
+- Updated dependencies [312b3a8]
+- Updated dependencies [18f2885]
+- Updated dependencies [079f922]
+- Updated dependencies [7cb3efa]
+- Updated dependencies [6e912f5]
+  - @loombox/node@0.9.0
+
 ## 0.2.7
 
 ### Patch Changes
