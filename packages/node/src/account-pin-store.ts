@@ -21,10 +21,11 @@
  * reverting to unconfigured.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { AccountPinMap } from './account-pin';
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const ACCOUNT_PIN_FILE_NAME = 'account-pins.json';
@@ -41,10 +42,6 @@ export class AccountPinStoreError extends Error {
     super(`account pin store: ${message}`);
     this.name = 'AccountPinStoreError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Validates one project's raw pin record. Each value must be a `string` (a pinned account id) or `null` (opted out) — an absent key never reaches here at all, since `Object.entries` on parsed JSON only yields keys that were actually present in the file, which is exactly the property this store relies on to keep "absent" and "explicit null" distinguishable through a round trip. */
@@ -146,18 +143,12 @@ export class AccountPinStore {
   }
 
   private readFile(): AccountPinFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: ACCOUNT_PIN_SCHEMA_VERSION, projects: {} };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new AccountPinStoreError(
-        `config file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: ACCOUNT_PIN_SCHEMA_VERSION, projects: {} },
+      validateFile,
+      (message) => new AccountPinStoreError(message),
+    );
   }
 
   private writeFile(file: AccountPinFileV1): void {

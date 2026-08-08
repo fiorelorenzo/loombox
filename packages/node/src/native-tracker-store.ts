@@ -39,7 +39,7 @@
  * --------------------------------------------------------------------- */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -57,6 +57,7 @@ import {
   type TrackerTypeRegistry,
 } from '@loombox/shared';
 
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const NATIVE_TRACKER_FILE_NAME = 'native-tracker.json';
@@ -85,10 +86,6 @@ export class NativeTrackerStoreError extends Error {
     super(`native tracker store: ${message}`);
     this.name = 'NativeTrackerStoreError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateStringArray(raw: unknown, context: string): string[] {
@@ -601,16 +598,12 @@ export class NativeTrackerStore {
   }
 
   private readFile(): NativeTrackerFileV1 {
-    if (!existsSync(this.filePath)) return { v: NATIVE_TRACKER_SCHEMA_VERSION, projects: {} };
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new NativeTrackerStoreError(
-        `file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: NATIVE_TRACKER_SCHEMA_VERSION, projects: {} },
+      validateFile,
+      (message) => new NativeTrackerStoreError(message),
+    );
   }
 
   private writeFile(file: NativeTrackerFileV1): void {
