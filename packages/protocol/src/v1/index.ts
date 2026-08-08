@@ -1274,6 +1274,7 @@ export type {
   TrackerWriteResultV1,
 } from './tracker-records';
 export {
+  categorizeKnownStatusName,
   groupByWorkflowCategory,
   resolveWorkflowCategory,
   WORKFLOW_CATEGORIES_V1,

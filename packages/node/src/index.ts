@@ -302,9 +302,11 @@ export {
   sealJson,
 } from '@loombox/crypto';
 
-// v2: the live GitHub `TrackerBackend` — issues + comments only, slice 1
-// of SPEC §7.10's phased tracker delivery (issue #213). Credentials come
-// only from an injected `resolveCredential`, never this package's own
+// v2: the live GitHub `TrackerBackend` — issues + comments (slice 1,
+// issue #213), transitions (slice 2, issue #215), and Projects v2 boards
+// (slice 3, issue #218; GraphQL client/discovery logic in
+// `./github-projects-v2.ts`). Credentials come only from an injected
+// `resolveCredential`, never this package's own
 // `./github-connect.ts`/`./keyring.ts` — see the module's own top comment.
 export type {
   GithubCredential,
@@ -312,11 +314,24 @@ export type {
   ResolveGithubCredential,
 } from './github-tracker-backend';
 export {
+  githubBoardsCapableFor,
   GithubTrackerAccessError,
   GithubTrackerBackend,
   GithubTrackerRateLimitError,
   GithubTrackerRequestError,
 } from './github-tracker-backend';
+export type {
+  GithubAddProjectV2ItemResponse,
+  GithubProjectV2BoardResponse,
+  GithubProjectV2FieldValue,
+} from './github-projects-v2';
+export {
+  discoverGithubBoardFields,
+  GithubGraphQlError,
+  GithubGraphQlSecondaryBudget,
+  GithubGraphQlSecondaryRateLimitError,
+  githubGraphQlRequest,
+} from './github-projects-v2';
 
 // v2: the live Jira `TrackerBackend` — issues + comments only, slice 1
 // of SPEC §7.10's phased tracker delivery (issue #214). Credentials come

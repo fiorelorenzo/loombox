@@ -1,13 +1,18 @@
 /* ---------------------------------------------------------------------
- * The GitHub `TrackerBackend` — live tracker slices 1 + 2 (SPEC §7.10
- * "GitHub, full feature set... REST for issues/comments/labels/
- * milestones/assignees", `docs.github.com/en/rest/issues/*`; issues
- * #213/#215). Implements `@loombox/shared`'s `TrackerBackend` extension
- * point (#209) for `list`/`get`/`create`/`update`/`addComment` (slice 1)
- * plus `listTransitions`/`transition` (slice 2, issue #215) against a
- * bound `owner/repo`. Non-goals, deferred to a later slice/issue: boards/
- * Projects v2 (`listBoards`/`listSprints`/`moveToSprint`, #218) and the
- * Jira backend (#214) — neither of those optional methods is implemented
+ * The GitHub `TrackerBackend` — live tracker slices 1 + 2 + 3 (SPEC
+ * §7.10 "GitHub, full feature set... REST for issues/comments/labels/
+ * milestones/assignees", `docs.github.com/en/rest/issues/*`, plus
+ * GraphQL Projects v2; issues #213/#215/#218). Implements
+ * `@loombox/shared`'s `TrackerBackend` extension point (#209) for
+ * `list`/`get`/`create`/`update`/`addComment` (slice 1) plus
+ * `listTransitions`/`transition` (slice 2, issue #215) plus `listBoards`
+ * (slice 3, issue #218 — GraphQL Projects v2 board reads, discovery
+ * logic in `./github-projects-v2.ts`) against a bound `owner/repo`.
+ * `addBoardItem`/`moveBoardItemToCategory`/`moveBoardItemToIteration`
+ * are GitHub-specific extras beyond `TrackerBackend`'s own spec-locked
+ * method set (SPEC §7.10's literal code block has no "move a card"
+ * method at all — see `./github-projects-v2.ts`'s top comment). Non-goal,
+ * deferred to a later issue: the Jira backend (#214) — not implemented
  * here.
  *
  * **Slice 2 — transitions are GitHub's fixed two-state model, not a
@@ -77,6 +82,7 @@ import type {
   TrackerBackend,
   TrackerBackendCapabilities,
   TrackerBinding,
+  TrackerBoard,
   TrackerItemLive,
   TrackerListFilter,
   TrackerListPage,
@@ -84,7 +90,34 @@ import type {
 } from '@loombox/shared';
 import type { GitHubTarget, WorkflowCategoryV1 } from '@loombox/protocol';
 
-const GITHUB_API_BASE = 'https://api.github.com';
+import {
+  ADD_PROJECT_V2_ITEM_MUTATION,
+  githubGraphQlRequest,
+  GithubGraphQlSecondaryBudget,
+  GRAPHQL_MUTATION_POINTS,
+  GRAPHQL_QUERY_POINTS,
+  PROJECT_V2_BOARD_QUERY,
+  toTrackerBoard,
+  UPDATE_PROJECT_V2_ITEM_FIELD_VALUE_MUTATION,
+  type GithubAddProjectV2ItemResponse,
+  type GithubProjectV2BoardResponse,
+  type GithubProjectV2FieldValue,
+} from './github-projects-v2';
+import {
+  computeRetryAfterMs,
+  GITHUB_API_BASE,
+  GithubTrackerAccessError,
+  GithubTrackerRateLimitError,
+  GithubTrackerRequestError,
+} from './github-http-errors';
+
+// Re-exported for this module's own existing consumers (`./index.ts`,
+// `github-tracker-backend.test.ts`, `tracker-connectivity*.test.ts`) —
+// the classes now live in `./github-http-errors.ts` so
+// `./github-projects-v2.ts` can reuse them without importing this module
+// (which itself imports `./github-projects-v2.ts` for the board methods
+// below).
+export { GithubTrackerAccessError, GithubTrackerRateLimitError, GithubTrackerRequestError };
 
 /** The one shape a resolved GitHub credential needs (SPEC §7.10's `{token}` for GitHub). */
 export interface GithubCredential {
@@ -99,34 +132,6 @@ export interface GithubCredential {
  */
 export type ResolveGithubCredential = (connectionId: string) => Promise<GithubCredential>;
 
-/** Raised when GitHub answers `403` with `x-ratelimit-remaining: 0` — retryable, never a permission error. */
-export class GithubTrackerRateLimitError extends Error {
-  readonly retryAfterMs: number;
-  constructor(retryAfterMs: number) {
-    super(`github tracker: rate limited (x-ratelimit-remaining: 0) — retry in ${retryAfterMs}ms`);
-    this.name = 'GithubTrackerRateLimitError';
-    this.retryAfterMs = retryAfterMs;
-  }
-}
-
-/** Raised for a `404` (no access, not "gone"), a payload that turns out to be a pull request, a binding whose target isn't a GitHub repo, or a `resolveCredential` result with no usable token. */
-export class GithubTrackerAccessError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'GithubTrackerAccessError';
-  }
-}
-
-/** Raised for any other non-2xx GitHub response. */
-export class GithubTrackerRequestError extends Error {
-  readonly status: number;
-  constructor(status: number, url: string) {
-    super(`github tracker: HTTP ${status} from ${url}`);
-    this.name = 'GithubTrackerRequestError';
-    this.status = status;
-  }
-}
-
 /** Parses the `Link` response header for `rel="next"`; `undefined` on the last page or when the header is absent. */
 function parseNextLink(linkHeader: string | null): string | undefined {
   if (!linkHeader) return undefined;
@@ -137,24 +142,10 @@ function parseNextLink(linkHeader: string | null): string | undefined {
   return undefined;
 }
 
-/** `Retry-After` (seconds) wins when present; otherwise `X-RateLimit-Reset` (unix seconds) minus `nowMs`. Never negative. */
-function computeRetryAfterMs(headers: Headers, nowMs: number): number {
-  const retryAfter = headers.get('retry-after');
-  if (retryAfter !== null) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
-  }
-  const reset = headers.get('x-ratelimit-reset');
-  if (reset !== null) {
-    const resetMs = Number(reset) * 1000;
-    if (Number.isFinite(resetMs)) return Math.max(0, Math.round(resetMs - nowMs));
-  }
-  return 0;
-}
-
 /** Every field this backend reads off a GitHub issue (or pull-request-shaped issue) payload. */
 interface GithubIssuePayload {
   number: number;
+  node_id: string;
   title: string;
   html_url: string;
   state: string;
@@ -214,6 +205,11 @@ function toTrackerItem(raw: GithubIssuePayload): TrackerItemLive {
       createdAt: raw.created_at,
       updatedAt: raw.updated_at,
       closedAt: raw.closed_at,
+      // The GraphQL global node id — issue #218's `addBoardItem` needs
+      // exactly this (`Mutation.addProjectV2ItemById`'s `contentId`) and
+      // reads it straight off this same field rather than a second REST
+      // call, when a caller already has a freshly-read item to hand.
+      nodeId: raw.node_id,
     },
   };
 }
@@ -360,17 +356,36 @@ export interface GithubTrackerBackendOptions {
   fetchImpl?: typeof fetch;
   /** Injectable for tests' rate-limit retry-after math; defaults to `Date.now`. */
   now?: () => number;
+  /** Injectable for tests (issue #218's GraphQL secondary-rate-limit budgeting); defaults to a fresh, empty `GithubGraphQlSecondaryBudget` sharing this instance's own `now`. */
+  secondaryBudget?: GithubGraphQlSecondaryBudget;
 }
 
-/** The GitHub `TrackerBackend` (SPEC §7.10, issues #213/#215). One instance is reusable across every bound repo — `resolveCredential` is re-invoked per call rather than a token being cached on the instance, so a revoked/rotated credential takes effect on the very next call. */
+/**
+ * The accurate, per-target refinement of `GithubTrackerBackend.capabilities.boards`
+ * (issue #218's acceptance: "`capabilities.boards` is `true` only when a
+ * `projectNumber` is configured on the `GitHubTarget`"). The class-level
+ * `capabilities` field can't express this on its own — SPEC §7.10's
+ * literal `TrackerBackend` interface types it as one flat `readonly`
+ * object, and a single `GithubTrackerBackend` instance is reused across
+ * every bound repo (`resolveCredential` re-invoked per call, per this
+ * class's own doc comment), `projectNumber` included, so it cannot carry
+ * a per-target answer. A caller that needs the real per-target answer,
+ * rather than "this backend implements Projects v2 boards at all", calls
+ * this instead of reading `.capabilities.boards` directly.
+ */
+export function githubBoardsCapableFor(target: GitHubTarget): boolean {
+  return target.projectNumber != null;
+}
+
+/** The GitHub `TrackerBackend` (SPEC §7.10, issues #213/#215/#218). One instance is reusable across every bound repo — `resolveCredential` is re-invoked per call rather than a token being cached on the instance, so a revoked/rotated credential takes effect on the very next call. */
 export class GithubTrackerBackend implements TrackerBackend {
   readonly id = 'github' as const;
 
-  /** Slices 1+2 (issues #213/#215): issues, comments, and the fixed two-state transition model. `boards`/`sprints` land in #218; GitHub issues have no generic custom-field analog, so `customFields` stays false permanently for this provider. */
+  /** Slices 1+2+3 (issues #213/#215/#218): issues, comments, the fixed two-state transition model, and Projects v2 boards. `boards: true` here means this backend implements `listBoards`/board moves AT ALL — whether a given repo binding actually has a board configured is a per-`GitHubTarget.projectNumber` question `githubBoardsCapableFor` answers, not this flat flag (see its own doc comment). GitHub issues have no generic custom-field analog, so `customFields` stays false permanently for this provider. */
   readonly capabilities: TrackerBackendCapabilities = {
     comments: true,
     transitions: true,
-    boards: false,
+    boards: true,
     sprints: false,
     labels: true,
     milestones: true,
@@ -380,11 +395,13 @@ export class GithubTrackerBackend implements TrackerBackend {
   private readonly resolveCredential: ResolveGithubCredential;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
+  private readonly secondaryBudget: GithubGraphQlSecondaryBudget;
 
   constructor(options: GithubTrackerBackendOptions) {
     this.resolveCredential = options.resolveCredential;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
+    this.secondaryBudget = options.secondaryBudget ?? new GithubGraphQlSecondaryBudget(this.now);
   }
 
   private async token(connectionId: string): Promise<string> {
@@ -541,5 +558,174 @@ export class GithubTrackerBackend implements TrackerBackend {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ state: move.state, state_reason: move.stateReason }),
     });
+  }
+
+  /**
+   * Reads `binding.target`'s configured Projects v2 board (SPEC §7.10,
+   * issue #218). `target.projectNumber == null` means no board is
+   * configured — not an error, this returns `[]` rather than throwing,
+   * the same "nothing configured, nothing to report" shape an empty
+   * `TrackerBoard[]` already implies. See `./github-projects-v2.ts`'s
+   * `discoverGithubBoardFields` for how `TrackerBoard.statusField`/
+   * `statusFieldUnavailableReason`/`iterationField` get set — this
+   * method only fetches and hands off; all discovery logic lives there,
+   * pure and unit-testable with no network stub at all.
+   */
+  async listBoards(binding: TrackerBinding): Promise<TrackerBoard[]> {
+    const target = requireGithubTarget(binding.target);
+    if (target.projectNumber == null) return [];
+    const token = await this.token(binding.connectionId);
+    this.secondaryBudget.reserve(GRAPHQL_QUERY_POINTS);
+    const data = await githubGraphQlRequest<GithubProjectV2BoardResponse>(
+      this.fetchImpl,
+      this.now,
+      token,
+      PROJECT_V2_BOARD_QUERY,
+      { login: target.owner, number: target.projectNumber },
+    );
+    const project = data.repositoryOwner?.projectV2;
+    if (!project) {
+      throw new GithubTrackerAccessError(
+        `github tracker: no Projects v2 board numbered ${target.projectNumber} is visible to this token under owner "${target.owner}" — either it does not exist, or this token lacks the \`project\`/\`read:project\` scope (SPEC §7.10)`,
+      );
+    }
+    return [toTrackerBoard(project)];
+  }
+
+  /**
+   * Links `externalId` onto `boardId` (SPEC §7.10, issue #218:
+   * `Mutation.addProjectV2ItemById`) — idempotent, so calling this on an
+   * item already on the board is safe and returns that item's existing
+   * project-item id rather than erroring or duplicating it. `boardId` is
+   * a `TrackerBoard.id` from `listBoards`. `contentNodeId`, when the
+   * caller already has one (e.g. a just-read `TrackerItemLive.fields.nodeId`),
+   * skips the REST lookup this method would otherwise run to resolve
+   * `externalId` into the GraphQL content id `addProjectV2ItemById`
+   * actually needs — one fewer REST call against the same primary
+   * 5,000 pts/hr budget the GraphQL calls here also draw from. Unlike
+   * `get`/`listTransitions`, a pull request `externalId` is accepted,
+   * not rejected: `addProjectV2ItemById`'s own `contentId` input is
+   * documented as accepting `DraftIssue | Issue | PullRequest`, and
+   * issue #218's acceptance is explicit about "an issue/PR".
+   */
+  async addBoardItem(
+    binding: TrackerBinding,
+    boardId: string,
+    externalId: string,
+    contentNodeId?: string,
+  ): Promise<string> {
+    const target = requireGithubTarget(binding.target);
+    let nodeId = contentNodeId;
+    if (!nodeId) {
+      const response = await this.request(binding, issueUrl(target, externalId));
+      const raw = (await response.json()) as GithubIssuePayload;
+      nodeId = raw.node_id;
+    }
+    const token = await this.token(binding.connectionId);
+    this.secondaryBudget.reserve(GRAPHQL_MUTATION_POINTS);
+    const data = await githubGraphQlRequest<GithubAddProjectV2ItemResponse>(
+      this.fetchImpl,
+      this.now,
+      token,
+      ADD_PROJECT_V2_ITEM_MUTATION,
+      { contentId: nodeId, projectId: boardId },
+    );
+    if (!data.addProjectV2ItemById.item) {
+      throw new GithubTrackerAccessError(
+        `github tracker: addProjectV2ItemById for ${target.owner}/${target.repo}#${externalId} onto board ${boardId} returned no item — the project may not accept this content type, or the token may lack write access to it`,
+      );
+    }
+    return data.addProjectV2ItemById.item.id;
+  }
+
+  /**
+   * Moves `itemId` (a project-item id, from `addBoardItem`'s return) to
+   * `board`'s column matching `targetCategory` (SPEC §7.10, issue #218:
+   * "resolve `singleSelectOptionId`... then call
+   * `Mutation.updateProjectV2ItemFieldValue`"). `board` must be a fresh
+   * `listBoards` result — the column id resolved here comes only from
+   * `board.statusField.columns`, never invented — and this throws,
+   * rather than guessing a fallback column, both when `board` has no
+   * discovered status field at all (`board.statusFieldUnavailableReason`
+   * says why) and when it has one but no column maps to
+   * `targetCategory` (a real, reportable case: a two-stage `Status`
+   * field with no column this backend recognizes as `done`, say).
+   */
+  async moveBoardItemToCategory(
+    binding: TrackerBinding,
+    board: TrackerBoard,
+    itemId: string,
+    targetCategory: WorkflowCategoryV1,
+  ): Promise<void> {
+    if (!board.statusField) {
+      throw new GithubTrackerAccessError(
+        `github tracker: board "${board.name}" has no discovered status field to move against — ${board.statusFieldUnavailableReason ?? 'no reason recorded'}`,
+      );
+    }
+    const column = board.statusField.columns.find(
+      (candidate) => candidate.targetCategory === targetCategory,
+    );
+    if (!column) {
+      throw new GithubTrackerAccessError(
+        `github tracker: board "${board.name}"'s status field "${board.statusField.name}" has no column mapped to workflow category "${targetCategory}" (columns: ${board.statusField.columns
+          .map((candidate) => `${candidate.name}->${candidate.targetCategory}`)
+          .join(', ')})`,
+      );
+    }
+    await this.updateBoardItemField(binding, board.id, itemId, board.statusField.id, {
+      singleSelectOptionId: column.id,
+    });
+  }
+
+  /**
+   * Moves `itemId` into `board.iterationField`'s iteration titled
+   * `iterationTitle` (SPEC §7.10, issue #218's "iteration" half of the
+   * same move) — same "resolve from `board`, then mutate" shape as
+   * `moveBoardItemToCategory`, on the iteration axis instead of the
+   * status axis.
+   */
+  async moveBoardItemToIteration(
+    binding: TrackerBinding,
+    board: TrackerBoard,
+    itemId: string,
+    iterationTitle: string,
+  ): Promise<void> {
+    if (!board.iterationField) {
+      throw new GithubTrackerAccessError(
+        `github tracker: board "${board.name}" has no iteration field to move against`,
+      );
+    }
+    const iteration = board.iterationField.iterations.find(
+      (candidate) => candidate.title === iterationTitle,
+    );
+    if (!iteration) {
+      throw new GithubTrackerAccessError(
+        `github tracker: board "${board.name}"'s iteration field "${board.iterationField.name}" has no iteration titled "${iterationTitle}" (iterations: ${board.iterationField.iterations
+          .map((candidate) => candidate.title)
+          .join(', ')})`,
+      );
+    }
+    await this.updateBoardItemField(binding, board.id, itemId, board.iterationField.id, {
+      iterationId: iteration.id,
+    });
+  }
+
+  /** Shared tail of `moveBoardItemToCategory`/`moveBoardItemToIteration` — both resolve a field id + `ProjectV2FieldValue` from a `TrackerBoard` they were handed, then converge on the identical `updateProjectV2ItemFieldValue` mutation call, secondary-budget reservation included. */
+  private async updateBoardItemField(
+    binding: TrackerBinding,
+    boardId: string,
+    itemId: string,
+    fieldId: string,
+    value: GithubProjectV2FieldValue,
+  ): Promise<void> {
+    const token = await this.token(binding.connectionId);
+    this.secondaryBudget.reserve(GRAPHQL_MUTATION_POINTS);
+    await githubGraphQlRequest(
+      this.fetchImpl,
+      this.now,
+      token,
+      UPDATE_PROJECT_V2_ITEM_FIELD_VALUE_MUTATION,
+      { projectId: boardId, itemId, fieldId, value },
+    );
   }
 }
