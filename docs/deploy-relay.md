@@ -196,6 +196,52 @@ other tracked file.
 Migrations run automatically on the relay's boot. To roll a migration back
 manually, `docker compose exec relay pnpm --filter @loombox/relay migrate down`.
 
+### Migration reversibility (issue #657)
+
+A rollback here is cheap by design — flip `releases/current` back, retag the
+relay image, recreate the container — which is only actually safe when the
+migrations that ran since the target are all undoable. `0011_connected_accounts`
+(a pure `CREATE TABLE`) happened to be safe by luck the first time this came
+up; nothing distinguished that from a migration that alters or drops
+something until this issue.
+
+Every entry in `packages/relay/src/migrations.ts` now carries a `reversible:
+boolean`, not just a comment: `true` for a pure additive change (nothing
+built before it depended on the table/column either way), `false` when
+`down` — or leaving the change in place while older code runs against it —
+can destroy or orphan data with no way back (see `0010_device_token_ids`'s
+own comment for the one migration in this repo's history that qualifies:
+dropping its backfilled `id` column loses every token minted after the
+migration, and the pre-migration insert statement can't even satisfy the
+column's `NOT NULL` constraint if it were still there).
+
+`packages/relay/src/migrate.ts`'s `assessRollback(pg, targetId?)` reads that
+classification against what `_migrations` actually shows applied and
+returns `{allowed, toRollBack, blockedBy}` — `migrate-cli.ts`'s
+`assess-rollback` subcommand is the same answer as machine-readable JSON on
+stdout plus a non-zero exit when refused, and `migrate list` (no
+`DATABASE_URL` needed) prints what a given relay IMAGE's own code knows
+about, for asking an older, not-yet-recreated image how far its own
+migration history goes:
+
+```bash
+docker compose exec relay pnpm --filter @loombox/relay migrate list
+docker compose exec relay pnpm --filter @loombox/relay migrate assess-rollback 0011_connected_accounts
+```
+
+`scripts/deploy-prod.sh`'s `rollback()` calls both, automatically, before it
+ever retags the relay image back: it asks the pre-deploy image (tagged
+`-rollback` before anything touched prod) what its own last known migration
+is, then asks the currently-live relay — the one that actually applied
+everything — whether rolling back past that point is safe. Refused means
+the relay stays on the new image/schema and the script says so loudly
+instead of silently swapping in code that predates a migration it can't
+undo; the operator resolves it by hand from there. This is a gate, not a
+ban — an irreversible migration is never forbidden, it only has to be
+*known*, so a rollback across one is a deliberate decision instead of a
+data-loss surprise.
+
+
 ### A stale relay fails silently
 
 The relay validates every inbound frame against `@loombox/protocol`'s

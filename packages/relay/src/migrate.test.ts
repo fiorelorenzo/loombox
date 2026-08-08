@@ -2,13 +2,28 @@ import { newDb } from 'pg-mem';
 import { describe, expect, it } from 'vitest';
 
 import { migrations } from './migrations';
-import { runMigrations } from './migrate';
+import { assessRollback, runMigrations } from './migrate';
 import type { PgLike } from './pg-client';
 
 function freshPg(): PgLike {
   const db = newDb();
   const { Pool } = db.adapters.createPg();
   return new Pool() as unknown as PgLike;
+}
+
+/**
+ * Marks `_migrations` as applied only through `targetId` — a partially-
+ * migrated database, without depending on real `down` SQL to get there
+ * (`assessRollback` only ever reads `_migrations`' bookkeeping rows, never
+ * the schema itself, so deleting the later rows by hand is a faithful,
+ * much cheaper stand-in for "this deploy never got that far").
+ */
+async function ensureAppliedThrough(pg: PgLike, targetId: string): Promise<void> {
+  await runMigrations(pg, 'up');
+  const targetIndex = migrations.findIndex((m) => m.id === targetId);
+  for (const migration of migrations.slice(targetIndex + 1)) {
+    await pg.query(`DELETE FROM _migrations WHERE id = $1`, [migration.id]);
+  }
 }
 
 describe('relay Postgres migrations (#96)', () => {
@@ -70,5 +85,84 @@ describe('relay Postgres migrations (#96)', () => {
       );
       expect(rows, `${table} should have been dropped`).toHaveLength(0);
     }
+  });
+});
+
+describe('assessRollback (#657: migration reversibility gate)', () => {
+  it('allows a rollback whose undone set is entirely reversible', async () => {
+    const pg = freshPg();
+    await runMigrations(pg, 'up');
+
+    // Everything after 0011_connected_accounts (0012, 0013) is reversible.
+    const result = await assessRollback(pg, '0011_connected_accounts');
+    expect(result).toEqual({
+      allowed: true,
+      toRollBack: ['0013_session_view_state', '0012_keymaps'],
+      blockedBy: [],
+    });
+  });
+
+  it('refuses a rollback that would cross the irreversible 0010_device_token_ids', async () => {
+    const pg = freshPg();
+    await runMigrations(pg, 'up');
+
+    // Rolling back to 0009 would have to undo 0010 (irreversible) too.
+    const result = await assessRollback(pg, '0009_device_auth');
+    expect(result.allowed).toBe(false);
+    expect(result.blockedBy).toEqual(['0010_device_token_ids']);
+    expect(result.toRollBack).toContain('0010_device_token_ids');
+  });
+
+  it('refuses a full rollback (no target) once the irreversible migration is applied', async () => {
+    const pg = freshPg();
+    await runMigrations(pg, 'up');
+
+    const result = await assessRollback(pg);
+    expect(result.allowed).toBe(false);
+    expect(result.blockedBy).toEqual(['0010_device_token_ids']);
+    expect(result.toRollBack).toEqual([...migrations.map((m) => m.id)].reverse());
+  });
+
+  it('only weighs migrations actually applied, never the full static list', async () => {
+    const pg = freshPg();
+    // Apply nothing past 0009 by hand, mirroring a partially-migrated
+    // database rather than assuming every deploy is fully caught up.
+    await ensureAppliedThrough(pg, '0009_device_auth');
+
+    const result = await assessRollback(pg);
+    expect(result.allowed).toBe(true);
+    expect(result.toRollBack).toEqual(
+      migrations
+        .slice(0, migrations.findIndex((m) => m.id === '0009_device_auth') + 1)
+        .map((m) => m.id)
+        .reverse(),
+    );
+  });
+
+  it('is a no-op assessment (allowed, nothing to roll back) once the target is the latest applied migration', async () => {
+    const pg = freshPg();
+    await runMigrations(pg, 'up');
+
+    const result = await assessRollback(pg, migrations[migrations.length - 1]!.id);
+    expect(result).toEqual({ allowed: true, toRollBack: [], blockedBy: [] });
+  });
+
+  it('rejects an unknown target migration id rather than silently treating it as "roll back everything"', async () => {
+    const pg = freshPg();
+    await runMigrations(pg, 'up');
+
+    await expect(assessRollback(pg, 'not_a_real_migration')).rejects.toThrow(
+      /unknown target migration id/,
+    );
+  });
+
+  it('never calls down itself — the applied set is unchanged after an assessment either way', async () => {
+    const pg = freshPg();
+    await runMigrations(pg, 'up');
+
+    await assessRollback(pg, '0009_device_auth');
+
+    const { rows } = await pg.query<{ id: string }>(`SELECT id FROM _migrations`);
+    expect(rows).toHaveLength(migrations.length);
   });
 });

@@ -27,7 +27,7 @@ export {
 
 export { createPostgresRelayStore } from './store-postgres';
 export type { PgLike, PgQueryResult } from './pg-client';
-export { runMigrations } from './migrate';
+export { runMigrations, assessRollback, type RollbackAssessment } from './migrate';
 export { migrations, type Migration } from './migrations';
 
 export {
