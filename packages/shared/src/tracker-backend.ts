@@ -76,11 +76,25 @@ export interface TrackerBoard {
   readonly name: string;
 }
 
-/** One sprint `TrackerBackend.listSprints` exposes under a board. */
+/**
+ * One sprint `TrackerBackend.listSprints` exposes under a board. `state`
+ * is the field that makes a sprint a genuinely different thing from a
+ * board (issue #217): a `TrackerBoard` carries no state of its own, so a
+ * cockpit reading a sprint's `future`/`active`/`closed` value is the only
+ * way to tell a story sitting in the current sprint from one still in the
+ * backlog or one already shipped — never flattened into one combined
+ * board+sprint list. `boardId`/`startDate`/`endDate`/`goal` are optional:
+ * a provider that only ever knows the required trio (`id`/`name`/`state`)
+ * can still satisfy this shape.
+ */
 export interface TrackerSprint {
   readonly id: string;
   readonly name: string;
   readonly state: 'future' | 'active' | 'closed';
+  readonly boardId?: string;
+  readonly startDate?: string;
+  readonly endDate?: string;
+  readonly goal?: string;
 }
 
 /** Which optional `TrackerBackend` capability groups a given backend actually supports, so the UI can hide affordances a backend cannot serve (SPEC §7.10) — GitHub's flags mostly true minus `sprints`, Jira's mostly true including `sprints`, per SPEC §7.10's delivery-order notes. */
