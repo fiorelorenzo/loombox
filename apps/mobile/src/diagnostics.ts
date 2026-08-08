@@ -83,3 +83,43 @@ export function runDiagnostics(env: DiagnosticsEnv): DiagnosticResult[] {
     },
   ];
 }
+
+/**
+ * A live WebSocket round trip against `url` — closes the gap between "the
+ * `WebSocket` constructor exists" ({@link runDiagnostics}'s check, which a
+ * stub could pass) and "this WebView can actually open a socket, send, and
+ * receive over it", which is what issue #281's relay-connection question
+ * needs. `ctor` is injectable so the resolve/reject/timeout races below are
+ * unit-testable against a fake, not just eyeballed from a screenshot after
+ * an echo server round trip.
+ */
+export function probeWebSocketRoundTrip(
+  ctor: typeof WebSocket,
+  url: string,
+  timeoutMs: number,
+): Promise<DiagnosticResult> {
+  const { promise, resolve } = Promise.withResolvers<DiagnosticResult>();
+  let settled = false;
+  const settle = (pass: boolean, detail: string) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve({ name: 'WebSocket round trip', pass, detail });
+  };
+  const timer = setTimeout(() => settle(false, `timed out after ${timeoutMs}ms`), timeoutMs);
+  try {
+    const socket = new ctor(url);
+    const probeMessage = 'loombox-diagnostics-probe';
+    socket.onopen = () => socket.send(probeMessage);
+    socket.onmessage = (event) => {
+      settle(true, `open + echoed ${JSON.stringify(event.data)}`);
+      socket.close();
+    };
+    socket.onerror = () => settle(false, 'onerror fired');
+    socket.onclose = (event) =>
+      settle(false, `closed before a message arrived (code ${event.code})`);
+  } catch (err) {
+    settle(false, err instanceof Error ? err.message : String(err));
+  }
+  return promise;
+}
