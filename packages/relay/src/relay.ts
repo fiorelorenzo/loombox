@@ -1628,6 +1628,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_commit_draft_response':
       case 'git_commit_response':
       case 'git_diff_explain_response':
+      case 'git_conflict_resolve_response':
         // The owning node's reply to a client's mcp_prompt_get_request
         // (Zed-parity D5-2; issue #754), fs_read_request (issue #737's
         // read-only file viewer), git_diff_request (issue #206's
@@ -1660,6 +1661,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // from one) fan out exactly the same way: the relay never learns
         // which file/hunk was addressed or what the agent's explanation
         // said.
+        // git_conflict_resolve_request/git_conflict_resolve_response
+        // (issue #237's AI merge-conflict resolution assist, this same
+        // git_diff_explain_request family's own sibling) fan out exactly
+        // the same way: the relay never learns which file was addressed,
+        // its real conflict markers, or the agent's proposed resolution.
         fanOutDirect(message.sessionId, message);
         return;
       case 'git_branch_list_response':
@@ -2734,6 +2740,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'agent_instructions_set_request':
       case 'git_commit_request':
       case 'git_diff_explain_request':
+      case 'git_conflict_resolve_request':
         // fs_list_request (SPEC §7.4; issue #171/#160), its D5-2 sibling
         // mcp_prompt_get_request (Zed-parity D5-2; issue #754), its
         // #737 sibling fs_read_request (read-only file viewer), its
@@ -2765,6 +2772,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // a hunk): routed the same way. The relay only ever sees
         // `sessionId`/`requestId` and an opaque `EncryptedEnvelope`; which
         // file/hunk was addressed never reaches the relay in the clear.
+        // and its #237 sibling git_conflict_resolve_request (propose an
+        // AI resolution for a conflicted file): routed the same way. The
+        // relay only ever sees `sessionId`/`requestId` and an opaque
+        // `EncryptedEnvelope`; which file/hunks were addressed or their
+        // real conflict markers never reach the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'git_branch_list_request':

@@ -5461,6 +5461,217 @@ describe('RelayClient: hunk-level staging (issue #232)', () => {
   });
 });
 
+describe('RelayClient: AI merge-conflict resolution (SPEC §7.6; issue #237)', () => {
+  it('requestGitConflictResolve seals path into an envelope with no targetId, and resolves an ok outcome — hunks/resolution/baseHash all decrypted from the real git_conflict_resolve_response the node opaquely routed back', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-conflict-resolve-ok';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-conflict-resolve-1',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_conflict_resolve_ok',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-conflict-resolve-1',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestGitConflictResolve(session.id, { path: 'notes.txt' });
+
+    const request = (await node.waitFor((m) => m.type === 'git_conflict_resolve_request')) as {
+      type: 'git_conflict_resolve_request';
+      sessionId: string;
+      requestId: string;
+      envelope: EncryptedEnvelope;
+    };
+    expect(request.sessionId).toBe(session.id);
+    expect(Object.keys(request).sort()).toEqual(
+      ['envelope', 'protocolVersion', 'requestId', 'sessionId', 'type'].sort(),
+    );
+    const requestPayload = await nodeOpen<{ path: string }>(session.id, request.envelope, key);
+    expect(requestPayload).toEqual({ path: 'notes.txt' });
+
+    const okPayload = {
+      outcome: 'ok',
+      path: 'notes.txt',
+      baseHash: 'deadbeef',
+      hunks: [
+        {
+          index: 0,
+          oursLabel: 'HEAD',
+          theirsLabel: 'feature',
+          oursText: 'MAIN-EDIT\n',
+          theirsText: 'FEATURE-EDIT\n',
+          baseText: null,
+        },
+      ],
+      resolution: [{ index: 0, origin: 'rewritten', resolvedText: 'MERGED-EDIT\n' }],
+      resolvedContent: 'one\nMERGED-EDIT\nthree\n',
+    };
+    const responseEnvelope = await nodeSeal(session.id, okPayload, key);
+    node.send({
+      type: 'git_conflict_resolve_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual(okPayload);
+  });
+
+  it('requestGitConflictResolve resolves (not rejects) a too_large outcome — the caller decides how to show it, never an unhandled rejection', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-conflict-resolve-too-large';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-conflict-resolve-2',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_conflict_resolve_too_large',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-conflict-resolve-2',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client.requestGitConflictResolve(session.id, { path: 'huge.txt' });
+    const request = (await node.waitFor((m) => m.type === 'git_conflict_resolve_request')) as {
+      requestId: string;
+    };
+    const responseEnvelope = await nodeSeal(
+      session.id,
+      {
+        outcome: 'too_large',
+        path: 'huge.txt',
+        message: 'This file has 20 conflicted hunks — over the 12-hunk bound.',
+        hunkCount: 20,
+        maxHunks: 12,
+      },
+      key,
+    );
+    node.send({
+      type: 'git_conflict_resolve_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: request.requestId,
+      envelope: responseEnvelope,
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      outcome: 'too_large',
+      path: 'huge.txt',
+      message: 'This file has 20 conflicted hunks — over the 12-hunk bound.',
+      hunkCount: 20,
+      maxHunks: 12,
+    });
+  });
+
+  it("a client ignores a git_conflict_resolve_response for another device's own pending request on the same session (fanned out, not addressed)", async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-git-conflict-resolve-sibling';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-git-conflict-resolve-3',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({
+      id: 'sess_git_conflict_resolve_sibling',
+      accountId,
+      targetId: 'local',
+    });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 't', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-git-conflict-resolve-3',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    const resultPromise = client
+      .requestGitConflictResolve(session.id, { path: 'notes.txt' })
+      .then((payload) => {
+        expect(payload).toEqual({ outcome: 'error', path: 'notes.txt', message: 'mine' });
+      });
+    await node.waitFor((m) => m.type === 'git_conflict_resolve_request'); // this client's own request
+
+    const foreignEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', path: 'notes.txt', message: 'not mine' },
+      key,
+    );
+    node.send({
+      type: 'git_conflict_resolve_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: 'req-not-mine',
+      envelope: foreignEnvelope,
+    });
+
+    // Give the ignored (sibling) reply a tick to (wrongly) resolve the
+    // pending promise before answering for real — proves the requestId
+    // mismatch, not just that SOME response eventually arrives.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const realRequest = node.messages.find((m) => m.type === 'git_conflict_resolve_request') as {
+      requestId: string;
+    };
+    const realEnvelope = await nodeSeal(
+      session.id,
+      { outcome: 'error', path: 'notes.txt', message: 'mine' },
+      key,
+    );
+    node.send({
+      type: 'git_conflict_resolve_response',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      requestId: realRequest.requestId,
+      envelope: realEnvelope,
+    });
+    await resultPromise;
+  });
+});
+
 describe('RelayClient: agent instructions (SPEC §7.18; issue #260)', () => {
   it('getAgentInstructions sends an agent_instructions_get_request with no envelope, and resolves an ok outcome decrypted from the real agent_instructions_get_response the node opaquely routed back', async () => {
     const amk = generateAmk();

@@ -57,6 +57,12 @@ function fakeClient(overrides: Partial<GitBranchPanelClient> = {}): GitBranchPan
     } satisfies GitStashListResponsePayloadV1),
     popStash: vi.fn().mockResolvedValue({ outcome: 'ok' } satisfies GitStashPopResponsePayloadV1),
     dropStash: vi.fn().mockResolvedValue({ outcome: 'ok' } satisfies GitStashDropResponsePayloadV1),
+    requestGitConflictResolve: vi.fn().mockResolvedValue({
+      outcome: 'error',
+      path: 'unused',
+      message: 'not exercised by this test',
+    }),
+    writeFile: vi.fn().mockResolvedValue({ outcome: 'ok', path: 'unused', hash: 'unused' }),
     ...overrides,
   };
 }
@@ -284,6 +290,38 @@ describe('GitBranchPanel: merge (SPEC §7.6; issue #234)', () => {
     expect(abortBranchMerge).toHaveBeenCalledWith('sess-1');
     await vi.waitFor(() => expect(screen.queryByTestId('git-branch-merge-conflict')).toBeNull());
     expect(requestBranches).toHaveBeenCalledTimes(2);
+  });
+
+  it('a conflicted path\u2019s "Resolve with AI" button opens the AI resolve dialog for exactly that path (SPEC §7.6; issue #237)', async () => {
+    const mergeBranch = vi.fn().mockResolvedValue({
+      outcome: 'conflict',
+      message: 'merging "feature" produced conflicts',
+      conflictedPaths: ['src/a.ts', 'src/b.ts'],
+    } satisfies GitBranchMergeResponsePayloadV1);
+    const requestGitConflictResolve = vi.fn().mockResolvedValue({
+      outcome: 'error',
+      path: 'src/b.ts',
+      message: 'no live agent',
+    });
+    const client = fakeClient({ mergeBranch, requestGitConflictResolve });
+    render(GitBranchPanel, { props: { sessionId: 'sess-1', client } });
+    await screen.findByTestId('git-branch-list');
+
+    await fireEvent.input(screen.getByTestId('git-branch-merge-name'), {
+      target: { value: 'feature' },
+    });
+    await fireEvent.click(screen.getByTestId('git-branch-merge-submit'));
+    await screen.findByTestId('git-branch-merge-conflict');
+
+    expect(screen.queryByTestId('dialog')).toBeNull();
+    expect(requestGitConflictResolve).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByTestId('git-branch-resolve-ai-src/b.ts'));
+
+    await vi.waitFor(() =>
+      expect(requestGitConflictResolve).toHaveBeenCalledWith('sess-1', { path: 'src/b.ts' }),
+    );
+    expect(screen.getByTestId('dialog')).toBeTruthy();
   });
 });
 
