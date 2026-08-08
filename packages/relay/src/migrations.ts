@@ -17,6 +17,25 @@ export interface Migration {
   id: string;
   up: string;
   down: string;
+  /**
+   * Issue #657: whether `down`, or equivalently leaving this migration's
+   * schema change in place while code that predates it runs against the
+   * result, is safe. `true` means a pure additive change: nothing built
+   * before this migration ever depended on the table/column it adds
+   * either way, so `down` cleanly removes it and older code is unaffected
+   * whether `down` runs or not. `false` means `down` (or skipping it and
+   * just running old code against the new schema) can destroy or orphan
+   * data with no way back. See the migration's own comment for why.
+   *
+   * This is read by `assessRollback` (`migrate.ts`) and, through it,
+   * `migrate-cli.ts`'s `assess-rollback` subcommand, which
+   * `scripts/deploy-prod.sh`'s `rollback()` actually calls before flipping
+   * the relay image back: data the deploy path can act on, not a comment
+   * it can't read. An irreversible migration is not forbidden by this
+   * flag; it only means a rollback that would cross it gets refused
+   * instead of silently proceeding into a schema neither side agreed to.
+   */
+  reversible: boolean;
 }
 
 export const migrations: readonly Migration[] = [
@@ -35,6 +54,7 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX devices_account_id_idx ON devices (account_id);
     `,
     down: `DROP TABLE IF EXISTS devices;`,
+    reversible: true,
   },
   {
     id: '0002_sessions',
@@ -80,6 +100,7 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS session_seq_counters;
       DROP TABLE IF EXISTS sessions;
     `,
+    reversible: true,
   },
   {
     id: '0003_blobs',
@@ -93,6 +114,7 @@ export const migrations: readonly Migration[] = [
       );
     `,
     down: `DROP TABLE IF EXISTS blobs;`,
+    reversible: true,
   },
   {
     // #101 (per-account storage quota) + #102 (TTL retention pruning). Both
@@ -119,6 +141,7 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE blobs DROP COLUMN IF EXISTS created_at;
       ALTER TABLE blobs DROP COLUMN IF EXISTS account_id;
     `,
+    reversible: true,
   },
   {
     // #114/#115: the account's escrowed wrapped-AMK blob (SPEC §8 path 2,
@@ -136,6 +159,7 @@ export const migrations: readonly Migration[] = [
       );
     `,
     down: `DROP TABLE IF EXISTS amk_escrow;`,
+    reversible: true,
   },
   {
     // #161/#163: the relay's own self-owned VAPID keypair (one row, ever —
@@ -168,6 +192,7 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS push_subscriptions;
       DROP TABLE IF EXISTS vapid_keys;
     `,
+    reversible: true,
   },
   {
     // #116: device-revocation AMK epoch rotation. `amk_epochs` is the
@@ -202,6 +227,7 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS amk_rotation_pending;
       DROP TABLE IF EXISTS amk_epochs;
     `,
+    reversible: true,
   },
   {
     // #82/#104: session-ownership leases. One row per (account_id,
@@ -222,6 +248,7 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX leases_expires_at_idx ON leases (expires_at);
     `,
     down: `DROP TABLE IF EXISTS leases;`,
+    reversible: true,
   },
   {
     // #387: device-authorization grant (RFC 8628-shaped, SPEC §16). One row
@@ -258,6 +285,7 @@ export const migrations: readonly Migration[] = [
       DROP TABLE IF EXISTS device_tokens;
       DROP TABLE IF EXISTS device_auth_requests;
     `,
+    reversible: true,
   },
   {
     // #398: zero-touch authenticated node-token mint. `device_tokens` was
@@ -277,6 +305,17 @@ export const migrations: readonly Migration[] = [
       DROP INDEX IF EXISTS device_tokens_id_idx;
       ALTER TABLE device_tokens DROP COLUMN IF EXISTS id;
     `,
+    // Irreversible (issue #657): `down` drops `id` outright, and unlike
+    // the one-time backfill above (`id = token_hash`, deterministic and
+    // therefore replayable), every token minted AFTER this migration gets
+    // its own real `id` from the caller (`store-postgres.ts`'s
+    // `insert(input)`, see its own comment), independent of `token_hash`
+    // and not derivable from it. Rolling this back after such a token
+    // exists permanently loses the only handle `revoke(id, accountId)`
+    // has on it, and the pre-migration insert statement a rolled-back
+    // relay would run has no `id` column to satisfy `id SET NOT NULL`
+    // with in the first place: it fails outright, not silently.
+    reversible: false,
   },
   {
     // SPEC §7.26, issue #221: the connected-account metadata row — no
@@ -309,6 +348,7 @@ export const migrations: readonly Migration[] = [
       );
     `,
     down: `DROP TABLE IF EXISTS connected_accounts;`,
+    reversible: true,
   },
   {
     // Zed-parity F3-3, issue #760: the user-editable keymap, one opaque
@@ -332,6 +372,7 @@ export const migrations: readonly Migration[] = [
       );
     `,
     down: `DROP TABLE IF EXISTS keymaps;`,
+    reversible: true,
   },
   {
     // Device-switch state preservation (issue #198, epic #6): one opaque
@@ -360,5 +401,6 @@ export const migrations: readonly Migration[] = [
       );
     `,
     down: `DROP TABLE IF EXISTS session_view_state;`,
+    reversible: true,
   },
 ];

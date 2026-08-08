@@ -186,13 +186,40 @@ rollback() {
   fi
 
   if [ "$RELAY_ROLLBACK_TAGGED" = true ]; then
-    echo "   restoring relay image $RELAY_IMAGE_REF to its pre-deploy state" >&2
-    if docker tag "${RELAY_IMAGE_REF}-rollback" "$RELAY_IMAGE_REF"; then
-      if ! (cd "$DEPLOY_DIR/deploy/relay" && docker compose up -d --force-recreate --no-build --no-deps relay); then
-        echo "   WARNING: relay recreate failed during rollback -- check it by hand" >&2
+    # Issue #657: this deploy's relay already self-migrated forward on
+    # boot (main.ts's runMigrations up), and the CURRENTLY LIVE relay
+    # container, still running, still the one that actually applied
+    # them, is the only place that honestly knows what's in
+    # `_migrations`. The pre-deploy image tagged above only knows the
+    # migrations ITS OWN (older) migrations.ts shipped with; asking it
+    # (`migrate list`, no DB touched) for the last one it recognises is
+    # the rollback target `assess-rollback` checks against. Swapping the
+    # image back without this check is exactly the "lucky, not policy"
+    # gap this issue exists to close: an irreversible migration applied
+    # since the target would leave the OLD code running against a schema
+    # it never agreed to.
+    echo "   checking migration reversibility before restoring the relay image" >&2
+    rollback_target_migration="$(
+      docker run --rm --entrypoint pnpm "${RELAY_IMAGE_REF}-rollback" \
+        --filter @loombox/relay migrate list 2>/dev/null |
+        jq -r '.[-1].id // empty'
+    )" || rollback_target_migration=""
+    if migration_assessment="$(
+      cd "$DEPLOY_DIR/deploy/relay" &&
+        docker compose exec -T relay pnpm --filter @loombox/relay migrate assess-rollback "$rollback_target_migration" 2>&1
+    )"; then
+      echo "   restoring relay image $RELAY_IMAGE_REF to its pre-deploy state" >&2
+      if docker tag "${RELAY_IMAGE_REF}-rollback" "$RELAY_IMAGE_REF"; then
+        if ! (cd "$DEPLOY_DIR/deploy/relay" && docker compose up -d --force-recreate --no-build --no-deps relay); then
+          echo "   WARNING: relay recreate failed during rollback -- check it by hand" >&2
+        fi
+      else
+        echo "   WARNING: failed to restore the relay image tag -- check it by hand" >&2
       fi
     else
-      echo "   WARNING: failed to restore the relay image tag -- check it by hand" >&2
+      echo "   REFUSING to restore the relay image: rolling back past ${rollback_target_migration:-<no migrations known to that image>} would leave an irreversible migration applied against code that predates it" >&2
+      echo "$migration_assessment" >&2
+      echo "   the relay stays on the NEW image/schema -- see packages/relay/src/migrations.ts and docs/deploy-relay.md's \"Migration reversibility\" section to resolve this by hand" >&2
     fi
   fi
 }
