@@ -1,23 +1,34 @@
 /* ---------------------------------------------------------------------
- * The Jira `TrackerBackend` — live tracker slices 1 + 2 (SPEC §7.10 "Jira,
- * full feature set... two separate REST bases... Use `POST /rest/api/3/
- * search/jql`... comments and transition fields... are Atlassian Document
- * Format (ADF)... discover transitions via `GET .../issue/{key}/
- * transitions` before posting one... For OAuth 3LO connections, every
- * call... is routed through `https://api.atlassian.com/ex/jira/{cloudId}/
+ * The Jira `TrackerBackend` — live tracker slices 1 + 2 + 3 (SPEC §7.10
+ * "Jira, full feature set... two separate REST bases... Use `POST
+ * /rest/api/3/search/jql`... comments and transition fields... are
+ * Atlassian Document Format (ADF)... discover transitions via
+ * `GET .../issue/{key}/transitions` before posting one... Sprints:
+ * `GET /rest/agile/1.0/board/{id}/sprint` to list, `POST
+ * /rest/agile/1.0/sprint/{sprintId}/issue {issues:[...]}` to move issues
+ * into a sprint... For OAuth 3LO connections, every call — both REST
+ * bases — is routed through `https://api.atlassian.com/ex/jira/{cloudId}/
  * rest/...`... for API-token connections, calls go straight to the site";
- * issues #214/#216). Implements `@loombox/shared`'s `TrackerBackend`
+ * issues #214/#216/#217). Implements `@loombox/shared`'s `TrackerBackend`
  * extension point (#209) for `list`/`get`/`create`/`update`/`addComment`/
- * `listBindings` (slice 1, #214) plus `listTransitions`/`transition`
- * (slice 2, #216) against a bound Jira Cloud project. Non-goal, deferred
- * to a later slice: boards/sprints (`listBoards`/`listSprints`/
- * `moveToSprint`, #217) — none of those optional methods is implemented
- * here, and `capabilities` still reports both as `false`.
+ * `listBindings` (slice 1, #214), `listTransitions`/`transition` (slice
+ * 2, #216), and `listBoards`/`listSprints`/`moveToSprint` (slice 3,
+ * #217) against a bound Jira Cloud project.
  *
- * **Clean room.** Designed from SPEC §7.10 and issues #214/#216 only,
- * plus the live public Jira Cloud REST v3 docs
- * (`developer.atlassian.com/cloud/jira/platform/rest/v3/...`) and
- * Atlassian's own OAuth docs
+ * **Clean room.** Designed from SPEC §7.10 and issues #214/#216/#217
+ * only, plus the live public Jira Cloud REST v3 docs
+ * (`developer.atlassian.com/cloud/jira/platform/rest/v3/...`), the live
+ * public Jira Software Cloud Agile REST docs
+ * (`developer.atlassian.com/cloud/jira/software/rest/api-group-board/`,
+ * `.../rest/api-group-sprint/` — confirmed field-by-field: board list's
+ * `{isLast, maxResults, startAt, total, values:[{id, name, self, type}]}`,
+ * sprint's `{id, self, state, name, startDate, endDate, completeDate,
+ * originBoardId, goal}`, "Move issues to sprint and rank"'s `{issues:
+ * string[], rankAfterIssue?, rankBeforeIssue?, rankCustomFieldId?}`
+ * capped at 50 issues/call, and "Partially update sprint"'s own
+ * documented state-machine notes: `future`→`active` needs `startDate`/
+ * `endDate` already set, `active`→`closed` sets `completeDate` itself,
+ * no other state change is allowed), and Atlassian's own OAuth docs
  * (`developer.atlassian.com/cloud/oauth/getting-started/making-calls-to-api/`)
  * — never emdash's or HAPI's source (SPEC §13: HAPI is AGPL-3.0, never
  * cloned or copied into this build environment; emdash is design
@@ -92,15 +103,61 @@
  *   response is surfaced as a typed `JiraTrackerTransitionValidationError`
  *   (carrying the per-field messages Jira returned) — never silently
  *   dropped, and never reported as success.
+ * - Three DIFFERENT pagination shapes across this one backend, never
+ *   confused for one another: `search/jql` (issue #214) is token-paginated
+ *   (`nextPageToken`/`isLast`, no `total`); `project/search` (`listBindings`)
+ *   is `startAt`/`isLast` with no `total`; the Agile REST base's `board`
+ *   and `board/{id}/sprint` list endpoints (issue #217, this bullet) are
+ *   `startAt`/`maxResults`/`isLast`/`total`/`values` — the same shape as
+ *   each other, but distinct from both issue-API shapes above, and the
+ *   reason boards/sprints could not simply reuse `listBindings`'s own
+ *   pagination loop unchanged.
+ * - Boards/sprints (issue #217) live on the Agile REST base
+ *   (`/rest/agile/1.0/...`), never `/rest/api/3/...` — a genuinely
+ *   different base path, confirmed against the live Agile REST docs (this
+ *   file's own top comment). `listBoards` scopes to the bound project via
+ *   `projectKeyOrId` (never returns every board the credential can see);
+ *   `listSprints`/`moveToSprint`/`createSprint`/`startSprint`/
+ *   `closeSprint` do not take a `TrackerBinding` at all — SPEC §7.10's own
+ *   literal `TrackerBackend` block gives `listSprints(boardId)`/
+ *   `moveToSprint(sprintId, externalIds)` no binding parameter, so the
+ *   `connectionId` a later call needs to resolve credentials has nowhere
+ *   to come from except the id itself. `encodeJiraCompositeId`/
+ *   `decodeJiraCompositeId` fold `{connectionId, id}` into the opaque
+ *   `TrackerBoard.id`/`TrackerSprint.id` string `listBoards`/`listSprints`
+ *   hand back — a base64url JSON envelope, not a delimited string, since a
+ *   real `connectionId` already contains colons (`jira:{host}:{accountId}`,
+ *   `./jira-connect.ts`) and any single-character delimiter would be
+ *   ambiguous to split back apart.
+ * - Sprint STATE (`future`/`active`/`closed`) is carried on
+ *   `TrackerSprint.state`, never flattened away: a board has no state of
+ *   its own (`TrackerBoard` stays `{id, name}`), so a cockpit reading
+ *   `listSprints` can tell a story sitting in the active sprint from one
+ *   still in the backlog (a future sprint) or already shipped (closed) —
+ *   the whole reason this is modelled as two separate methods/types
+ *   rather than one combined board+sprint list.
+ * - `createSprint`/`startSprint`/`closeSprint` are NOT part of
+ *   `TrackerBackend` (SPEC's literal block has no such method — see
+ *   above); they exist directly on `JiraTrackerBackend`, the same
+ *   "structurally-compatible superset" precedent as `transition`'s own
+ *   extra fourth `options` parameter, for issue #217's third acceptance
+ *   line ("create/start/close... where the UI needs it"). `startSprint`/
+ *   `closeSprint` use the *partial*-update endpoint (`POST
+ *   /rest/agile/1.0/sprint/{sprintId}`), never the full-replace `PUT` —
+ *   Jira's own docs: a `PUT` nulls out every field the request body
+ *   omits, which would silently wipe `name`/`goal` on every start/close
+ *   call; the partial `POST` updates only the fields given.
  * --------------------------------------------------------------------- */
 
 import type {
   TrackerBackend,
   TrackerBackendCapabilities,
   TrackerBinding,
+  TrackerBoard,
   TrackerItemLive,
   TrackerListFilter,
   TrackerListPage,
+  TrackerSprint,
   TrackerTransition,
 } from '@loombox/shared';
 import type { JiraTarget, WorkflowCategoryV1 } from '@loombox/protocol';
@@ -385,6 +442,97 @@ function buildTransitionRequestBody(
   return body;
 }
 
+/**
+ * Folds `{connectionId, id}` into the single opaque string
+ * `TrackerBoard.id`/`TrackerSprint.id` hand back (issue #217 — see this
+ * module's top comment for why: `TrackerBackend.listSprints`/
+ * `moveToSprint` take a bare `boardId`/`sprintId`, never a
+ * `TrackerBinding`). Base64url JSON, not a delimited string — a real
+ * `connectionId` already contains colons (`jira:{host}:{accountId}`,
+ * `./jira-connect.ts`), so a single-character delimiter would be
+ * ambiguous to split back apart.
+ */
+function encodeJiraCompositeId(connectionId: string, id: string): string {
+  return Buffer.from(JSON.stringify({ connectionId, id }), 'utf8').toString('base64url');
+}
+
+/** The inverse of {@link encodeJiraCompositeId}. `kind` is only used to name the id flavour in a thrown `JiraTrackerAccessError` — this backend never accepts a sprint id where a board id was expected or vice versa, but both fail the same way (a caller-facing string that did not round-trip through `listBoards`/`listSprints`), so this never needs to distinguish the two beyond that message. */
+function decodeJiraCompositeId(
+  composite: string,
+  kind: 'board' | 'sprint',
+): { connectionId: string; id: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(composite, 'base64url').toString('utf8'));
+  } catch {
+    parsed = undefined;
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !('connectionId' in parsed) ||
+    !('id' in parsed) ||
+    typeof parsed.connectionId !== 'string' ||
+    typeof parsed.id !== 'string'
+  ) {
+    throw new JiraTrackerAccessError(
+      `jira tracker: '${composite}' is not a ${kind} id this backend issued (expected the opaque id from a prior listBoards/listSprints call)`,
+    );
+  }
+  return { connectionId: parsed.connectionId, id: parsed.id };
+}
+
+/**
+ * Jira Agile REST's own `{isLast, maxResults, startAt, total, values}`
+ * pagination shape — `GET /rest/agile/1.0/board` and `GET
+ * /rest/agile/1.0/board/{id}/sprint` both use it (confirmed against the
+ * live docs, this module's top comment). Distinct from BOTH issue-API
+ * pagination shapes already in this file: `search/jql`'s token-paginated
+ * `{nextPageToken, isLast}` and `project/search`'s `{startAt, isLast}`
+ * (no `total`/`values` typed for that one, `listBindings` never needs
+ * them) — three shapes, never conflated.
+ */
+interface JiraAgilePage<T> {
+  readonly values: T[];
+  readonly isLast: boolean;
+}
+
+/** `GET /rest/agile/1.0/board`'s per-board shape — only `id`/`name` are read; `self`/`type` (scrum vs kanban) are Jira's own extras `TrackerBoard` (SPEC §7.10's placeholder shape) has no field for yet. */
+interface JiraBoardPayload {
+  readonly id: number;
+  readonly name: string;
+}
+
+/** `GET /rest/agile/1.0/board/{id}/sprint`'s (and `POST`/`POST .../sprint/{id}`'s create/start/close responses') per-sprint shape — confirmed against the live docs (this module's top comment). `completeDate` is read-only (Jira sets it itself on `active`→`closed`) and never sent back on a write. */
+interface JiraSprintPayload {
+  readonly id: number;
+  readonly name: string;
+  readonly state: 'future' | 'active' | 'closed';
+  readonly originBoardId?: number;
+  readonly startDate?: string;
+  readonly endDate?: string;
+  readonly goal?: string;
+}
+
+/** Maps a raw Agile REST sprint payload to `TrackerSprint`, folding `connectionId` into both `id` and `boardId` via {@link encodeJiraCompositeId} — shared by `listSprints`, `createSprint`, `startSprint`, and `closeSprint` so all four hand back an identically-shaped, identically-opaque `TrackerSprint`. */
+function toTrackerSprint(raw: JiraSprintPayload, connectionId: string): TrackerSprint {
+  return {
+    id: encodeJiraCompositeId(connectionId, String(raw.id)),
+    name: raw.name,
+    state: raw.state,
+    boardId:
+      raw.originBoardId === undefined
+        ? undefined
+        : encodeJiraCompositeId(connectionId, String(raw.originBoardId)),
+    startDate: raw.startDate,
+    endDate: raw.endDate,
+    goal: raw.goal,
+  };
+}
+
+/** Jira's own documented cap on "Move issues to sprint and rank" (`POST /rest/agile/1.0/sprint/{sprintId}/issue`): at most 50 issue keys per call. `moveToSprint` chunks a larger caller-supplied batch into multiple calls rather than failing outright — the same accommodation `clampMaxResults` makes for `search/jql`'s own documented range, just chunked instead of clamped since every issue in the batch still needs to move, not just the first 100. */
+const JIRA_MOVE_TO_SPRINT_MAX_ISSUES = 50;
+
 async function jiraRequest(
   fetchImpl: typeof fetch,
   credential: JiraCredential,
@@ -428,26 +576,28 @@ export interface JiraTrackerBackendOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** The Jira `TrackerBackend` (SPEC §7.10, issues #214/#216). One instance is reusable across every bound project — `resolveCredential` is re-invoked per call rather than cached on the instance, same rationale as `GithubTrackerBackend`. */
+/** The Jira `TrackerBackend` (SPEC §7.10, issues #214/#216/#217). One instance is reusable across every bound project — `resolveCredential` is re-invoked per call rather than cached on the instance, same rationale as `GithubTrackerBackend`. */
 export class JiraTrackerBackend implements TrackerBackend {
   readonly id = 'jira' as const;
 
   /**
-   * Slices 1+2 (issues #214/#216): issues, comments, and discovered
-   * workflow transitions. `boards`/`sprints` land in #217. `milestones`
-   * stays `false`: Jira's nearest analogue, `fixVersions`, isn't read or
-   * written by this slice. `customFields` stays `false` too —
-   * `TrackerItemLive.fields` only ever carries the fixed set
-   * `toTrackerItem` maps, and `pickIssueWriteFields` only ever forwards
-   * `ISSUE_WRITE_FIELDS`, so an arbitrary `customfield_XXXXX` key is
-   * neither read nor writable yet, unlike GitHub where `customFields:
-   * false` is permanent (no analogue at all).
+   * Slices 1+2+3 (issues #214/#216/#217): issues, comments, discovered
+   * workflow transitions, and now boards/sprints via the Agile REST base
+   * (`listBoards`/`listSprints`/`moveToSprint`, plus the Jira-only
+   * `createSprint`/`startSprint`/`closeSprint` extras — see this file's
+   * top comment). `milestones` stays `false`: Jira's nearest analogue,
+   * `fixVersions`, isn't read or written by this slice. `customFields`
+   * stays `false` too — `TrackerItemLive.fields` only ever carries the
+   * fixed set `toTrackerItem` maps, and `pickIssueWriteFields` only ever
+   * forwards `ISSUE_WRITE_FIELDS`, so an arbitrary `customfield_XXXXX`
+   * key is neither read nor writable yet, unlike GitHub where
+   * `customFields: false` is permanent (no analogue at all).
    */
   readonly capabilities: TrackerBackendCapabilities = {
     comments: true,
     transitions: true,
-    boards: false,
-    sprints: false,
+    boards: true,
+    sprints: true,
     labels: true,
     milestones: false,
     customFields: false,
@@ -695,5 +845,191 @@ export class JiraTrackerBackend implements TrackerBackend {
         body.errorMessages ?? [],
       );
     }
+  }
+
+  /**
+   * Every Agile board for the bound project (issue #217) — `GET
+   * /rest/agile/1.0/board`, scoped via `projectKeyOrId` so this never
+   * returns every board the credential can see, paginated via Jira
+   * Agile's own `startAt`/`isLast`/`values` shape (`JiraAgilePage`,
+   * distinct from `listBindings`'s `project/search` shape and `list`'s
+   * `search/jql` shape — this file's top comment). `TrackerBoard.id` is
+   * this backend's own opaque `{connectionId, boardId}` envelope
+   * (`encodeJiraCompositeId`): `listSprints`/`moveToSprint`/
+   * `createSprint` take a bare id with no `TrackerBinding`, so the
+   * `connectionId` a later call needs has to travel inside it.
+   */
+  async listBoards(binding: TrackerBinding): Promise<TrackerBoard[]> {
+    const target = requireJiraTarget(binding.target);
+    const credential = await this.credential(binding.connectionId);
+    const boards: TrackerBoard[] = [];
+    let startAt = 0;
+    for (;;) {
+      const url = new URL(`${credential.baseUrl}/rest/agile/1.0/board`);
+      url.searchParams.set('startAt', String(startAt));
+      url.searchParams.set('maxResults', '50');
+      url.searchParams.set('projectKeyOrId', target.projectKey);
+      const response = await jiraRequest(this.fetchImpl, credential, url.toString());
+      const body = (await response.json()) as JiraAgilePage<JiraBoardPayload>;
+      for (const board of body.values) {
+        boards.push({
+          id: encodeJiraCompositeId(binding.connectionId, String(board.id)),
+          name: board.name,
+        });
+      }
+      if (body.isLast || body.values.length === 0) break;
+      startAt += body.values.length;
+    }
+    return boards;
+  }
+
+  /**
+   * Every sprint on a board (issue #217) — `GET
+   * /rest/agile/1.0/board/{boardId}/sprint`, `boardId` decoded from the
+   * opaque id `listBoards` handed out. Returns EVERY state
+   * (`future`/`active`/`closed`) in one list, `TrackerSprint.state`
+   * carrying the distinction — never filtered down to just `active` here,
+   * since a caller (a cockpit deciding what to show) is the one who knows
+   * which states it cares about, not this backend.
+   */
+  async listSprints(boardId: string): Promise<TrackerSprint[]> {
+    const { connectionId, id: rawBoardId } = decodeJiraCompositeId(boardId, 'board');
+    const credential = await this.credential(connectionId);
+    const sprints: TrackerSprint[] = [];
+    let startAt = 0;
+    for (;;) {
+      const url = new URL(
+        `${credential.baseUrl}/rest/agile/1.0/board/${encodeURIComponent(rawBoardId)}/sprint`,
+      );
+      url.searchParams.set('startAt', String(startAt));
+      url.searchParams.set('maxResults', '50');
+      const response = await jiraRequest(this.fetchImpl, credential, url.toString());
+      const body = (await response.json()) as JiraAgilePage<JiraSprintPayload>;
+      for (const sprint of body.values) {
+        sprints.push(toTrackerSprint(sprint, connectionId));
+      }
+      if (body.isLast || body.values.length === 0) break;
+      startAt += body.values.length;
+    }
+    return sprints;
+  }
+
+  /**
+   * Moves issues into a sprint (issue #217) — `POST
+   * /rest/agile/1.0/sprint/{sprintId}/issue {issues:[...]}`, `sprintId`
+   * decoded from the opaque id `listSprints` handed out. Jira caps this
+   * endpoint at 50 issue keys per call (this module's top comment); a
+   * larger `externalIds` batch is chunked into multiple calls rather than
+   * rejected outright. A no-op (no request sent) for an empty
+   * `externalIds`, mirroring `addComment`-style writes that only ever act
+   * when there is something to act on.
+   */
+  async moveToSprint(sprintId: string, externalIds: string[]): Promise<void> {
+    const { connectionId, id: rawSprintId } = decodeJiraCompositeId(sprintId, 'sprint');
+    const credential = await this.credential(connectionId);
+    for (let i = 0; i < externalIds.length; i += JIRA_MOVE_TO_SPRINT_MAX_ISSUES) {
+      const chunk = externalIds.slice(i, i + JIRA_MOVE_TO_SPRINT_MAX_ISSUES);
+      await jiraRequest(
+        this.fetchImpl,
+        credential,
+        `${credential.baseUrl}/rest/agile/1.0/sprint/${encodeURIComponent(rawSprintId)}/issue`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ issues: chunk }),
+        },
+      );
+    }
+  }
+
+  /**
+   * Creates a future sprint on a board (issue #217's third acceptance
+   * line) — `POST /rest/agile/1.0/sprint {name, originBoardId, ...}`.
+   * NOT part of `TrackerBackend` (this file's top comment: SPEC's literal
+   * block has no create-sprint method); callers reach this directly on
+   * `JiraTrackerBackend`, the same precedent as `transition`'s own extra
+   * `options` parameter.
+   */
+  async createSprint(
+    boardId: string,
+    params: { name: string; startDate?: string; endDate?: string; goal?: string },
+  ): Promise<TrackerSprint> {
+    const { connectionId, id: rawBoardId } = decodeJiraCompositeId(boardId, 'board');
+    const credential = await this.credential(connectionId);
+    const response = await jiraRequest(
+      this.fetchImpl,
+      credential,
+      `${credential.baseUrl}/rest/agile/1.0/sprint`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: params.name,
+          originBoardId: Number(rawBoardId),
+          startDate: params.startDate,
+          endDate: params.endDate,
+          goal: params.goal,
+        }),
+      },
+    );
+    const raw = (await response.json()) as JiraSprintPayload;
+    return toTrackerSprint(raw, connectionId);
+  }
+
+  /**
+   * Starts a `future` sprint (issue #217's third acceptance line) —
+   * Jira's own state machine requires `startDate`/`endDate` already set
+   * before `future`→`active` is allowed, so this backend does not invent
+   * defaults; a caller must supply both. Uses the PARTIAL update endpoint
+   * (`POST /rest/agile/1.0/sprint/{sprintId}`, not the full-replace
+   * `PUT`) so fields this call doesn't touch (`name`, `goal`, ...) are
+   * left alone rather than nulled out (this file's top comment). NOT part
+   * of `TrackerBackend`, same rationale as `createSprint`.
+   */
+  async startSprint(
+    sprintId: string,
+    params: { startDate: string; endDate: string },
+  ): Promise<TrackerSprint> {
+    const { connectionId, id: rawSprintId } = decodeJiraCompositeId(sprintId, 'sprint');
+    const credential = await this.credential(connectionId);
+    const response = await jiraRequest(
+      this.fetchImpl,
+      credential,
+      `${credential.baseUrl}/rest/agile/1.0/sprint/${encodeURIComponent(rawSprintId)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          state: 'active',
+          startDate: params.startDate,
+          endDate: params.endDate,
+        }),
+      },
+    );
+    const raw = (await response.json()) as JiraSprintPayload;
+    return toTrackerSprint(raw, connectionId);
+  }
+
+  /**
+   * Completes an `active` sprint (issue #217's third acceptance line) —
+   * Jira sets `completeDate` itself; this backend never sends one (this
+   * file's top comment). Same PARTIAL-update rationale as `startSprint`.
+   * NOT part of `TrackerBackend`, same rationale as `createSprint`.
+   */
+  async closeSprint(sprintId: string): Promise<TrackerSprint> {
+    const { connectionId, id: rawSprintId } = decodeJiraCompositeId(sprintId, 'sprint');
+    const credential = await this.credential(connectionId);
+    const response = await jiraRequest(
+      this.fetchImpl,
+      credential,
+      `${credential.baseUrl}/rest/agile/1.0/sprint/${encodeURIComponent(rawSprintId)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ state: 'closed' }),
+      },
+    );
+    const raw = (await response.json()) as JiraSprintPayload;
+    return toTrackerSprint(raw, connectionId);
   }
 }

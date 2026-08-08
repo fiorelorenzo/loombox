@@ -108,6 +108,15 @@ describe('generateLaunchdPlist', () => {
     expect(content).not.toContain('WorkingDirectory');
     expect(content).not.toContain('EnvironmentVariables');
   });
+
+  it("refuses execStart/execArgs naming a known forking wrapper — the launchd sibling of issue #929's own incident shape", () => {
+    expect(() =>
+      generateLaunchdPlist({
+        execStart: '/usr/local/bin/node',
+        execArgs: ['/Users/lorenzo/node_modules/tsx/dist/cli.mjs', 'main.ts'],
+      }),
+    ).toThrow(/forking process wrapper/);
+  });
 });
 
 describe('buildLocalNodeLaunchdAgent', () => {

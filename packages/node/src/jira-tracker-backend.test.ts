@@ -95,14 +95,14 @@ function backend(
   });
 }
 
-describe('JiraTrackerBackend.capabilities (issues #214/#216)', () => {
-  it('reports comments/labels/transitions true, boards/sprints/milestones/customFields false', () => {
+describe('JiraTrackerBackend.capabilities (issues #214/#216/#217)', () => {
+  it('reports comments/labels/transitions/boards/sprints true, milestones/customFields false', () => {
     const svc = backend(vi.fn());
     expect(svc.capabilities).toEqual({
       comments: true,
       transitions: true,
-      boards: false,
-      sprints: false,
+      boards: true,
+      sprints: true,
       labels: true,
       milestones: false,
       customFields: false,
@@ -687,5 +687,404 @@ describe('JiraTrackerBackend.listTransitions/transition (issue #216 acceptance)'
     const siteSvc = backend(siteFetch);
     await siteSvc.transition(binding(), 'LB-213', '11');
     expect(siteFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+function boardPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 84,
+    name: 'LB board',
+    self: `${SITE_BASE}/rest/agile/1.0/board/84`,
+    type: 'scrum',
+    ...overrides,
+  };
+}
+
+function sprintPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 37,
+    self: `${SITE_BASE}/rest/agile/1.0/sprint/37`,
+    state: 'active',
+    name: 'Sprint 1',
+    startDate: '2026-01-01T00:00:00.000Z',
+    endDate: '2026-01-14T00:00:00.000Z',
+    originBoardId: 84,
+    goal: 'ship it',
+    ...overrides,
+  };
+}
+
+describe('JiraTrackerBackend.listBoards/listSprints/moveToSprint — Agile REST base (issue #217 acceptance)', () => {
+  it('listBoards() GETs /rest/agile/1.0/board scoped to the bound project, paginates via startAt/isLast/values, and returns opaque per-board ids', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/rest/agile/1.0/board');
+      expect(url.searchParams.get('projectKeyOrId')).toBe('LB');
+      if (url.searchParams.get('startAt') === '0') {
+        return jsonResponse(200, {
+          isLast: false,
+          maxResults: 1,
+          startAt: 0,
+          total: 2,
+          values: [boardPayload({ id: 84, name: 'Board A' })],
+        });
+      }
+      expect(url.searchParams.get('startAt')).toBe('1');
+      return jsonResponse(200, {
+        isLast: true,
+        maxResults: 1,
+        startAt: 1,
+        total: 2,
+        values: [boardPayload({ id: 92, name: 'Board B' })],
+      });
+    });
+    const svc = backend(fetchImpl);
+
+    const boards = await svc.listBoards(binding());
+
+    expect(boards).toHaveLength(2);
+    expect(boards[0].name).toBe('Board A');
+    expect(boards[1].name).toBe('Board B');
+    // Opaque ids: never the raw Jira numeric board id (agile REST calls
+    // below decode it back out via listSprints, never a caller).
+    expect(boards[0].id).not.toBe('84');
+    expect(boards[0].id).not.toBe(boards[1].id);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('listBoards() rejects a binding whose target is not a JiraTarget', async () => {
+    const svc = backend(vi.fn());
+    const githubShapedBinding = {
+      connectionId: 'conn_1',
+      target: { owner: 'fiorelorenzo', repo: 'loombox' },
+    } as unknown as TrackerBinding;
+
+    await expect(svc.listBoards(githubShapedBinding)).rejects.toBeInstanceOf(
+      JiraTrackerAccessError,
+    );
+  });
+
+  it('listSprints(boardId) GETs board/{boardId}/sprint for a board id round-tripped through listBoards, and models every state/date/goal field', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      expect(url.pathname).toBe('/rest/agile/1.0/board/84/sprint');
+      return jsonResponse(200, {
+        isLast: true,
+        maxResults: 50,
+        startAt: 0,
+        total: 3,
+        values: [
+          sprintPayload({ id: 30, name: 'Sprint 0', state: 'closed' }),
+          sprintPayload({ id: 37, name: 'Sprint 1', state: 'active' }),
+          sprintPayload({
+            id: 44,
+            name: 'Sprint 2',
+            state: 'future',
+            startDate: undefined,
+            endDate: undefined,
+          }),
+        ],
+      });
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+
+    const sprints = await svc.listSprints(board.id);
+
+    // Sprint state is modelled per-sprint, never flattened away: three
+    // distinct states survive as three distinct TrackerSprint.state values.
+    expect(sprints.map((s) => s.state)).toEqual(['closed', 'active', 'future']);
+    expect(sprints[1]).toEqual({
+      id: expect.any(String),
+      name: 'Sprint 1',
+      state: 'active',
+      boardId: board.id,
+      startDate: '2026-01-01T00:00:00.000Z',
+      endDate: '2026-01-14T00:00:00.000Z',
+      goal: 'ship it',
+    });
+    expect(sprints[2].startDate).toBeUndefined();
+    expect(sprints[2].endDate).toBeUndefined();
+  });
+
+  it('listSprints() rejects an id this backend never issued', async () => {
+    const svc = backend(vi.fn());
+
+    await expect(svc.listSprints('not-a-real-board-id')).rejects.toBeInstanceOf(
+      JiraTrackerAccessError,
+    );
+  });
+
+  it('moveToSprint() POSTs {issues:[...]} to sprint/{sprintId}/issue for a sprint id round-tripped through listBoards/listSprints', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      if (url.pathname === '/rest/agile/1.0/board/84/sprint') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [sprintPayload({ id: 37 })],
+        });
+      }
+      expect(url.pathname).toBe('/rest/agile/1.0/sprint/37/issue');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({ issues: ['LB-1', 'LB-2'] });
+      return emptyResponse(204);
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+    const [sprint] = await svc.listSprints(board.id);
+
+    await expect(svc.moveToSprint(sprint.id, ['LB-1', 'LB-2'])).resolves.toBeUndefined();
+  });
+
+  it("moveToSprint() chunks a batch over Jira's documented 50-issue cap into multiple calls", async () => {
+    const calls: string[][] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      if (url.pathname === '/rest/agile/1.0/board/84/sprint') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [sprintPayload({ id: 37 })],
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as { issues: string[] };
+      calls.push(body.issues);
+      return emptyResponse(204);
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+    const [sprint] = await svc.listSprints(board.id);
+    const issueKeys = Array.from({ length: 62 }, (_, i) => `LB-${i}`);
+
+    await svc.moveToSprint(sprint.id, issueKeys);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toHaveLength(50);
+    expect(calls[1]).toHaveLength(12);
+  });
+
+  it('moveToSprint() sends no request for an empty issue list', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      return jsonResponse(200, {
+        isLast: true,
+        maxResults: 50,
+        startAt: 0,
+        total: 1,
+        values: [sprintPayload({ id: 37 })],
+      });
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+    const [sprint] = await svc.listSprints(board.id);
+    fetchImpl.mockClear();
+
+    await svc.moveToSprint(sprint.id, []);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('moveToSprint() rejects an id this backend never issued', async () => {
+    const svc = backend(vi.fn());
+
+    await expect(svc.moveToSprint('not-a-real-sprint-id', ['LB-1'])).rejects.toBeInstanceOf(
+      JiraTrackerAccessError,
+    );
+  });
+});
+
+describe('JiraTrackerBackend.createSprint/startSprint/closeSprint — issue #217 third acceptance line', () => {
+  it('createSprint() POSTs name/originBoardId/startDate/endDate/goal to /rest/agile/1.0/sprint', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      expect(url.pathname).toBe('/rest/agile/1.0/sprint');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        name: 'Sprint 3',
+        originBoardId: 84,
+        startDate: '2026-02-01T00:00:00.000Z',
+        endDate: '2026-02-14T00:00:00.000Z',
+        goal: 'ship more',
+      });
+      return jsonResponse(201, sprintPayload({ id: 55, name: 'Sprint 3', state: 'future' }));
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+
+    const sprint = await svc.createSprint(board.id, {
+      name: 'Sprint 3',
+      startDate: '2026-02-01T00:00:00.000Z',
+      endDate: '2026-02-14T00:00:00.000Z',
+      goal: 'ship more',
+    });
+
+    expect(sprint.name).toBe('Sprint 3');
+    expect(sprint.state).toBe('future');
+    expect(sprint.boardId).toBe(board.id);
+  });
+
+  it("startSprint() PARTIALLY updates (POST, never full-replace PUT) — {state:'active', startDate, endDate} only, never nulling name/goal", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      if (url.pathname === '/rest/agile/1.0/board/84/sprint') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [sprintPayload({ id: 37, state: 'future' })],
+        });
+      }
+      expect(url.pathname).toBe('/rest/agile/1.0/sprint/37');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        state: 'active',
+        startDate: '2026-01-01T00:00:00.000Z',
+        endDate: '2026-01-14T00:00:00.000Z',
+      });
+      return jsonResponse(200, sprintPayload({ id: 37, state: 'active' }));
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+    const [sprint] = await svc.listSprints(board.id);
+
+    const started = await svc.startSprint(sprint.id, {
+      startDate: '2026-01-01T00:00:00.000Z',
+      endDate: '2026-01-14T00:00:00.000Z',
+    });
+
+    expect(started.state).toBe('active');
+  });
+
+  it("closeSprint() PARTIALLY updates {state:'closed'} only, never sending a completeDate itself", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      if (url.pathname === '/rest/agile/1.0/board/84/sprint') {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [sprintPayload({ id: 37, state: 'active' })],
+        });
+      }
+      expect(url.pathname).toBe('/rest/agile/1.0/sprint/37');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({ state: 'closed' });
+      return jsonResponse(200, sprintPayload({ id: 37, state: 'closed' }));
+    });
+    const svc = backend(fetchImpl);
+    const [board] = await svc.listBoards(binding());
+    const [sprint] = await svc.listSprints(board.id);
+
+    const closed = await svc.closeSprint(sprint.id);
+
+    expect(closed.state).toBe('closed');
+  });
+});
+
+describe('JiraTrackerBackend Agile REST base honors OAuth 3LO routing too (issue #217 acceptance)', () => {
+  it('listBoards()/listSprints()/moveToSprint() route through https://api.atlassian.com/ex/jira/{cloudId} for an OAuth 3LO credential', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.origin + url.pathname.split('/rest/')[0]).toBe(OAUTH_BASE);
+      if (url.pathname.endsWith('/rest/agile/1.0/board')) {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [boardPayload({ id: 84 })],
+        });
+      }
+      if (url.pathname.endsWith('/rest/agile/1.0/board/84/sprint')) {
+        return jsonResponse(200, {
+          isLast: true,
+          maxResults: 50,
+          startAt: 0,
+          total: 1,
+          values: [sprintPayload({ id: 37 })],
+        });
+      }
+      expect(init?.method).toBe('POST');
+      return emptyResponse(204);
+    });
+    const svc = backend(fetchImpl, {
+      resolveCredential: async () => ({ baseUrl: OAUTH_BASE, authHeader: 'Bearer oauth-3lo' }),
+    });
+
+    const [board] = await svc.listBoards(binding());
+    const [sprint] = await svc.listSprints(board.id);
+    await svc.moveToSprint(sprint.id, ['LB-1']);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 });

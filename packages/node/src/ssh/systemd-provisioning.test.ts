@@ -44,6 +44,21 @@ describe('generateSystemdUnit', () => {
     const config = { execStart: '/bin/loombox-node' };
     expect(generateSystemdUnit(config)).toBe(generateSystemdUnit(config));
   });
+
+  it("refuses execStart/execArgs naming a known forking wrapper — issue #929's own incident shape (a plain node execStart with tsx's CLI named in an arg)", () => {
+    expect(() =>
+      generateSystemdUnit({
+        execStart: '/usr/bin/node',
+        execArgs: ['/home/loombox/node_modules/tsx/dist/cli.mjs', 'main.ts'],
+      }),
+    ).toThrow(/forking process wrapper/);
+  });
+
+  it('refuses execStart naming the wrapper directly too, not only via execArgs', () => {
+    expect(() => generateSystemdUnit({ execStart: '/usr/bin/tsx' })).toThrow(
+      /forking process wrapper/,
+    );
+  });
 });
 
 describe('planSystemdProvisioning (issue #89)', () => {

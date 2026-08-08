@@ -70,6 +70,7 @@ import {
   spendReportResponsePayloadV1,
   trackerSnapshotResponsePayloadV1,
   trackerWriteResponsePayloadV1,
+  withEnvelope,
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
   type AccountPinScanHitV1,
@@ -1172,14 +1173,12 @@ export async function bootstrapAmkFromRecoveryCode(
       }, timeoutMs);
 
       socket.addEventListener('open', () => {
-        const initialize: Initialize = {
-          type: 'initialize',
-          protocolVersion: PROTOCOL_V1,
+        const initialize: Initialize = withEnvelope('initialize', {
           role: 'client',
           authToken,
           deviceId,
           devicePublicKey,
-        };
+        });
         socket.send(JSON.stringify(initialize));
       });
 
@@ -1199,12 +1198,10 @@ export async function bootstrapAmkFromRecoveryCode(
             reject(new Error('bootstrapAmkFromRecoveryCode: relay rejected the handshake'));
             return;
           }
-          const request: NewDeviceBootstrapRequest = {
-            type: 'new_device_bootstrap_request',
-            protocolVersion: PROTOCOL_V1,
+          const request: NewDeviceBootstrapRequest = withEnvelope('new_device_bootstrap_request', {
             deviceId,
             devicePublicKey,
-          };
+          });
           socket.send(JSON.stringify(request));
           return;
         }
@@ -2229,14 +2226,12 @@ export class RelayClient {
     this.awaitingInitializeResult = true;
 
     socket.addEventListener('open', () => {
-      const initialize: Initialize = {
-        type: 'initialize',
-        protocolVersion: PROTOCOL_V1,
+      const initialize: Initialize = withEnvelope('initialize', {
         role: 'client',
         authToken: this.authToken,
         deviceId: this.deviceId,
         devicePublicKey: this.devicePublicKey,
-      };
+      });
       socket.send(JSON.stringify(initialize));
     });
 
@@ -2265,11 +2260,11 @@ export class RelayClient {
           this.relayBuildIdentityStore.set(result.data.buildIdentity);
           // The account-scoped snapshot (SPEC §8's OAuth-alone listing) —
           // every session already announced by a node this account owns.
-          this.send({ type: 'session_list_request', protocolVersion: PROTOCOL_V1 });
+          this.send(withEnvelope('session_list_request', {}));
           // SPEC §7.26 (issue #221): the account-scoped connected-account
           // snapshot, requested alongside the session list above so a
           // picker renders from the first paint of any fresh connection.
-          this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
+          this.send(withEnvelope('connected_account_list_request', {}));
           // Zed-parity F3-3, issue #760: fire-and-forget — nothing awaits
           // this specific `requestId` (not registered in
           // `pendingKeymapRequests`), since {@link handleKeymapResult}
@@ -2277,11 +2272,7 @@ export class RelayClient {
           // regardless of a pending match. This is what lets a brand-new
           // device see the account's saved keymap from first paint, with
           // no explicit `getKeymap()` call anywhere in `+page.svelte`.
-          this.send({
-            type: 'keymap_get_request',
-            protocolVersion: PROTOCOL_V1,
-            requestId: generateId('keymap'),
-          });
+          this.send(withEnvelope('keymap_get_request', { requestId: generateId('keymap') }));
           // Issue #660: a session already `ensureSubscribed` on a prior
           // connection (or subscribed before this very first handshake
           // finished) lost that relay-side subscription the moment its
@@ -2424,7 +2415,7 @@ export class RelayClient {
     }
     const nonce = generateId('ping');
     this.pendingPingNonce = nonce;
-    this.send({ type: 'ping', protocolVersion: PROTOCOL_V1, nonce });
+    this.send(withEnvelope('ping', { nonce }));
   }
 
   private stopHeartbeat(): void {
@@ -2462,7 +2453,7 @@ export class RelayClient {
       this.pendingTargetListRequests,
       requestId,
       () => {
-        this.send({ type: 'target_list_request', protocolVersion: PROTOCOL_V1, requestId });
+        this.send(withEnvelope('target_list_request', { requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for target_list',
@@ -2499,12 +2490,7 @@ export class RelayClient {
       this.pendingSshDiscoveryRequests,
       requestId,
       () => {
-        this.send({
-          type: 'ssh_discovery_request',
-          protocolVersion: PROTOCOL_V1,
-          nodeId,
-          requestId,
-        });
+        this.send(withEnvelope('ssh_discovery_request', { nodeId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for ssh_discovery_response',
@@ -2540,14 +2526,14 @@ export class RelayClient {
       this.pendingDecommissionTargetRequests,
       requestId,
       () => {
-        this.send({
-          type: 'decommission_target_request',
-          protocolVersion: PROTOCOL_V1,
-          nodeId: options.nodeId,
-          targetId: options.targetId,
-          requestId,
-          ...(options.removeFiles !== undefined ? { removeFiles: options.removeFiles } : {}),
-        });
+        this.send(
+          withEnvelope('decommission_target_request', {
+            nodeId: options.nodeId,
+            targetId: options.targetId,
+            requestId,
+            ...(options.removeFiles !== undefined ? { removeFiles: options.removeFiles } : {}),
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for decommission_target_response',
@@ -2576,13 +2562,13 @@ export class RelayClient {
       this.pendingTargetUpdateRequests,
       requestId,
       () => {
-        this.send({
-          type: 'target_update_request',
-          protocolVersion: PROTOCOL_V1,
-          nodeId: options.nodeId,
-          targetId: options.targetId,
-          requestId,
-        });
+        this.send(
+          withEnvelope('target_update_request', {
+            nodeId: options.nodeId,
+            targetId: options.targetId,
+            requestId,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for target_update_response',
@@ -2617,12 +2603,9 @@ export class RelayClient {
       this.pendingNodeSelfUpdateApplyRequests,
       requestId,
       () => {
-        this.send({
-          type: 'node_self_update_apply_request',
-          protocolVersion: PROTOCOL_V1,
-          nodeId: options.nodeId,
-          requestId,
-        });
+        this.send(
+          withEnvelope('node_self_update_apply_request', { nodeId: options.nodeId, requestId }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for node_self_update_apply_response',
@@ -2641,7 +2624,7 @@ export class RelayClient {
    */
   refreshConnectedAccounts(): void {
     if (!this.isSocketOpen()) return;
-    this.send({ type: 'connected_account_list_request', protocolVersion: PROTOCOL_V1 });
+    this.send(withEnvelope('connected_account_list_request', {}));
   }
 
   /**
@@ -2679,12 +2662,7 @@ export class RelayClient {
       this.pendingGithubConnectRequests,
       requestId,
       () => {
-        this.send({
-          type: 'github_connect_start_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-        });
+        this.send(withEnvelope('github_connect_start_request', { requestId, nodeId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for github_connect_result',
@@ -2694,12 +2672,7 @@ export class RelayClient {
       requestId,
       cancel: () => {
         if (!this.isSocketOpen()) return;
-        this.send({
-          type: 'github_connect_cancel_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-        });
+        this.send(withEnvelope('github_connect_cancel_request', { requestId, nodeId }));
       },
       result,
     };
@@ -2728,15 +2701,15 @@ export class RelayClient {
       this.pendingJiraConnectRequests,
       requestId,
       () => {
-        this.send({
-          type: 'jira_connect_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-          siteUrl: credentials.siteUrl,
-          email: credentials.email,
-          apiToken: credentials.apiToken,
-        });
+        this.send(
+          withEnvelope('jira_connect_request', {
+            requestId,
+            nodeId,
+            siteUrl: credentials.siteUrl,
+            email: credentials.email,
+            apiToken: credentials.apiToken,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for jira_connect_response',
@@ -2767,14 +2740,14 @@ export class RelayClient {
       this.pendingGithubPatConnectRequests,
       requestId,
       () => {
-        this.send({
-          type: 'github_pat_connect_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-          token: credentials.token,
-          host: credentials.host,
-        });
+        this.send(
+          withEnvelope('github_pat_connect_request', {
+            requestId,
+            nodeId,
+            token: credentials.token,
+            host: credentials.host,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for github_pat_connect_response',
@@ -2811,13 +2784,9 @@ export class RelayClient {
       this.pendingDisconnectRequests,
       requestId,
       () => {
-        this.send({
-          type: 'connected_account_disconnect_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-          accountId,
-        });
+        this.send(
+          withEnvelope('connected_account_disconnect_request', { requestId, nodeId, accountId }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for connected_account_disconnect_response',
@@ -2853,13 +2822,7 @@ export class RelayClient {
       this.pendingAccountPinScanRequests,
       requestId,
       () => {
-        this.send({
-          type: 'account_pin_scan_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-          accountId,
-        });
+        this.send(withEnvelope('account_pin_scan_request', { requestId, nodeId, accountId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for account_pin_scan_response',
@@ -3058,17 +3021,17 @@ export class RelayClient {
       this.pendingAccountPinResolveRequests,
       requestId,
       () => {
-        this.send({
-          type: 'account_pin_resolve_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId,
-          projectPath: params.projectPath,
-          capability: params.capability,
-          mode: params.mode,
-          target: params.target,
-          accounts: params.accounts,
-        });
+        this.send(
+          withEnvelope('account_pin_resolve_request', {
+            requestId,
+            nodeId,
+            projectPath: params.projectPath,
+            capability: params.capability,
+            mode: params.mode,
+            target: params.target,
+            accounts: params.accounts,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for account_pin_resolve_response',
@@ -3099,13 +3062,13 @@ export class RelayClient {
       this.pendingArchiveRequests,
       requestId,
       () => {
-        this.send({
-          type: 'session_archive_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          sessionId,
-          removeWorktree: options.removeWorktree,
-        });
+        this.send(
+          withEnvelope('session_archive_request', {
+            requestId,
+            sessionId,
+            removeWorktree: options.removeWorktree,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for session_archive_response',
@@ -3158,14 +3121,14 @@ export class RelayClient {
       this.pendingProvisionRequests,
       requestId,
       () => {
-        this.send({
-          type: 'provision_target_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          nodeId: options.nodeId,
-          targetId: options.targetId,
-          host: options.host,
-        });
+        this.send(
+          withEnvelope('provision_target_request', {
+            requestId,
+            nodeId: options.nodeId,
+            targetId: options.targetId,
+            host: options.host,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for provision_target_result',
@@ -3206,14 +3169,9 @@ export class RelayClient {
       () => {
         const payload: TargetFsListRequestPayloadV1 = { path };
         return this.envelopeCrypto.seal('target', targetId, targetId, payload).then((envelope) => {
-          this.send({
-            type: 'target_fs_list_request',
-            protocolVersion: PROTOCOL_V1,
-            nodeId,
-            targetId,
-            requestId,
-            envelope,
-          });
+          this.send(
+            withEnvelope('target_fs_list_request', { nodeId, targetId, requestId, envelope }),
+          );
         });
       },
       timeoutMs,
@@ -3253,14 +3211,9 @@ export class RelayClient {
       () => {
         const payload: CustomAgentProbeRequestPayloadV1 = { command };
         return this.envelopeCrypto.seal('target', targetId, targetId, payload).then((envelope) => {
-          this.send({
-            type: 'custom_agent_probe_request',
-            protocolVersion: PROTOCOL_V1,
-            nodeId,
-            targetId,
-            requestId,
-            envelope,
-          });
+          this.send(
+            withEnvelope('custom_agent_probe_request', { nodeId, targetId, requestId, envelope }),
+          );
         });
       },
       timeoutMs,
@@ -3288,12 +3241,7 @@ export class RelayClient {
       this.pendingPermissionPolicyRequests,
       requestId,
       () => {
-        this.send({
-          type: 'permission_policy_get',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('permission_policy_get', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for permission_policy_result',
@@ -3331,13 +3279,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'permission_policy_set',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('permission_policy_set', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,
@@ -3367,12 +3309,7 @@ export class RelayClient {
       this.pendingPrOpenPreviewRequests,
       requestId,
       () => {
-        this.send({
-          type: 'pr_open_preview_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('pr_open_preview_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for pr_open_preview_result',
@@ -3411,13 +3348,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'pr_open_request',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('pr_open_request', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,
@@ -3461,13 +3392,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'checkpoint_create',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('checkpoint_create', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,
@@ -3495,12 +3420,7 @@ export class RelayClient {
       this.pendingCheckpointListRequests,
       requestId,
       () => {
-        this.send({
-          type: 'checkpoint_list',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('checkpoint_list', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for checkpoint_list_result',
@@ -3535,13 +3455,9 @@ export class RelayClient {
       this.pendingCheckpointRestorePreviewRequests,
       requestId,
       () => {
-        this.send({
-          type: 'checkpoint_restore_preview',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          checkpointId,
-        });
+        this.send(
+          withEnvelope('checkpoint_restore_preview', { sessionId, requestId, checkpointId }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for checkpoint_restore_preview_result',
@@ -3583,14 +3499,9 @@ export class RelayClient {
       this.pendingCheckpointRestoreRequests,
       requestId,
       () => {
-        this.send({
-          type: 'checkpoint_restore',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          checkpointId,
-          confirm,
-        });
+        this.send(
+          withEnvelope('checkpoint_restore', { sessionId, requestId, checkpointId, confirm }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for checkpoint_restore_result',
@@ -3631,12 +3542,7 @@ export class RelayClient {
       this.pendingAgentProfileListRequests,
       requestId,
       () => {
-        this.send({
-          type: 'agent_profile_list_get',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('agent_profile_list_get', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for agent_profile_list_result',
@@ -3664,13 +3570,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'agent_profile_list_set',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('agent_profile_list_set', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,
@@ -3691,12 +3591,7 @@ export class RelayClient {
       this.pendingAgentProfileSessionRequests,
       requestId,
       () => {
-        this.send({
-          type: 'agent_profile_session_get',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('agent_profile_session_get', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for agent_profile_session_result',
@@ -3732,13 +3627,9 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'agent_profile_session_set',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(
+              withEnvelope('agent_profile_session_set', { sessionId, requestId, envelope }),
+            );
           });
       },
       timeoutMs,
@@ -3766,7 +3657,7 @@ export class RelayClient {
       this.pendingKeymapRequests,
       requestId,
       () => {
-        this.send({ type: 'keymap_get_request', protocolVersion: PROTOCOL_V1, requestId });
+        this.send(withEnvelope('keymap_get_request', { requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for keymap_result',
@@ -3801,12 +3692,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('keymap', this.accountId, this.accountId, candidate)
           .then((envelope) => {
-            this.send({
-              type: 'keymap_set_request',
-              protocolVersion: PROTOCOL_V1,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('keymap_set_request', { requestId, envelope }));
           });
       },
       timeoutMs,
@@ -3834,12 +3720,7 @@ export class RelayClient {
       this.pendingTestRunnerConfigRequests,
       requestId,
       () => {
-        this.send({
-          type: 'test_runner_config_get',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('test_runner_config_get', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for test_runner_config_result',
@@ -3875,13 +3756,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'test_runner_config_set',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('test_runner_config_set', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,
@@ -3912,12 +3787,7 @@ export class RelayClient {
       this.pendingTestRunnerConfigDetectRequests,
       requestId,
       () => {
-        this.send({
-          type: 'test_runner_config_detect',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('test_runner_config_detect', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for test_runner_config_detected',
@@ -3942,11 +3812,7 @@ export class RelayClient {
       throw new Error('RelayClient.escrowAmk: not connected to the relay');
     }
     const wrapped = await this.envelopeCrypto.wrapAmkForEscrow(recoveryCode);
-    this.send({
-      type: 'amk_escrow',
-      protocolVersion: PROTOCOL_V1,
-      wrappedAmk: packWrappedAmkForWire(wrapped),
-    });
+    this.send(withEnvelope('amk_escrow', { wrappedAmk: packWrappedAmkForWire(wrapped) }));
   }
 
   /**
@@ -4015,14 +3881,14 @@ export class RelayClient {
       sessionId,
       privateMeta,
     );
-    this.send({
-      type: 'session_create',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      targetId: options.targetId,
-      provider: options.provider,
-      privateEnvelope,
-    });
+    this.send(
+      withEnvelope('session_create', {
+        sessionId,
+        targetId: options.targetId,
+        provider: options.provider,
+        privateEnvelope,
+      }),
+    );
 
     return sessionId;
   }
@@ -4076,16 +3942,16 @@ export class RelayClient {
       this.pendingForkRequests,
       requestId,
       () => {
-        this.send({
-          type: 'session_fork_request',
-          protocolVersion: PROTOCOL_V1,
-          requestId,
-          sessionId,
-          sourceSessionId,
-          targetId: source.targetId,
-          provider: source.provider,
-          privateEnvelope,
-        });
+        this.send(
+          withEnvelope('session_fork_request', {
+            requestId,
+            sessionId,
+            sourceSessionId,
+            targetId: source.targetId,
+            provider: source.provider,
+            privateEnvelope,
+          }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for session_fork_response',
@@ -4274,13 +4140,7 @@ export class RelayClient {
       return;
     }
 
-    this.send({
-      type: 'permission_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      decision: option.kind,
-    });
+    this.send(withEnvelope('permission_response', { sessionId, requestId, decision: option.kind }));
   }
 
   /**
@@ -4452,13 +4312,7 @@ export class RelayClient {
       this.pendingMcpPromptRequests,
       requestId,
       () => {
-        this.send({
-          type: 'mcp_prompt_get_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('mcp_prompt_get_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for mcp_prompt_get_response',
@@ -4507,13 +4361,7 @@ export class RelayClient {
     pending.add(category);
     this.ensureSubscribed(sessionId);
 
-    this.send({
-      type: 'config_option',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      category,
-      optionId,
-    });
+    this.send(withEnvelope('config_option', { sessionId, category, optionId }));
   }
 
   /**
@@ -4627,14 +4475,7 @@ export class RelayClient {
       this.pendingFsReadRequests,
       requestId,
       () => {
-        this.send({
-          type: 'fs_read_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          targetId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('fs_read_request', { sessionId, targetId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for fs_read_response',
@@ -4676,14 +4517,7 @@ export class RelayClient {
       this.pendingFsWriteRequests,
       requestId,
       () => {
-        this.send({
-          type: 'fs_write_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          targetId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('fs_write_request', { sessionId, targetId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for fs_write_response',
@@ -4724,12 +4558,7 @@ export class RelayClient {
       this.pendingGitDiffRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_diff_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('git_diff_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_diff_response',
@@ -4767,12 +4596,7 @@ export class RelayClient {
       this.pendingGitHunkDiffRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_hunk_diff_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('git_hunk_diff_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_hunk_diff_response',
@@ -4817,13 +4641,7 @@ export class RelayClient {
       this.pendingGitHunkActionRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_hunk_action_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_hunk_action_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_hunk_action_response',
@@ -4862,12 +4680,7 @@ export class RelayClient {
       this.pendingGitCommitDraftRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_commit_draft_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('git_commit_draft_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_commit_draft_response',
@@ -4909,13 +4722,7 @@ export class RelayClient {
       this.pendingGitCommitRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_commit_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_commit_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_commit_response',
@@ -5144,13 +4951,7 @@ export class RelayClient {
     this.envelopeCrypto
       .seal('session', sessionId, sessionId, payload)
       .then((envelope) => {
-        this.send({
-          type: 'terminal_input',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          terminalId,
-          envelope,
-        });
+        this.send(withEnvelope('terminal_input', { sessionId, terminalId, envelope }));
       })
       .catch((error: unknown) => {
         console.warn(
@@ -5165,13 +4966,7 @@ export class RelayClient {
     this.envelopeCrypto
       .seal('session', sessionId, sessionId, payload)
       .then((envelope) => {
-        this.send({
-          type: 'terminal_resize',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          terminalId,
-          envelope,
-        });
+        this.send(withEnvelope('terminal_resize', { sessionId, terminalId, envelope }));
       })
       .catch((error: unknown) => {
         console.warn(
@@ -5182,7 +4977,7 @@ export class RelayClient {
 
   /** Asks the owning node to close `terminalId` (SPEC §7.5). No envelope: closing carries no content, mirroring `@loombox/protocol`'s `terminalClose` schema. */
   closeTerminal(sessionId: string, terminalId: string): void {
-    this.send({ type: 'terminal_close', protocolVersion: PROTOCOL_V1, sessionId, terminalId });
+    this.send(withEnvelope('terminal_close', { sessionId, terminalId }));
   }
 
   /**
@@ -5261,7 +5056,7 @@ export class RelayClient {
 
   /** Asks the owning node to cancel `runId` (SPEC §7.15). No envelope: cancelling carries no content, mirroring `@loombox/protocol`'s `runCancel` schema. Fire-and-forget — the run's own `run_exit` (with `cancelled: true`) is what actually confirms it stopped. */
   cancelRun(sessionId: string, runId: string): void {
-    this.send({ type: 'run_cancel', protocolVersion: PROTOCOL_V1, sessionId, runId });
+    this.send(withEnvelope('run_cancel', { sessionId, runId }));
   }
 
   /**
@@ -5421,13 +5216,7 @@ export class RelayClient {
         attachmentResourceId(sessionId, id),
         cached.bytes,
       );
-      this.send({
-        type: 'blob_upload',
-        protocolVersion: PROTOCOL_V1,
-        sessionId,
-        ref: id,
-        envelope,
-      });
+      this.send(withEnvelope('blob_upload', { sessionId, ref: id, envelope }));
       this.updateAttachment(sessionId, id, { status: 'uploaded', error: undefined });
     } catch (error) {
       this.updateAttachment(sessionId, id, {
@@ -5767,13 +5556,7 @@ export class RelayClient {
       ...(mentions.length > 0 ? { mentions } : {}),
     };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
-    this.send({
-      type: 'prompt_inject',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      promptId,
-      envelope,
-    });
+    this.send(withEnvelope('prompt_inject', { sessionId, promptId, envelope }));
   }
 
   /**
@@ -5803,7 +5586,7 @@ export class RelayClient {
    */
   private resubscribeSessionsOnReconnect(): void {
     for (const sessionId of this.subscribed) {
-      this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+      this.send(withEnvelope('session_resume', { sessionId }));
       // Issue #198: a device that was disconnected while another device
       // saved a new draft/panel/position needs to re-fetch, not just
       // resubscribe to the transcript — `session_view_state_result` is
@@ -5856,7 +5639,7 @@ export class RelayClient {
    * fired by the `session_announce` this always gets back.
    */
   private retrySessionResume(sessionId: string, attempt: number): void {
-    this.send({ type: 'session_resume', protocolVersion: PROTOCOL_V1, sessionId });
+    this.send(withEnvelope('session_resume', { sessionId }));
     if (attempt >= SESSION_RESUME_MAX_ATTEMPTS) {
       console.warn(
         `RelayClient: gave up waiting for session ${sessionId} to be announced after ${attempt} attempts (issue #730) — the owning node may never have announced it at all (see handleSessionCreate's doc comment for the unnotified failure modes this can't distinguish from "just slow")`,
@@ -5926,7 +5709,7 @@ export class RelayClient {
     }
     this.resyncedConnectionGenerationBySession.set(sessionId, this.connectionGeneration);
     const sinceSeq = this.lastAppliedSeqBySession.get(sessionId) ?? 0;
-    this.send({ type: 'resync_request', protocolVersion: PROTOCOL_V1, sessionId, sinceSeq });
+    this.send(withEnvelope('resync_request', { sessionId, sinceSeq }));
   }
 
   /**
@@ -7654,14 +7437,7 @@ export class RelayClient {
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
     const requestId = generateId('fs');
     this.pendingFsListRequests.set(requestId, { sessionId, path });
-    this.send({
-      type: 'fs_list_request',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      targetId,
-      requestId,
-      envelope,
-    });
+    this.send(withEnvelope('fs_list_request', { sessionId, targetId, requestId, envelope }));
   }
 
   /** Seals `{ includeArchived }` under `projectPath`'s project key and sends the `tracker_snapshot_request` (SPEC §7.10; issue #212, #697), tracking it in {@link pendingTrackerSnapshotRequests} so the eventual `tracker_snapshot_response` decrypts under the right key and a stray late reply after this client's own timeout is ignored. */
@@ -7674,14 +7450,9 @@ export class RelayClient {
     const envelope = await this.envelopeCrypto.seal('project', projectPath, projectPath, payload);
     const requestId = generateId('trackersnap');
     this.pendingTrackerSnapshotRequests.set(requestId, { projectPath });
-    this.send({
-      type: 'tracker_snapshot_request',
-      protocolVersion: PROTOCOL_V1,
-      nodeId,
-      projectPath,
-      requestId,
-      envelope,
-    });
+    this.send(
+      withEnvelope('tracker_snapshot_request', { nodeId, projectPath, requestId, envelope }),
+    );
   }
 
   /** Sends the `spend_report_request` (SPEC §7.9; issue #249), tracking it in {@link pendingSpendReportRequests} so the eventual `spend_report_response` decrypts under the right project key and a stray late reply is ignored. No envelope on this side — `spend-report.ts`'s own doc comment: a date range is a query parameter, not project content, exactly like `spend_cap_get`'s own reasoning. */
@@ -7693,15 +7464,15 @@ export class RelayClient {
   ): void {
     const requestId = generateId('spendreport');
     this.pendingSpendReportRequests.set(requestId, { projectPath });
-    this.send({
-      type: 'spend_report_request',
-      protocolVersion: PROTOCOL_V1,
-      nodeId,
-      projectPath,
-      requestId,
-      sinceDate,
-      untilDate,
-    });
+    this.send(
+      withEnvelope('spend_report_request', {
+        nodeId,
+        projectPath,
+        requestId,
+        sinceDate,
+        untilDate,
+      }),
+    );
   }
 
   /**
@@ -7732,14 +7503,9 @@ export class RelayClient {
       this.pendingTrackerWriteRequests,
       requestId,
       () => {
-        this.send({
-          type: 'tracker_write_request',
-          protocolVersion: PROTOCOL_V1,
-          nodeId,
-          projectPath,
-          requestId,
-          envelope,
-        });
+        this.send(
+          withEnvelope('tracker_write_request', { nodeId, projectPath, requestId, envelope }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for tracker_write_response',
@@ -7866,15 +7632,9 @@ export class RelayClient {
   ): Promise<void> {
     const payload: TerminalOpenPayloadV1 = { cols, rows };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
-    this.send({
-      type: 'terminal_open',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      targetId,
-      terminalId,
-      requestId,
-      envelope,
-    });
+    this.send(
+      withEnvelope('terminal_open', { sessionId, targetId, terminalId, requestId, envelope }),
+    );
   }
 
   private terminalStoreFor(sessionId: string): Writable<Map<string, TerminalClientState>> {
@@ -7994,15 +7754,7 @@ export class RelayClient {
   ): Promise<void> {
     const payload: RunStartPayloadV1 = { kind };
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
-    this.send({
-      type: 'run_start',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      targetId,
-      runId,
-      requestId,
-      envelope,
-    });
+    this.send(withEnvelope('run_start', { sessionId, targetId, runId, requestId, envelope }));
   }
 
   private runStoreFor(sessionId: string): Writable<Map<string, RunClientState>> {
@@ -8165,12 +7917,7 @@ export class RelayClient {
       this.pendingGitBranchListRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_branch_list_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('git_branch_list_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_branch_list_response',
@@ -8210,13 +7957,7 @@ export class RelayClient {
       this.pendingGitBranchCreateRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_branch_create_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_branch_create_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_branch_create_response',
@@ -8253,13 +7994,7 @@ export class RelayClient {
       this.pendingGitBranchSwitchRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_branch_switch_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_branch_switch_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_branch_switch_response',
@@ -8293,13 +8028,7 @@ export class RelayClient {
       this.pendingGitBranchMergeRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_branch_merge_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_branch_merge_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_branch_merge_response',
@@ -8328,12 +8057,7 @@ export class RelayClient {
       this.pendingGitBranchMergeAbortRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_branch_merge_abort_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('git_branch_merge_abort_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_branch_merge_abort_response',
@@ -8360,12 +8084,7 @@ export class RelayClient {
       this.pendingGitStashListRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_stash_list_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('git_stash_list_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_stash_list_response',
@@ -8398,13 +8117,7 @@ export class RelayClient {
       this.pendingGitStashSaveRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_stash_save_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_stash_save_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_stash_save_response',
@@ -8440,13 +8153,7 @@ export class RelayClient {
       this.pendingGitStashPopRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_stash_pop_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_stash_pop_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_stash_pop_response',
@@ -8478,13 +8185,7 @@ export class RelayClient {
       this.pendingGitStashDropRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_stash_drop_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_stash_drop_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_stash_drop_response',
@@ -8694,12 +8395,7 @@ export class RelayClient {
       this.pendingAgentInstructionsGetRequests,
       requestId,
       () => {
-        this.send({
-          type: 'agent_instructions_get_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-        });
+        this.send(withEnvelope('agent_instructions_get_request', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for agent_instructions_get_response',
@@ -8742,13 +8438,9 @@ export class RelayClient {
       this.pendingAgentInstructionsSetRequests,
       requestId,
       () => {
-        this.send({
-          type: 'agent_instructions_set_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(
+          withEnvelope('agent_instructions_set_request', { sessionId, requestId, envelope }),
+        );
       },
       timeoutMs,
       'RelayClient: timed out waiting for agent_instructions_set_response',
@@ -8891,13 +8583,7 @@ export class RelayClient {
       this.pendingGitPushRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_push_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_push_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_push_response',
@@ -8947,13 +8633,7 @@ export class RelayClient {
       this.pendingSessionTemplateListRequests,
       requestId,
       () => {
-        this.send({
-          type: 'session_template_list_get',
-          protocolVersion: PROTOCOL_V1,
-          nodeId,
-          targetId,
-          requestId,
-        });
+        this.send(withEnvelope('session_template_list_get', { nodeId, targetId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for session_template_list_result',
@@ -8985,14 +8665,9 @@ export class RelayClient {
       () => {
         const payload: SessionTemplateListSetPayloadV1 = { templates };
         return this.envelopeCrypto.seal('target', targetId, targetId, payload).then((envelope) => {
-          this.send({
-            type: 'session_template_list_set',
-            protocolVersion: PROTOCOL_V1,
-            nodeId,
-            targetId,
-            requestId,
-            envelope,
-          });
+          this.send(
+            withEnvelope('session_template_list_set', { nodeId, targetId, requestId, envelope }),
+          );
         });
       },
       timeoutMs,
@@ -9067,13 +8742,7 @@ export class RelayClient {
       this.pendingGitGraphRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_graph_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_graph_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_graph_response',
@@ -9134,13 +8803,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'pr_merge_request',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('pr_merge_request', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,
@@ -9259,14 +8922,14 @@ export class RelayClient {
     const revision = this.lastAppliedSeqBySession.get(sessionId) ?? 0;
     this.sessionViewStateStoreFor(sessionId).set({ payload, revision });
     const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, payload);
-    this.send({
-      type: 'session_view_state_set',
-      protocolVersion: PROTOCOL_V1,
-      requestId: generateId('viewstateset'),
-      sessionId,
-      envelope,
-      revision,
-    });
+    this.send(
+      withEnvelope('session_view_state_set', {
+        requestId: generateId('viewstateset'),
+        sessionId,
+        envelope,
+        revision,
+      }),
+    );
   }
 
   /** `sessionId` -> {@link sessionViewStates}'s backing store, created on first access — unlike every other lazy-map accessor in this class, creation ALSO fires this session's initial `session_view_state_get_request` ({@link requestSessionViewState}), since a view-state store starting at `undefined` is indistinguishable from "still loading" and there is no separate loaded/loading flag to gate on. */
@@ -9284,12 +8947,12 @@ export class RelayClient {
 
   /** Sends `session_view_state_get_request` for `sessionId` — {@link sessionViewStateStoreFor}'s first-access fetch and {@link resubscribeSessionsOnReconnect}'s every-reconnect refresh both call this, never construct the request inline. */
   private requestSessionViewState(sessionId: string): void {
-    this.send({
-      type: 'session_view_state_get_request',
-      protocolVersion: PROTOCOL_V1,
-      requestId: generateId('viewstateget'),
-      sessionId,
-    });
+    this.send(
+      withEnvelope('session_view_state_get_request', {
+        requestId: generateId('viewstateget'),
+        sessionId,
+      }),
+    );
   }
 
   /**
@@ -9363,7 +9026,7 @@ export class RelayClient {
       this.pendingSnippetListRequests,
       requestId,
       () => {
-        this.send({ type: 'snippet_list_get', protocolVersion: PROTOCOL_V1, sessionId, requestId });
+        this.send(withEnvelope('snippet_list_get', { sessionId, requestId }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for snippet_list_result',
@@ -9385,13 +9048,7 @@ export class RelayClient {
         return this.envelopeCrypto
           .seal('session', sessionId, sessionId, payload)
           .then((envelope) => {
-            this.send({
-              type: 'snippet_list_set',
-              protocolVersion: PROTOCOL_V1,
-              sessionId,
-              requestId,
-              envelope,
-            });
+            this.send(withEnvelope('snippet_list_set', { sessionId, requestId, envelope }));
           });
       },
       timeoutMs,

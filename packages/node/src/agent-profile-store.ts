@@ -13,10 +13,11 @@
  * then rewrites the whole file rather than an append-log design.
  * --------------------------------------------------------------------- */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { AgentProfile } from './agent-profile';
+import { loadJsonFile } from './json-store';
 import { defaultNodeStateDir } from './ssh/verify-and-persist';
 
 const AGENT_PROFILE_FILE_NAME = 'agent-profiles.json';
@@ -33,10 +34,6 @@ export class AgentProfileError extends Error {
     super(`agent profile store: ${message}`);
     this.name = 'AgentProfileError';
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function validateStringArray(raw: unknown, context: string): string[] {
@@ -129,18 +126,12 @@ export class AgentProfileStore {
   }
 
   private readFile(): AgentProfileFileV1 {
-    if (!existsSync(this.filePath)) {
-      return { v: AGENT_PROFILE_SCHEMA_VERSION, profiles: [] };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'));
-    } catch (error) {
-      throw new AgentProfileError(
-        `file "${this.filePath}" is not valid JSON: ${errorMessage(error)}`,
-      );
-    }
-    return validateFile(parsed, this.filePath);
+    return loadJsonFile(
+      this.filePath,
+      { v: AGENT_PROFILE_SCHEMA_VERSION, profiles: [] },
+      validateFile,
+      (message) => new AgentProfileError(message),
+    );
   }
 
   private writeFile(file: AgentProfileFileV1): void {

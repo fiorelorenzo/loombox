@@ -32,6 +32,7 @@ import {
 import { GithubConnectService } from './github-connect';
 import { JiraConnectService } from './jira-connect';
 import { createNode, type NodeDaemon } from './node-daemon';
+import { resolveTrackerBackend } from './tracker-backend-composition';
 import { TrackerModeStore } from './tracker-mode-store';
 
 /**
@@ -69,6 +70,27 @@ import { TrackerModeStore } from './tracker-mode-store';
  * assumes; that assumption already carries the same risk
  * `jira-tracker-backend.test.ts` accepted for every other Jira behavior it
  * covers, and is called out again here rather than left implicit.
+ *
+ * **Boards/sprints (issue #217) extend this SAME harness, not a second
+ * one, with one honest difference from the issue-CRUD coverage above:
+ * there is no `tracker_snapshot_request`/`tracker_write_request` wire
+ * message for `listBoards`/`listSprints`/`moveToSprint` at all yet (no
+ * consumer wires them onto the wire protocol as of #217 — that is a
+ * later slice's job, not this one's). So the boards/sprints block below
+ * calls `resolveTrackerBackend` directly — the exact same composition
+ * function `NodeDaemon.resolveTrackerDispatch` calls internally
+ * (`./tracker-backend-composition.ts`) — rather than going through
+ * `phone.send`/`requestSnapshot`. It still proves something real: a
+ * SECOND `JiraConnectService` instance, pointed at the same
+ * `nodeStateDir` `connectOverTheWire` already provisioned (the identical
+ * on-disk keyring secret a real relay announce + a real `AccountPinStore`
+ * pin wrote), resolves the identical credential the issue-CRUD tests
+ * above already proved works — so boards/sprints are NOT a second,
+ * untested credential path. The Jira API itself is still the same
+ * `jiraFetchStub`, extended with `GET board`/`GET board/{id}/sprint`/
+ * `POST sprint/{id}/issue` branches over a small in-memory board/sprint
+ * fixture — never a real Jira Agile REST service, same fixture-honesty
+ * disclosure as the paragraph above.
  */
 
 type CryptoKey = webcrypto.CryptoKey;
@@ -343,6 +365,50 @@ const FAKE_TRANSITIONS: Record<
   done: [{ id: '11', name: 'To Do', to: 'new' }],
 };
 
+/**
+ * The board/sprint fixture issue #217's Agile REST coverage moves issues
+ * through — deliberately separate from `FakeJiraIssue`'s single-issue
+ * transition fixture above: a board carries no state of its own, and a
+ * sprint's `state` (never flattened away — the field the acceptance
+ * criteria exist for) is exactly what these tests prove survives the
+ * round trip. `movedIssues` records what `moveToSprint` actually posted,
+ * mutable the same "asserted rather than assumed" way `FakeJiraIssue`
+ * is. Never a real Jira board (this file's own top comment).
+ */
+const FAKE_BOARD_ID = 84;
+
+interface FakeJiraSprint {
+  id: number;
+  name: string;
+  state: 'future' | 'active' | 'closed';
+  startDate?: string;
+  endDate?: string;
+  goal?: string;
+  movedIssues: string[];
+}
+
+function newFakeSprints(): FakeJiraSprint[] {
+  return [
+    {
+      id: 30,
+      name: 'Sprint 0',
+      state: 'closed',
+      startDate: '2025-12-01T00:00:00.000Z',
+      endDate: '2025-12-14T00:00:00.000Z',
+      movedIssues: [],
+    },
+    {
+      id: 37,
+      name: 'Sprint 1',
+      state: 'active',
+      startDate: '2026-01-01T00:00:00.000Z',
+      endDate: '2026-01-14T00:00:00.000Z',
+      goal: 'ship the boards/sprints slice',
+      movedIssues: [],
+    },
+    { id: 44, name: 'Sprint 2', state: 'future', movedIssues: [] },
+  ];
+}
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -369,14 +435,16 @@ interface RecordedFetch {
   body?: Record<string, unknown>;
 }
 
-/** Stubs exactly what `JiraTrackerBackend.list`/`get`/`update`/`listTransitions`/`transition` call against a single mutable `issue` — never the real Jira API (issue #696's own text: a real instance is not available in CI). Records every call so a test can assert both the request shape (method/url/auth/body) and, for the write-back test, that a later read reflects an earlier write. */
+/** Stubs exactly what `JiraTrackerBackend.list`/`get`/`update`/`listTransitions`/`transition` call against a single mutable `issue`, PLUS (issue #217) `listBoards`/`listSprints`/`moveToSprint` against a small mutable `sprints` fixture — never the real Jira API (issue #696's own text: a real instance is not available in CI). Records every call so a test can assert both the request shape (method/url/auth/body) and, for the write-back tests, that a later read reflects an earlier write. */
 function jiraFetchStub(
   calls: RecordedFetch[],
   expectedAuthHeader: string,
   issue: FakeJiraIssue,
+  sprints: FakeJiraSprint[] = newFakeSprints(),
 ): typeof fetch {
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    const parsedUrl = new URL(url);
     const method = init?.method ?? 'GET';
     const headers = init?.headers as Record<string, string> | undefined;
     expect(headers?.authorization).toBe(expectedAuthHeader);
@@ -416,6 +484,52 @@ function jiraFetchStub(
     if (url === `${SITE_BASE}/rest/api/3/issue/${issue.key}` && method === 'PUT') {
       const fields = (body?.fields as Record<string, unknown> | undefined) ?? {};
       if (typeof fields.summary === 'string') issue.title = fields.summary;
+      return emptyResponse(204);
+    }
+    if (parsedUrl.pathname === '/rest/agile/1.0/board' && method === 'GET') {
+      return jsonResponse(200, {
+        isLast: true,
+        maxResults: 50,
+        startAt: 0,
+        total: 1,
+        values: [
+          {
+            id: FAKE_BOARD_ID,
+            name: 'LB board',
+            self: `${SITE_BASE}/rest/agile/1.0/board/${FAKE_BOARD_ID}`,
+            type: 'scrum',
+          },
+        ],
+      });
+    }
+    if (
+      parsedUrl.pathname === `/rest/agile/1.0/board/${FAKE_BOARD_ID}/sprint` &&
+      method === 'GET'
+    ) {
+      return jsonResponse(200, {
+        isLast: true,
+        maxResults: 50,
+        startAt: 0,
+        total: sprints.length,
+        values: sprints.map((sprint) => ({
+          id: sprint.id,
+          self: `${SITE_BASE}/rest/agile/1.0/sprint/${sprint.id}`,
+          state: sprint.state,
+          name: sprint.name,
+          startDate: sprint.startDate,
+          endDate: sprint.endDate,
+          originBoardId: FAKE_BOARD_ID,
+          goal: sprint.goal,
+        })),
+      });
+    }
+    const sprintIssueMatch = /^\/rest\/agile\/1\.0\/sprint\/(\d+)\/issue$/.exec(parsedUrl.pathname);
+    if (sprintIssueMatch && method === 'POST') {
+      const sprintId = Number(sprintIssueMatch[1]);
+      const sprint = sprints.find((s) => s.id === sprintId);
+      if (!sprint) throw new Error(`jiraFetchStub: no such sprint ${sprintId}`);
+      const issues = (body?.issues as string[] | undefined) ?? [];
+      sprint.movedIssues.push(...issues);
       return emptyResponse(204);
     }
     throw new Error(`jiraFetchStub: unexpected ${method} ${url}`);
@@ -810,5 +924,81 @@ describe('NodeDaemon live tracker wire path — Jira, real relay, real JiraConne
       credentialSource: 'oauth_3lo',
     });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("JiraTrackerBackend Agile REST — boards/sprints resolved through the SAME resolveTrackerBackend/JiraConnectService/keyring composition as the wire tests above (issue #217; this file's own top comment explains why this block calls resolveTrackerBackend directly instead of phone.send)", () => {
+  it('listBoards/listSprints/moveToSprint resolve credentials through a second JiraConnectService reading the identical on-disk keyring secret connectOverTheWire already wrote, then read/write the Agile REST base — a genuinely different base path and pagination shape from the issue API above', async () => {
+    const account = jiraAccount();
+    const calls: RecordedFetch[] = [];
+    const issue = newFakeIssue();
+    const sprints = newFakeSprints();
+    await connectOverTheWire({
+      mode: jiraMode,
+      announcedAccount: account,
+      keyringSecret: KEYRING_SECRET,
+      pinnedAccountId: account.id,
+      fetchImpl: jiraFetchStub(calls, EXPECTED_AUTH_HEADER, issue, sprints),
+    });
+
+    // The exact same composition `NodeDaemon.resolveTrackerDispatch` calls
+    // internally (`./tracker-backend-composition.ts`) — a SECOND
+    // `JiraConnectService`/`GithubConnectService` pair, pointed at the
+    // same `nodeStateDir`, reads the identical on-disk keyring secret and
+    // account pin `connectOverTheWire` already wrote via a real relay
+    // announce. If credential resolution for the Agile base diverged from
+    // the issue base's own (already wire-tested above), the auth-header
+    // assertion inside `jiraFetchStub` would fail here.
+    const resolution = await resolveTrackerBackend({
+      mode: jiraMode,
+      projectPath,
+      intent: 'read',
+      accounts: [account],
+      pins: new AccountPinStore({ stateDir: nodeStateDir }).get(projectPath),
+      githubConnectService: new GithubConnectService({
+        stateDir: nodeStateDir,
+        osKeyringBackendFactory: async () => undefined,
+      }),
+      jiraConnectService: new JiraConnectService({
+        stateDir: nodeStateDir,
+        osKeyringBackendFactory: async () => undefined,
+      }),
+      fetchImpl: jiraFetchStub(calls, EXPECTED_AUTH_HEADER, issue, sprints),
+    });
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) throw new Error('unreachable');
+    const { backend } = resolution;
+    if (!backend.listBoards || !backend.listSprints || !backend.moveToSprint) {
+      throw new Error('unreachable: JiraTrackerBackend always implements boards/sprints');
+    }
+
+    const boards = await backend.listBoards({
+      connectionId: account.id,
+      target: jiraMode.target,
+    });
+    expect(boards).toEqual([{ id: expect.any(String), name: 'LB board' }]);
+
+    const sprintList = await backend.listSprints(boards[0].id);
+    // Sprint state modelled, not flattened into one combined list: three
+    // sprints, three distinct states, each still carrying its board id.
+    expect(sprintList.map((s) => ({ name: s.name, state: s.state }))).toEqual([
+      { name: 'Sprint 0', state: 'closed' },
+      { name: 'Sprint 1', state: 'active' },
+      { name: 'Sprint 2', state: 'future' },
+    ]);
+    expect(sprintList.every((s) => s.boardId === boards[0].id)).toBe(true);
+
+    const activeSprint = sprintList.find((s) => s.state === 'active');
+    if (!activeSprint) throw new Error('unreachable');
+    await backend.moveToSprint(activeSprint.id, ['LB-213']);
+
+    // Asserted, not assumed: the fixture's own mutable sprint really
+    // recorded the move.
+    expect(sprints[1].movedIssues).toEqual(['LB-213']);
+    expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
+      'GET /rest/agile/1.0/board',
+      'GET /rest/agile/1.0/board/84/sprint',
+      'POST /rest/agile/1.0/sprint/37/issue',
+    ]);
   });
 });
