@@ -8,6 +8,7 @@ import {
   type WireMessageV1,
 } from '@loombox/protocol';
 import { createRelayAuth, startRelay, type RelayAuth, type StartedRelay } from '@loombox/relay';
+import { e2ePreviewOrigin } from './e2e-port';
 
 /**
  * The Playwright-side counterpart of `apps/web/src/lib/relay-client.test.ts`'s
@@ -228,8 +229,9 @@ export async function startE2eRelay(): Promise<E2eRelay> {
     enableEmailPasswordForTests: true,
     // The app is served from a different origin than this relay, so its
     // origin must be trusted or Better Auth 403s the sign-up (CSRF/Origin
-    // check). Matches playwright.config.ts's baseURL/preview port.
-    trustedOrigins: ['http://127.0.0.1:4173', 'http://localhost:4173'],
+    // check). Derived from the same per-checkout port as
+    // playwright.config.ts's baseURL (#917), so they can't drift apart.
+    trustedOrigins: [e2ePreviewOrigin(), e2ePreviewOrigin().replace('127.0.0.1', 'localhost')],
   });
   // Same migration call `packages/relay/src/main.ts` and
   // `packages/relay/src/auth.test.ts` use — `migrateBetterAuth` itself is
@@ -265,10 +267,11 @@ export interface E2eTestUser {
  * `resolveAccountIdViaBetterAuth` does server-side — so a client seeded
  * with this pair always agrees with the relay on which account it is.
  */
-// A trusted origin (matches startE2eRelay's trustedOrigins + playwright.config's
-// preview port) that this node-side helper sends so Better Auth's CSRF/Origin
-// check accepts the sign-up (a bare fetch otherwise carries no Origin -> 403).
-const E2E_TRUSTED_ORIGIN = 'http://127.0.0.1:4173';
+// A trusted origin (matches startE2eRelay's trustedOrigins, both derived
+// from harness/e2e-port.ts's per-checkout port) that this node-side helper
+// sends so Better Auth's CSRF/Origin check accepts the sign-up (a bare
+// fetch otherwise carries no Origin -> 403).
+const E2E_TRUSTED_ORIGIN = e2ePreviewOrigin();
 
 export async function signUpTestUser(httpBaseUrl: string, email: string): Promise<E2eTestUser> {
   const signUpResponse = await fetch(`${httpBaseUrl}/api/auth/sign-up/email`, {
