@@ -1,5 +1,11 @@
 # @loombox/providers-generic
 
+## 0.0.8
+
+### Patch Changes
+
+- @loombox/providers-core@0.6.1
+
 ## 0.0.7
 
 ### Patch Changes

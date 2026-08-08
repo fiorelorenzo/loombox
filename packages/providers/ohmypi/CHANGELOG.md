@@ -1,5 +1,11 @@
 # @loombox/providers-ohmypi
 
+## 0.1.7
+
+### Patch Changes
+
+- @loombox/providers-core@0.6.1
+
 ## 0.1.6
 
 ### Patch Changes
