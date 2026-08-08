@@ -229,6 +229,7 @@ export {
   createLocalInstallLayoutDriver,
   createRemoteInstallLayoutDriver,
   createTarGzArchive,
+  createWindowsInstallLayoutDriver,
   rollbackVersion,
 } from './install-layout';
 
@@ -402,6 +403,39 @@ export { createLaunchdSupervisorBackend } from './launchd/launchd-supervisor-bac
 export type { SystemdLocalSupervisorBackendOptions } from './local/systemd-local-supervisor-backend';
 export { createSystemdLocalSupervisorBackend } from './local/systemd-local-supervisor-backend';
 
+// v2: the Task Scheduler backend for a Windows-local node (issue #659) —
+// the fourth and last `SupervisorBackend` implementation. Unlike the
+// systemd-local backend just above, this one does NOT reuse an existing
+// ssh:-side generator over a different transport: Windows has no `sh`
+// (so `../ssh/local-process-transport.ts` is not reusable at all) and no
+// systemd/launchd equivalent, so `./windows/windows-provisioning.ts`
+// reimplements the same generate/plan/execute shape from scratch for
+// Task Scheduler's own vocabulary — see that module's own doc comment
+// for why Task Scheduler (a per-user, no-admin logon trigger) rather
+// than a Windows Service, and for every other genuinely non-POSIX
+// difference (no `EnvironmentVariables` action field, the 72-hour
+// default execution time limit, no "restart forever" primitive).
+export type {
+  SchtasksResult,
+  WindowsProvisionPlan,
+  WindowsProvisionResult,
+  WindowsTaskAction,
+  WindowsTaskConfig,
+  WindowsTaskIo,
+} from './windows/windows-provisioning';
+export {
+  createNodeWindowsTaskIo,
+  DEFAULT_WINDOWS_TASK_NAME,
+  executeWindowsTaskProvisioning,
+  generateWindowsLauncherScript,
+  generateWindowsTaskXml,
+  planWindowsTaskProvisioning,
+  winQuoteArg,
+} from './windows/windows-provisioning';
+
+export type { WindowsSupervisorBackendOptions } from './windows/windows-supervisor-backend';
+export { createWindowsSupervisorBackend } from './windows/windows-supervisor-backend';
+
 // v2: the local-node provisioning orchestrator (issue #654) — the shared
 // half of the seam alongside `SupervisorBackend` itself: composes
 // runtime_bootstrap/target_identity/mint_node_token/amk_handoff (reused
@@ -422,14 +456,15 @@ export { provisionLocalNode } from './local/provision-local-node';
 // `provisionLocalNode` accept (issue #867, epic #863) — one place a
 // caller running a second, non-production node on a machine that already
 // has one turns "which environment is this for" into collision-free unit
-// name / launchd label / install root / node id defaults, rather than
-// having to remember to vary each of those by hand.
+// name / launchd label / windows task name / install root / node id
+// defaults, rather than having to remember to vary each of those by hand.
 export type { NodeEnvironment } from './node-environment';
 export {
   collisionFreeNodeId,
   defaultBaseDirName,
   defaultLaunchdLabel,
   defaultUnitName,
+  defaultWindowsTaskName,
 } from './node-environment';
 
 // v1: uninstall on the supervisor-backend seam (issue #814, decision

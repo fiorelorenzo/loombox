@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readdir, readlink, rm, stat, symlink, unlink } from 'node:fs/promises';
+import { mkdir, readdir, readlink, rm, rmdir, stat, symlink, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import { shQuote } from './ssh/remote-transport';
@@ -16,11 +16,14 @@ import type { RemoteTransport } from './ssh/remote-transport';
  * a while, so there's no reason to invent a different, unproven mechanism
  * here).
  *
- * One driver interface, two implementations: {@link createLocalInstallLayoutDriver}
- * (real `node:fs`, for a machine installing its own node — the future local
- * backends, #654/#658/#659) and {@link createRemoteInstallLayoutDriver} (a
+ * One driver interface, three implementations: {@link createLocalInstallLayoutDriver}
+ * (real `node:fs`, for a macOS/Linux machine installing its own node — issues
+ * #654/#658), {@link createWindowsInstallLayoutDriver} (real `node:fs` again,
+ * but a directory *junction* rather than a symlink for `activateVersion`'s
+ * swap — issue #659; see that function's own doc comment for why a symlink
+ * alone is wrong here), and {@link createRemoteInstallLayoutDriver} (a
  * {@link RemoteTransport}, for staging an artifact on an `ssh:` target).
- * Both speak the exact same four verbs, so neither caller has to know which
+ * All three speak the exact same four verbs, so no caller has to know which
  * one it's driving.
  *
  * `rollback` is deliberately not a fifth verb: {@link activateVersion} run
@@ -153,6 +156,123 @@ export function createLocalInstallLayoutDriver(): InstallLayoutDriver {
         if (!isEnoent(error)) throw error;
       });
       await symlink(path.posix.join('versions', version), currentLink);
+    },
+
+    currentVersion,
+
+    async removeVersion(baseDir, version) {
+      if ((await currentVersion(baseDir)) === version) {
+        throw new Error(
+          `install-layout: refusing to remove version ${version} — it's what "current" points at`,
+        );
+      }
+      await rm(path.join(baseDir, 'versions', version), { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * `node:fs`-backed {@link InstallLayoutDriver} for a Windows-local node
+ * (issue #659). Identical to {@link createLocalInstallLayoutDriver} for
+ * `listStagedVersions`/`stageVersion`/`removeVersion` — staging a tarball
+ * and listing/removing version directories has no Windows-specific
+ * behavior — reimplemented here rather than shared, on purpose, so the one
+ * genuinely different verb doesn't hide behind a flag on the POSIX driver
+ * (this file's own precedent: `ssh/systemd-provisioning.ts` and
+ * `launchd/launchd-provisioning.ts` each reimplement their shared shape
+ * from scratch too, for the same reason).
+ *
+ * The real difference is `activateVersion`'s swap mechanism. A plain
+ * symlink (the POSIX driver's own `current -> versions/<version>`) needs
+ * either `SeCreateSymbolicLinkPrivilege` (admin) or Developer Mode enabled
+ * on Windows — exactly the elevation issue #659 says a zero-touch local
+ * install must not require. A directory *junction* (`fs.symlink(...,
+ * 'junction')`) is the alternative issue #659 itself names: an NTFS
+ * reparse point, not a symlink, and creating one needs no privilege at
+ * all. Two consequences follow directly from that being a different
+ * mechanism, not just a different flag:
+ *
+ * - Node's own docs: "Windows junction points require the destination
+ *   path to be absolute" — unlike the POSIX driver's deliberately
+ *   *relative* `versions/<version>` target (chosen there so the whole
+ *   `baseDir` tree stays relocatable), so this driver's `activateVersion`
+ *   resolves an absolute target instead. Losing relocatability is a real,
+ *   accepted cost of the platform, not an oversight.
+ * - A junction is itself a directory-type reparse point, so removing one
+ *   needs `rmdir`, never `unlink` (which only ever removes a file or a
+ *   symlink, and refuses a real directory). But `'junction'` is a
+ *   Windows-only type argument — every other platform's `fs.symlink`
+ *   silently ignores it and creates an ordinary symlink instead (verified
+ *   on this devbox: `readlink`/`lstat` after `symlink(t, p, 'junction')`
+ *   on Linux report a genuine symlink, and `rmdir` on it fails ENOTDIR)
+ *   — and `rmdir` refuses an ordinary symlink too, so a host where the
+ *   type argument was silently ignored needs `unlink` instead. Trying
+ *   `rmdir` first and falling back to `unlink` on ENOTDIR is therefore not
+ *   just defensive: it is the only way this driver's own re-activation
+ *   path (switch `current` from one staged version to another) is
+ *   exercisable for real without a Windows host at all — see this
+ *   package's own `install-layout.test.ts`.
+ */
+export function createWindowsInstallLayoutDriver(): InstallLayoutDriver {
+  const currentVersion = async (baseDir: string): Promise<string | undefined> => {
+    try {
+      const target = await readlink(path.join(baseDir, 'current'));
+      return path.basename(target);
+    } catch (error) {
+      if (isEnoent(error)) return undefined;
+      throw error;
+    }
+  };
+
+  return {
+    async listStagedVersions(baseDir) {
+      try {
+        const entries = await readdir(path.join(baseDir, 'versions'), { withFileTypes: true });
+        return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+      } catch (error) {
+        if (isEnoent(error)) return [];
+        throw error;
+      }
+    },
+
+    async stageVersion(baseDir, version, archiveTarGz) {
+      const versionDir = path.join(baseDir, 'versions', version);
+      await rm(versionDir, { recursive: true, force: true });
+      await mkdir(versionDir, { recursive: true });
+      await runCapture('tar', ['xzf', '-', '-C', versionDir], Buffer.from(archiveTarGz));
+    },
+
+    async activateVersion(baseDir, version) {
+      const versionDir = path.join(baseDir, 'versions', version);
+      try {
+        await stat(versionDir);
+      } catch (error) {
+        if (isEnoent(error)) {
+          throw new Error(`install-layout: version ${version} is not staged at ${versionDir}`);
+        }
+        throw error;
+      }
+      const currentLink = path.join(baseDir, 'current');
+      try {
+        await rmdir(currentLink);
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          error.code === 'ENOTDIR'
+        ) {
+          // Not a directory/junction — a plain symlink instead, which
+          // means `'junction'` below was silently ignored (every non-
+          // Windows `fs.symlink`; see this function's own doc comment).
+          await unlink(currentLink).catch((unlinkError: unknown) => {
+            if (!isEnoent(unlinkError)) throw unlinkError;
+          });
+        } else if (!isEnoent(error)) {
+          throw error;
+        }
+      }
+      await symlink(path.resolve(versionDir), currentLink, 'junction');
     },
 
     currentVersion,
