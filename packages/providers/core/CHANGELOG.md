@@ -1,5 +1,13 @@
 # @loombox/providers-core
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [e96daf9]
+- Updated dependencies [7ac47be]
+  - @loombox/protocol@0.10.0
+
 ## 0.6.0
 
 ### Minor Changes

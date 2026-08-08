@@ -1,5 +1,11 @@
 # @loombox/providers-claude
 
+## 0.1.2
+
+### Patch Changes
+
+- @loombox/providers-core@0.6.1
+
 ## 0.1.1
 
 ### Patch Changes

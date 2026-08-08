@@ -1,5 +1,37 @@
 # @loombox/shared
 
+## 0.5.0
+
+### Minor Changes
+
+- e96daf9: GitHub Projects v2 boards via GraphQL — live tracker slice 3 for GitHub (SPEC §7.10, issue #218), on top of the REST issue/comment/transition slices #213/#215 already shipped.
+
+  I read loombox's own project board (`gh project field-list 4 --owner fiorelorenzo --format json`) before designing this, since Projects v2's field model is genuinely unusual: a board's columns are a single-select FIELD whose OPTIONS are the statuses, and every project names its own fields. loombox's board has 16 fields, four of them single-select (`Status`, `Priority`, `Effort`, `Parallel`) — exactly the trap the issue calls out: a naive "grab the field named Status" or "grab the first single-select" both happen to work on this one board and would break on a differently-shaped one.
+
+  `GithubTrackerBackend.listBoards` (`packages/node/src/github-projects-v2.ts`, new) discovers a project's own status field by resolving every option of every single-select field through `@loombox/protocol`'s (newly exported) `categorizeKnownStatusName` — the exact vocabulary native-tracker status resolution already uses — and only accepts a field as the status field when ALL of its options resolve. A project with no such field (Priority/Effort/Parallel-only, say) gets `statusFieldUnavailableReason` naming every rejected field and its real options, never a guess. An iteration field, when present, is discovered the same pass.
+
+  `addBoardItem`/`moveBoardItemToCategory`/`moveBoardItemToIteration` are extra `GithubTrackerBackend` methods beyond the `TrackerBackend` interface's own spec-locked method set (SPEC §7.10's literal code block has no "move a card" method at all) — the same "extra method beyond the interface" pattern `JiraTrackerBackend`'s `createSprint`/`startSprint`/`closeSprint` already established. They implement `Mutation.addProjectV2ItemById` and, after resolving a `singleSelectOptionId`/`iterationId` from the board's own discovered fields, `Mutation.updateProjectV2ItemFieldValue`. `GithubGraphQlSecondaryBudget` paces batched calls against GitHub's undocumented-via-header 2,000 pts/min GraphQL secondary limit (the primary 5,000 pts/hr limit reuses the exact `x-ratelimit-*` header check the REST path already has). `githubBoardsCapableFor(target)` answers the per-repo-binding "is Projects v2 usable here" question `capabilities.boards`'s flat, backend-level flag can't (`target.projectNumber != null`).
+
+  `@loombox/shared`'s `TrackerBoard` gains `statusField`/`statusFieldUnavailableReason`/`iterationField` (additive; coordinated with the concurrent #217 Jira-boards work over IRC so as not to collide on the same placeholder types).
+
+  Tests: `github-projects-v2.test.ts` (discovery logic, tie-breaking, the secondary-rate-limit budget, the GraphQL request helper's error/rate-limit handling) against a fixture recorded from the real project #4 GraphQL response, not hand-written. `github-tracker-backend.test.ts` gains fetch-stub coverage for the four new methods plus `githubBoardsCapableFor`. `node-daemon-tracker-live-github-boards.test.ts` (new) mirrors `node-daemon-tracker-live.test.ts`'s real-relay shape (issue #696) end to end: a real relay, a real `connected_account_announce`/`connected_account_list_request` round trip, a real `GithubConnectService` + file-fallback keyring resolving the actual stored token, real `resolveTrackerBackend` composition, only the GitHub GraphQL HTTP call stubbed — covering both the successful discovery case and the degrade-honestly case, plus a full add-then-move write path under a write-intent account pin.
+
+  Verified: `pnpm --filter @loombox/node exec vitest run src/github-tracker-backend.test.ts src/github-projects-v2.test.ts src/node-daemon-tracker-live-github-boards.test.ts` (70 tests), `pnpm --filter @loombox/node --filter @loombox/shared --filter @loombox/protocol typecheck`, `pnpm exec eslint` on every changed file (clean), `pnpm format:check` (clean), and the full `pnpm test` (protocol touched): 525 passed / 1 skipped test files, 6454 passed / 2 skipped tests, 0 failed.
+
+- 58921ae: Add Jira `TrackerBackend` boards/sprints, live tracker slice 3 (SPEC §7.10, issue #217)
+
+  `JiraTrackerBackend` now implements `listBoards`/`listSprints`/`moveToSprint` against Jira's Agile REST base (`/rest/agile/1.0/...`), a genuinely different base path and pagination shape from the issue REST base (`/rest/api/3/...`) slices 1/2 already use. `capabilities.boards`/`capabilities.sprints` flip to `true`.
+
+  `TrackerBoard.id`/`TrackerSprint.id` are opaque, backend-issued ids: SPEC §7.10's literal `TrackerBackend` interface gives `listSprints(boardId)`/`moveToSprint(sprintId, externalIds)` no `TrackerBinding`, so this backend folds the resolving `connectionId` into the id itself (a base64url `{connectionId, id}` envelope) rather than changing that interface's method signatures. `@loombox/shared`'s `TrackerSprint` gains optional `boardId`/`startDate`/`endDate`/`goal` fields alongside its existing required `state: 'future' | 'active' | 'closed'` — sprint state is modelled per-sprint, never flattened into a combined board+sprint list, so a cockpit can tell a session tied to a story in the active sprint from one still in the backlog or already shipped.
+
+  `JiraTrackerBackend` also gains `createSprint`/`startSprint`/`closeSprint` directly (not part of `TrackerBackend` — SPEC's interface has no such method), posting/partially-updating `POST`/`POST /rest/agile/1.0/sprint[/{id}]` for issue #217's third acceptance line. OAuth 3LO routing (`api.atlassian.com/ex/jira/{cloudId}/...`) is honored for the Agile base the same way it already is for the issue base, since every call still composes its URL purely from `credential.baseUrl`.
+
+### Patch Changes
+
+- Updated dependencies [e96daf9]
+- Updated dependencies [7ac47be]
+  - @loombox/protocol@0.10.0
+
 ## 0.4.0
 
 ### Minor Changes
