@@ -91,6 +91,46 @@ jobs:
           done
           find release -maxdepth 4 -type f
 
+      # A GitHub Release is a FLAT bag of asset names, so the directory
+      # structure that keeps the merged tree collision-free above buys
+      # nothing here: both platforms' `supervisor/<ver>/<os-arch>/supervisor-bin`
+      # want to upload as the same `supervisor-bin`, and the second one dies
+      # with `HTTP 404 .../assets?name=supervisor-bin` (v0.8.0's publish step,
+      # after both packages had already built). The node tarballs already
+      # carry version and platform in the file name; the supervisor payload
+      # and its signature do not, so qualify them the same way. This is the
+      # naming v0.7.0's assets were hand-published under, so an installer
+      # reading either release sees one convention.
+      - name: Flatten to unique, platform-qualified asset names
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              release/supervisor/*)
+                # release/supervisor/<version>/<os-arch>/supervisor-bin[.sig]
+                rest="${f#release/supervisor/}"
+                version="${rest%%/*}"
+                rest="${rest#*/}"
+                platform="${rest%%/*}"
+                name="${rest#*/}"
+                cp -a "$f" "upload/supervisor-${version}-${platform}-${name#supervisor-}"
+                ;;
+              *)
+                cp -a "$f" "upload/$(basename "$f")"
+                ;;
+            esac
+          done < <(find release -type f -print0)
+          # Fail loudly rather than silently dropping a platform: every input
+          # file must have produced exactly one distinct upload name.
+          inputs=$(find release -type f | wc -l)
+          outputs=$(find upload -type f | wc -l)
+          if [ "$inputs" -ne "$outputs" ]; then
+            echo "asset flattening collapsed $inputs files into $outputs names" >&2
+            exit 1
+          fi
+          ls -l upload
+
       - name: Create/update the GitHub Release for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,7 +144,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           assets=()
-          while IFS= read -r -d '' f; do assets+=("$f"); done < <(find release -type f -print0)
+          while IFS= read -r -d '' f; do assets+=("$f"); done < <(find upload -type f -print0)
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${assets[@]}" --clobber
           else
