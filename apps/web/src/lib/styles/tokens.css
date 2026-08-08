@@ -50,9 +50,37 @@
   /* being readable, how wide the sidebar starts, and how much room the */
   /* transcript's role gutter reserves. Components read these instead   */
   /* of inventing their own magic widths.                               */
+  /*                                                                    */
+  /* One reading measure, defined once, plus its one named opt-out      */
+  /* (issue #581 — the destination pages and the transcript used to     */
+  /* disagree on width; verified current as of that issue's own re-     */
+  /* audit, not assumed from either the spec or the earlier screenshots):*/
+  /*  - `--measure` is long-form prose: `TranscriptTimeline.svelte`'s    */
+  /*    `.items`, `+page.svelte`'s `.canvas-footer` (composer + toolbar  */
+  /*    strip) and `.workspace-notice` banner, and `PlanSidebar.svelte`  */
+  /*    all read it — a person is reading sentences in every one of      */
+  /*    them, so they all stop at the same readability ceiling.          */
+  /*  - `--measure-wide` is the one named opt-out, for surfaces that are  */
+  /*    wide-shaped content, not prose, and would look unfinished        */
+  /*    artificially narrowed to the same ceiling: `DiffViewer.svelte`   */
+  /*    (a diff line), `FileEditor.svelte` (a code buffer), and          */
+  /*    `PageLayout.svelte` (Inbox/Settings/Tracker — forms, lists and a */
+  /*    board, not a paragraph) all read it explicitly; `CanvasZeroState.*/
+  /*    svelte` reads it for the same reason a `PageLayout` page does.   */
+  /*    Inside the transcript itself this token stays inert on purpose   */
+  /*    (v8 A1-1's own note): `.items` caps the whole list at `--measure`*/
+  /*    first, so a diff nested in a tool-call row never actually reaches*/
+  /*    120ch — code and prose keep the same width there, deliberately.  */
+  /*  - The terminal opts out a third way: no token at all. `.terminal-  */
+  /*    dock` (`+page.svelte`) is a full-width flex sibling of the shell */
+  /*    with no max-width, because a horizontal terminal dock (design    */
+  /*    spec v6 §epic point 3) is already geometrically bounded by the   */
+  /*    app shell it sits in — a ch-based cap on top would fight the     */
+  /*    panel, not help it, the same reasoning DiffViewer/FileEditor's   */
+  /*    own opt-out is built on, just without a property to opt in with. */
   /* ---------------------------------------------------------------- */
   --measure: 100ch; /* long-form prose in the transcript (v8 A1-1: was 90ch) */
-  --measure-wide: 120ch; /* code, diffs, terminal output — wider on purpose */
+  --measure-wide: 120ch; /* diffs, code, and the three destination pages — wider on purpose */
   /* v7 turn delimitation (design spec `2026-08-04-cockpit-v7-decisions.md`
      §2, issue #667: B1-2 amended + B2-4) narrowed this from 4.75rem: the
      gutter used to reserve room for a visible word (v5) then an icon glyph
