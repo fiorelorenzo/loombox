@@ -280,9 +280,28 @@ describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #
     const key = await derivePhoneSessionKey(amk, accountId, session.id);
 
     // A real merge, on the real isolated worktree, that really conflicts.
-    await execFileAsync('git', ['merge', 'feature'], {
+    const mergeResult = await execFileAsync('git', ['merge', 'feature'], {
       cwd: session.worktreePath,
-    }).catch(() => undefined); // exits nonzero on conflict — expected, not a test failure
+    }).catch((error) => error as { stdout?: string; stderr?: string; code?: number });
+    // TEMP DIAGNOSTIC for CI root-cause investigation (issue #237) — removed before merge.
+    if (process.env.CI) {
+      const { stdout: gitVersion } = await execFileAsync('git', ['--version']);
+      const { stdout: headSha } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: session.worktreePath,
+      });
+      const { stdout: branchList } = await execFileAsync('git', ['branch', '-a', '-v'], {
+        cwd: session.worktreePath,
+      });
+      console.error(
+        '[DIAG] gitVersion=' + gitVersion.trim(),
+        '\n[DIAG] PATH=' + process.env.PATH,
+        '\n[DIAG] worktreePath=' + session.worktreePath,
+        '\n[DIAG] projectPath=' + projectPath,
+        '\n[DIAG] headSha=' + headSha.trim(),
+        '\n[DIAG] branchList=\n' + branchList,
+        '\n[DIAG] mergeResult=' + JSON.stringify(mergeResult),
+      );
+    }
     const conflictedBefore = await readFile(path.join(session.worktreePath, 'notes.txt'), 'utf8');
     expect(conflictedBefore).toContain('<<<<<<<');
     expect(conflictedBefore).toContain('MAIN-EDIT');
