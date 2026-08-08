@@ -66,7 +66,7 @@ import {
   parseSessionPrivateMetaV1,
   parseSessionTemplateListSetPayloadV1,
   parseSnippetListSetPayloadV1,
-  PROTOCOL_V1,
+  withEnvelope,
   type AccountPinGetRequest,
   type AccountPinMapV1,
   type AccountPinResolveOutcome,
@@ -3912,13 +3912,9 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(bridge.session.id);
     const envelope = await sealJson(bridge.session.id, event, key);
     bridge.seq += 1;
-    this.relay.send({
-      type: 'session_update',
-      protocolVersion: PROTOCOL_V1,
-      sessionId: bridge.session.id,
-      seq: bridge.seq,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('session_update', { sessionId: bridge.session.id, seq: bridge.seq, envelope }),
+    );
   }
 
   /**
@@ -3976,12 +3972,7 @@ export class NodeDaemon extends EventEmitter {
       provider: session.provider,
       createdAt: session.createdAt,
     };
-    this.relay.send({
-      type: 'session_announce',
-      protocolVersion: PROTOCOL_V1,
-      session: meta,
-      privateEnvelope,
-    });
+    this.relay.send(withEnvelope('session_announce', { session: meta, privateEnvelope }));
   }
 
   /**
@@ -4021,13 +4012,7 @@ export class NodeDaemon extends EventEmitter {
       },
       key,
     );
-    this.relay.send({
-      type: 'session_update',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      seq: 0,
-      envelope,
-    });
+    this.relay.send(withEnvelope('session_update', { sessionId, seq: 0, envelope }));
   }
 
   /**
@@ -4054,13 +4039,7 @@ export class NodeDaemon extends EventEmitter {
       { kind: 'mcp_server_status', servers, updatedAt: new Date().toISOString() },
       key,
     );
-    this.relay.send({
-      type: 'session_update',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      seq: 0,
-      envelope,
-    });
+    this.relay.send(withEnvelope('session_update', { sessionId, seq: 0, envelope }));
   }
 
   /**
@@ -4112,13 +4091,7 @@ export class NodeDaemon extends EventEmitter {
       { kind: 'mcp_server_prompts', servers, updatedAt: new Date().toISOString() },
       key,
     );
-    this.relay.send({
-      type: 'session_update',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      seq: 0,
-      envelope,
-    });
+    this.relay.send(withEnvelope('session_update', { sessionId, seq: 0, envelope }));
   }
 
   /**
@@ -4158,12 +4131,7 @@ export class NodeDaemon extends EventEmitter {
         provider: opts.provider,
         createdAt: Date.now(),
       };
-      this.relay.send({
-        type: 'session_announce',
-        protocolVersion: PROTOCOL_V1,
-        session: meta,
-        privateEnvelope,
-      });
+      this.relay.send(withEnvelope('session_announce', { session: meta, privateEnvelope }));
       await this.sendSessionStatus(sessionId, 'error', error.message);
       await this.sendMcpServerStatus(sessionId, [
         {
@@ -4218,12 +4186,7 @@ export class NodeDaemon extends EventEmitter {
         provider: opts.provider,
         createdAt: Date.now(),
       };
-      this.relay.send({
-        type: 'session_announce',
-        protocolVersion: PROTOCOL_V1,
-        session: meta,
-        privateEnvelope,
-      });
+      this.relay.send(withEnvelope('session_announce', { session: meta, privateEnvelope }));
       await this.sendSessionStatus(sessionId, 'error', error.message);
     } catch (reportError: unknown) {
       console.warn(
@@ -4312,21 +4275,21 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendTargetAnnounce(): void {
-    this.relay.send({
-      type: 'target_announce',
-      protocolVersion: PROTOCOL_V1,
-      nodeId: this.nodeId,
-      targets: this.targets.map((target) => ({
-        ...target,
-        providers: this.providerAvailability.get(target.id) ?? [],
-        // Issue #255's load/concurrency-limits UI: `maxFor` always returns a
-        // real number (falls back to `concurrencyGate`'s own `defaultMax`
-        // even for a target id it has no explicit limit for), so this is
-        // never omitted the way `providers` above legitimately can be.
-        maxConcurrentSessions: this.concurrencyGate.maxFor(target.id),
-        maxConcurrentSessionsSource: this.concurrencyLimitSources.get(target.id) ?? 'default',
-      })),
-    });
+    this.relay.send(
+      withEnvelope('target_announce', {
+        nodeId: this.nodeId,
+        targets: this.targets.map((target) => ({
+          ...target,
+          providers: this.providerAvailability.get(target.id) ?? [],
+          // Issue #255's load/concurrency-limits UI: `maxFor` always returns a
+          // real number (falls back to `concurrencyGate`'s own `defaultMax`
+          // even for a target id it has no explicit limit for), so this is
+          // never omitted the way `providers` above legitimately can be.
+          maxConcurrentSessions: this.concurrencyGate.maxFor(target.id),
+          maxConcurrentSessionsSource: this.concurrencyLimitSources.get(target.id) ?? 'default',
+        })),
+      }),
+    );
   }
 
   /**
@@ -4439,29 +4402,17 @@ export class NodeDaemon extends EventEmitter {
       samples.push({ targetId, ...sample });
     }
     if (samples.length === 0) return;
-    this.relay.send({
-      type: 'target_status',
-      protocolVersion: PROTOCOL_V1,
-      nodeId: this.nodeId,
-      samples,
-    });
+    this.relay.send(withEnvelope('target_status', { nodeId: this.nodeId, samples }));
   }
 
   /** SPEC §8 / issue #116: on every fresh connection, ask whether a rewrapped-AMK-epoch envelope is waiting for this device. */
   private sendAmkEpochFetchRequest(): void {
-    this.relay.send({
-      type: 'amk_epoch_fetch_request',
-      protocolVersion: PROTOCOL_V1,
-      deviceId: this.deviceId,
-    });
+    this.relay.send(withEnvelope('amk_epoch_fetch_request', { deviceId: this.deviceId }));
   }
 
   /** SPEC §7.26, issue #631: on every fresh connection (mirrors {@link sendAmkEpochFetchRequest}'s identical "ask on every 'open', including a reconnect" shape), asks the relay for this account's connected-account registry — the same request a client sends on its own `attemptOpen()` (`apps/web/src/lib/relay-client.ts`'s own `connected_account_list_request` doc comment). {@link handleConnectedAccountList} replaces {@link connectedAccounts} wholesale with the reply. */
   private sendConnectedAccountListRequest(): void {
-    this.relay.send({
-      type: 'connected_account_list_request',
-      protocolVersion: PROTOCOL_V1,
-    });
+    this.relay.send(withEnvelope('connected_account_list_request', {}));
   }
 
   /**
@@ -4537,12 +4488,12 @@ export class NodeDaemon extends EventEmitter {
    * and-pair.ts`.
    */
   sendProvisionProgress(progress: Omit<ProvisionProgress, 'type' | 'protocolVersion'>): void {
-    this.relay.send({ type: 'provision_progress', protocolVersion: PROTOCOL_V1, ...progress });
+    this.relay.send(withEnvelope('provision_progress', { ...progress }));
   }
 
   /** The provision-and-pair sequence's final outcome (issue #408), sent once. */
   sendProvisionResult(result: Omit<ProvisionTargetResult, 'type' | 'protocolVersion'>): void {
-    this.relay.send({ type: 'provision_target_result', protocolVersion: PROTOCOL_V1, ...result });
+    this.relay.send(withEnvelope('provision_target_result', { ...result }));
   }
 
   /**
@@ -4556,13 +4507,7 @@ export class NodeDaemon extends EventEmitter {
    * epoch to be (the relay rejects anything else, #116).
    */
   revokeDevice(deviceId: string, newEpoch: number, rewrappedAmk: WrappedAmkEnvelope[]): void {
-    this.relay.send({
-      type: 'device_revoke',
-      protocolVersion: PROTOCOL_V1,
-      deviceId,
-      newEpoch,
-      rewrappedAmk,
-    });
+    this.relay.send(withEnvelope('device_revoke', { deviceId, newEpoch, rewrappedAmk }));
   }
 
   private handleInbound(message: WireMessageV1): void {
@@ -5123,13 +5068,13 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendSessionForkResponse(message: SessionForkRequest, result: SessionForkResult): void {
-    this.relay.send({
-      type: 'session_fork_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId: message.requestId,
-      sessionId: message.sessionId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('session_fork_response', {
+        requestId: message.requestId,
+        sessionId: message.sessionId,
+        result,
+      }),
+    );
   }
 
   /**
@@ -5458,13 +5403,13 @@ export class NodeDaemon extends EventEmitter {
     message: SessionArchiveRequest,
     result: SessionArchiveResult,
   ): void {
-    this.relay.send({
-      type: 'session_archive_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId: message.requestId,
-      sessionId: message.sessionId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('session_archive_response', {
+        requestId: message.requestId,
+        sessionId: message.sessionId,
+        result,
+      }),
+    );
   }
 
   /**
@@ -5575,13 +5520,7 @@ export class NodeDaemon extends EventEmitter {
     promptId: string,
     result: PromptInjectSendResult,
   ): void {
-    this.relay.send({
-      type: 'prompt_inject_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      promptId,
-      result,
-    });
+    this.relay.send(withEnvelope('prompt_inject_result', { sessionId, promptId, result }));
   }
 
   /**
@@ -5785,13 +5724,7 @@ export class NodeDaemon extends EventEmitter {
     category: string,
     result: ConfigOptionSetResult,
   ): void {
-    this.relay.send({
-      type: 'config_option_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      category,
-      result,
-    });
+    this.relay.send(withEnvelope('config_option_result', { sessionId, category, result }));
   }
 
   private async decryptPromptInject(message: PromptInjectV1): Promise<PromptPayload> {
@@ -5930,12 +5863,7 @@ export class NodeDaemon extends EventEmitter {
   private sendAttentionHint(sessionId: string, status: AttentionStatus): void {
     const hintClass = attentionHintClassForStatus(status);
     if (!hintClass) return;
-    this.relay.send({
-      type: 'attention_hint',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      class: hintClass,
-    });
+    this.relay.send(withEnvelope('attention_hint', { sessionId, class: hintClass }));
   }
 
   /**
@@ -5979,25 +5907,15 @@ export class NodeDaemon extends EventEmitter {
     };
     const key = await this.getSessionKey(bridge.session.id);
     const envelope = await sealJson(bridge.session.id, payload, key);
-    this.relay.send({
-      type: 'permission_request',
-      protocolVersion: PROTOCOL_V1,
-      sessionId: bridge.session.id,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('permission_request', { sessionId: bridge.session.id, requestId, envelope }),
+    );
   }
 
   private async sendFileEvent(sessionId: string, payload: FileEventPayloadV1): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'blob_ref',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      ref: payload.ref,
-      envelope,
-    });
+    this.relay.send(withEnvelope('blob_ref', { sessionId, ref: payload.ref, envelope }));
   }
 
   /**
@@ -6089,13 +6007,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'fs_list_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('fs_list_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6177,13 +6089,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'mcp_prompt_get_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('mcp_prompt_get_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6283,13 +6189,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'fs_read_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('fs_read_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6407,13 +6307,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'fs_write_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('fs_write_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6475,13 +6369,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_diff_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_diff_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6541,13 +6429,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_hunk_diff_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_hunk_diff_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6617,13 +6499,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_hunk_action_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_hunk_action_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6746,13 +6622,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_commit_draft_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_commit_draft_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -6823,13 +6693,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_commit_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_commit_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -7008,14 +6872,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getProjectKey(projectPath);
     const envelope = await sealJson(projectPath, payload, key);
-    this.relay.send({
-      type: 'tracker_snapshot_response',
-      protocolVersion: PROTOCOL_V1,
-      nodeId,
-      projectPath,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('tracker_snapshot_response', { nodeId, projectPath, requestId, envelope }),
+    );
   }
 
   /**
@@ -7197,14 +7056,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getProjectKey(projectPath);
     const envelope = await sealJson(projectPath, payload, key);
-    this.relay.send({
-      type: 'tracker_write_response',
-      protocolVersion: PROTOCOL_V1,
-      nodeId,
-      projectPath,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('tracker_write_response', { nodeId, projectPath, requestId, envelope }),
+    );
   }
 
   /**
@@ -7241,14 +7095,9 @@ export class NodeDaemon extends EventEmitter {
     projectPath: string,
     mode: TrackerMode | undefined,
   ): void {
-    this.relay.send({
-      type: 'tracker_mode_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      projectPath,
-      mode,
-    });
+    this.relay.send(
+      withEnvelope('tracker_mode_response', { requestId, nodeId: this.nodeId, projectPath, mode }),
+    );
   }
 
   /**
@@ -7386,13 +7235,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getTargetKey(targetId);
     const envelope = await sealJson(targetId, payload, key);
-    this.relay.send({
-      type: 'target_fs_list_response',
-      protocolVersion: PROTOCOL_V1,
-      targetId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('target_fs_list_response', { targetId, requestId, envelope }));
   }
 
   /**
@@ -7463,13 +7306,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getTargetKey(targetId);
     const envelope = await sealJson(targetId, { result }, key);
-    this.relay.send({
-      type: 'custom_agent_probe_response',
-      protocolVersion: PROTOCOL_V1,
-      targetId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('custom_agent_probe_response', { targetId, requestId, envelope }));
   }
 
   /**
@@ -7503,13 +7340,9 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendSshDiscoveryResponse(requestId: string, result: SshDiscoveryResultV1): void {
-    this.relay.send({
-      type: 'ssh_discovery_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('ssh_discovery_response', { requestId, nodeId: this.nodeId, result }),
+    );
   }
 
   /**
@@ -7543,27 +7376,23 @@ export class NodeDaemon extends EventEmitter {
         clientId: this.githubConnectClientId,
         signal: controller.signal,
         onUserCode: (info) => {
-          this.relay.send({
-            type: 'github_connect_device_code',
-            protocolVersion: PROTOCOL_V1,
-            requestId: message.requestId,
-            nodeId: this.nodeId,
-            userCode: info.userCode,
-            verificationUri: info.verificationUri,
-            ...(info.verificationUriComplete
-              ? { verificationUriComplete: info.verificationUriComplete }
-              : {}),
-            expiresInSeconds: info.expiresInSeconds,
-            intervalSeconds: info.intervalSeconds,
-          });
+          this.relay.send(
+            withEnvelope('github_connect_device_code', {
+              requestId: message.requestId,
+              nodeId: this.nodeId,
+              userCode: info.userCode,
+              verificationUri: info.verificationUri,
+              ...(info.verificationUriComplete
+                ? { verificationUriComplete: info.verificationUriComplete }
+                : {}),
+              expiresInSeconds: info.expiresInSeconds,
+              intervalSeconds: info.intervalSeconds,
+            }),
+          );
         },
       })
       .then((account) => {
-        this.relay.send({
-          type: 'connected_account_announce',
-          protocolVersion: PROTOCOL_V1,
-          account,
-        });
+        this.relay.send(withEnvelope('connected_account_announce', { account }));
         this.sendGithubConnectResult(message.requestId, { outcome: 'success', account });
       })
       .catch((error: unknown) => {
@@ -7580,13 +7409,9 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendGithubConnectResult(requestId: string, result: GithubConnectOutcome): void {
-    this.relay.send({
-      type: 'github_connect_result',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('github_connect_result', { requestId, nodeId: this.nodeId, result }),
+    );
   }
 
   /**
@@ -7600,11 +7425,7 @@ export class NodeDaemon extends EventEmitter {
     this.jiraConnectService
       .connect({ siteUrl: message.siteUrl, email: message.email, apiToken: message.apiToken })
       .then((account) => {
-        this.relay.send({
-          type: 'connected_account_announce',
-          protocolVersion: PROTOCOL_V1,
-          account,
-        });
+        this.relay.send(withEnvelope('connected_account_announce', { account }));
         this.sendJiraConnectResponse(message.requestId, { outcome: 'success', account });
       })
       .catch((error: unknown) => {
@@ -7614,13 +7435,9 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendJiraConnectResponse(requestId: string, result: JiraConnectOutcome): void {
-    this.relay.send({
-      type: 'jira_connect_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('jira_connect_response', { requestId, nodeId: this.nodeId, result }),
+    );
   }
 
   /**
@@ -7640,11 +7457,7 @@ export class NodeDaemon extends EventEmitter {
     this.githubConnectService
       .connectWithToken({ token: message.token, host: message.host })
       .then(({ account, accessibleRepositories, accessibleRepositoriesTruncated }) => {
-        this.relay.send({
-          type: 'connected_account_announce',
-          protocolVersion: PROTOCOL_V1,
-          account,
-        });
+        this.relay.send(withEnvelope('connected_account_announce', { account }));
         this.sendGithubPatConnectResponse(message.requestId, {
           outcome: 'success',
           account,
@@ -7661,13 +7474,9 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendGithubPatConnectResponse(requestId: string, result: GithubPatConnectOutcome): void {
-    this.relay.send({
-      type: 'github_pat_connect_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('github_pat_connect_response', { requestId, nodeId: this.nodeId, result }),
+    );
   }
 
   /**
@@ -7693,11 +7502,9 @@ export class NodeDaemon extends EventEmitter {
         if (result.outcome === 'success') {
           for (const entry of result.entries) {
             if (entry.outcome === 'imported') {
-              this.relay.send({
-                type: 'connected_account_announce',
-                protocolVersion: PROTOCOL_V1,
-                account: entry.account,
-              });
+              this.relay.send(
+                withEnvelope('connected_account_announce', { account: entry.account }),
+              );
             }
           }
         }
@@ -7713,13 +7520,9 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendGithubCliImportResponse(requestId: string, result: GithubCliImportOutcome): void {
-    this.relay.send({
-      type: 'github_cli_import_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('github_cli_import_response', { requestId, nodeId: this.nodeId, result }),
+    );
   }
 
   /**
@@ -7751,26 +7554,26 @@ export class NodeDaemon extends EventEmitter {
             );
     deletion
       .then(() => {
-        this.relay.send({
-          type: 'connected_account_disconnect_response',
-          protocolVersion: PROTOCOL_V1,
-          requestId: message.requestId,
-          nodeId: this.nodeId,
-          accountId: message.accountId,
-          outcome: 'ok',
-        });
+        this.relay.send(
+          withEnvelope('connected_account_disconnect_response', {
+            requestId: message.requestId,
+            nodeId: this.nodeId,
+            accountId: message.accountId,
+            outcome: 'ok',
+          }),
+        );
       })
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
-        this.relay.send({
-          type: 'connected_account_disconnect_response',
-          protocolVersion: PROTOCOL_V1,
-          requestId: message.requestId,
-          nodeId: this.nodeId,
-          accountId: message.accountId,
-          outcome: 'error',
-          message: detail,
-        });
+        this.relay.send(
+          withEnvelope('connected_account_disconnect_response', {
+            requestId: message.requestId,
+            nodeId: this.nodeId,
+            accountId: message.accountId,
+            outcome: 'error',
+            message: detail,
+          }),
+        );
       });
   }
 
@@ -7805,14 +7608,14 @@ export class NodeDaemon extends EventEmitter {
     projectPath: string,
     pins: AccountPinMap,
   ): void {
-    this.relay.send({
-      type: 'account_pin_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      projectPath,
-      pins: toWireAccountPinMap(pins),
-    });
+    this.relay.send(
+      withEnvelope('account_pin_response', {
+        requestId,
+        nodeId: this.nodeId,
+        projectPath,
+        pins: toWireAccountPinMap(pins),
+      }),
+    );
   }
 
   /**
@@ -7859,13 +7662,9 @@ export class NodeDaemon extends EventEmitter {
   }
 
   private sendAccountPinResolveResponse(requestId: string, result: AccountPinResolveOutcome): void {
-    this.relay.send({
-      type: 'account_pin_resolve_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId,
-      nodeId: this.nodeId,
-      result,
-    });
+    this.relay.send(
+      withEnvelope('account_pin_resolve_response', { requestId, nodeId: this.nodeId, result }),
+    );
   }
 
   /**
@@ -7881,14 +7680,14 @@ export class NodeDaemon extends EventEmitter {
    */
   private handleAccountPinScanRequest(message: AccountPinScanRequest): void {
     const affected = scanPinsForAccount(this.accountPinStore.allProjectPins(), message.accountId);
-    this.relay.send({
-      type: 'account_pin_scan_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId: message.requestId,
-      nodeId: this.nodeId,
-      accountId: message.accountId,
-      affected,
-    });
+    this.relay.send(
+      withEnvelope('account_pin_scan_response', {
+        requestId: message.requestId,
+        nodeId: this.nodeId,
+        accountId: message.accountId,
+        affected,
+      }),
+    );
   }
 
   /**
@@ -7952,14 +7751,14 @@ export class NodeDaemon extends EventEmitter {
     outcome:
       { ok: true; result: DecommissionResultV1; message: string } | { ok: false; message: string },
   ): void {
-    this.relay.send({
-      type: 'decommission_target_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId: message.requestId,
-      nodeId: this.nodeId,
-      targetId: message.targetId,
-      ...outcome,
-    });
+    this.relay.send(
+      withEnvelope('decommission_target_response', {
+        requestId: message.requestId,
+        nodeId: this.nodeId,
+        targetId: message.targetId,
+        ...outcome,
+      }),
+    );
   }
 
   /**
@@ -8057,14 +7856,14 @@ export class NodeDaemon extends EventEmitter {
       message: string;
     },
   ): void {
-    this.relay.send({
-      type: 'target_update_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId: message.requestId,
-      nodeId: this.nodeId,
-      targetId: message.targetId,
-      ...outcome,
-    });
+    this.relay.send(
+      withEnvelope('target_update_response', {
+        requestId: message.requestId,
+        nodeId: this.nodeId,
+        targetId: message.targetId,
+        ...outcome,
+      }),
+    );
   }
 
   /**
@@ -8275,14 +8074,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: TerminalDataPayloadV1 = { data: Buffer.from(chunk).toString('base64') };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'terminal_output',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      terminalId,
-      seq,
-      envelope,
-    });
+    this.relay.send(withEnvelope('terminal_output', { sessionId, terminalId, seq, envelope }));
   }
 
   private async sendTerminalOpened(
@@ -8293,14 +8085,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'terminal_opened',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      terminalId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('terminal_opened', { sessionId, terminalId, requestId, envelope }),
+    );
   }
 
   private async sendTerminalClosed(
@@ -8310,13 +8097,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'terminal_closed',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      terminalId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('terminal_closed', { sessionId, terminalId, envelope }));
   }
 
   /**
@@ -8460,13 +8241,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'permission_policy_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('permission_policy_result', { sessionId, requestId, envelope }));
   }
 
   /** A client asked for a session's current project and session spend caps (SPEC §7.16; issue #251). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs only the session record and `projectPath`, never the live agent, mirrors `handlePermissionPolicyGet`. */
@@ -8562,13 +8337,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'spend_cap_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('spend_cap_result', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -8607,14 +8376,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getProjectKey(projectPath);
     const envelope = await sealJson(projectPath, payload, key);
-    this.relay.send({
-      type: 'spend_report_response',
-      protocolVersion: PROTOCOL_V1,
-      nodeId,
-      projectPath,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('spend_report_response', { nodeId, projectPath, requestId, envelope }),
+    );
   }
 
   private async decryptCheckpointCreate(
@@ -8656,13 +8420,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'checkpoint_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('checkpoint_result', { sessionId, requestId, envelope }));
   }
 
   /** A client asked for every checkpoint taken so far for a session (issue #603). Ignored if `sessionId` isn't one of this node's sessions at all — needs only `worktreePath`, never the live agent, mirrors `handleTestRunnerConfigGet`. No envelope on the request, so no decrypt step. */
@@ -8706,13 +8464,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'checkpoint_list_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('checkpoint_list_result', { sessionId, requestId, envelope }));
   }
 
   /** A client asked what restoring to `checkpointId` would do, with no side effects (issue #603's "surface `RestorePreview` to the client before a rollback executes"). Ignored if `sessionId` isn't one of this node's sessions at all. `checkpointId` travels as a plain field (no envelope), mirroring `handleTerminalClose`. */
@@ -8768,13 +8520,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'checkpoint_restore_preview_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('checkpoint_restore_preview_result', { sessionId, requestId, envelope }),
+    );
   }
 
   /**
@@ -8894,13 +8642,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'checkpoint_restore_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('checkpoint_restore_result', { sessionId, requestId, envelope }));
   }
 
   /** `session_rewind`'s own refusal while `resolveSessionRewind` (below) needs a live `AgentSession` to read the transcript from, but this session was reloaded `'disconnected'` after a node restart (issue #702's real state) — see `@loombox/protocol`'s `rewind.ts` module doc comment for why this is a real, contained refusal rather than issue #706's "revive a disconnected session" scope. */
@@ -9015,13 +8757,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'session_rewind_preview_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('session_rewind_preview_result', { sessionId, requestId, envelope }),
+    );
   }
 
   /**
@@ -9149,13 +8887,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'session_rewind_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('session_rewind_result', { sessionId, requestId, envelope }));
   }
 
   /** A client asked for its account's saved agent-profile catalog (design spec `2026-08-05-zed-parity-decisions.md`'s D3-4; issue #752). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs no live agent, mirrors `handlePermissionPolicyGet`. */
@@ -9207,13 +8939,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'agent_profile_list_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('agent_profile_list_result', { sessionId, requestId, envelope }));
   }
 
   /** A client asked which profile is currently active for a session (issue #752). Ignored if `sessionId` isn't one of this node's sessions. Reads {@link sessionProfiles} — in-memory only, so a session reloaded `'disconnected'` after a restart reports unrestricted until it's live again and re-selected. */
@@ -9286,13 +9012,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'agent_profile_session_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('agent_profile_session_result', { sessionId, requestId, envelope }),
+    );
   }
 
   private sendAgentProfileSessionError(
@@ -9304,13 +9026,9 @@ export class NodeDaemon extends EventEmitter {
     this.getSessionKey(sessionId)
       .then((key) => sealJson(sessionId, payload, key))
       .then((envelope) => {
-        this.relay.send({
-          type: 'agent_profile_session_result',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.relay.send(
+          withEnvelope('agent_profile_session_result', { sessionId, requestId, envelope }),
+        );
       })
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
@@ -9350,12 +9068,7 @@ export class NodeDaemon extends EventEmitter {
     };
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'permission_policy_violation',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('permission_policy_violation', { sessionId, envelope }));
   }
 
   /**
@@ -9393,12 +9106,7 @@ export class NodeDaemon extends EventEmitter {
     };
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, violationPayload, key);
-    this.relay.send({
-      type: 'permission_policy_violation',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('permission_policy_violation', { sessionId, envelope }));
   }
 
   /** A client asked for a session's project's saved test/lint/build commands (SPEC §7.15; issue #245). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs only `projectPath` (issue #702), never the live agent, so this keeps working for a `'disconnected'` session exactly like a live one. */
@@ -9452,13 +9160,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'test_runner_config_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('test_runner_config_result', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -9499,13 +9201,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'test_runner_config_detected',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('test_runner_config_detected', { sessionId, requestId, envelope }),
+    );
   }
 
   /** Maps a `pr-open.ts` rejection to `{ category, reason }` for `pr_open_preview_result`/`pr_open_result`'s own `outcome: 'failure'` shape — `PrOpenError`'s own named `category` passes straight through; anything else (an unexpected throw this module didn't anticipate) becomes `'create_failed'` with the raw message, so a caller here never has to handle a third, uncategorized shape. */
@@ -9561,13 +9259,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'pr_open_preview_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('pr_open_preview_result', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -9661,13 +9353,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'pr_open_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('pr_open_result', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -9755,12 +9441,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: CiCheckStatusPayloadV1 = { status: state };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'ci_check_status',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('ci_check_status', { sessionId, envelope }));
   }
 
   /**
@@ -9845,12 +9526,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: TrackerConnectivityStatusPayloadV1 = { status: state };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'tracker_connectivity_status',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('tracker_connectivity_status', { sessionId, envelope }));
   }
 
   /**
@@ -9867,12 +9543,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: CiAutoIterateStatusPayloadV1 = { state };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'ci_auto_iterate_status',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('ci_auto_iterate_status', { sessionId, envelope }));
   }
 
   /**
@@ -10146,14 +9817,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'run_started',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      runId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('run_started', { sessionId, runId, requestId, envelope }));
   }
 
   /** Chains this run's `run_output` sends (mirrors `queueTerminalOutput`) so concurrent encrypts can never resolve, and so get sent to the relay, out of the order their chunks arrived in. */
@@ -10175,13 +9839,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: RunOutputPayloadV1 = { data: Buffer.from(chunk).toString('base64') };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'run_output',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      runId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('run_output', { sessionId, runId, envelope }));
   }
 
   private async sendRunExit(
@@ -10191,7 +9849,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({ type: 'run_exit', protocolVersion: PROTOCOL_V1, sessionId, runId, envelope });
+    this.relay.send(withEnvelope('run_exit', { sessionId, runId, envelope }));
   }
 
   /**
@@ -10654,13 +10312,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_branch_create_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_branch_create_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitBranchListResponse(
@@ -10670,13 +10322,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_branch_list_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_branch_list_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitBranchMergeAbortResponse(
@@ -10686,13 +10332,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_branch_merge_abort_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('git_branch_merge_abort_response', { sessionId, requestId, envelope }),
+    );
   }
 
   private async sendGitBranchMergeResponse(
@@ -10702,13 +10344,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_branch_merge_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_branch_merge_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitBranchSwitchResponse(
@@ -10718,13 +10354,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_branch_switch_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_branch_switch_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitStashDropResponse(
@@ -10734,13 +10364,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_stash_drop_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_stash_drop_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitStashListResponse(
@@ -10750,13 +10374,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_stash_list_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_stash_list_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitStashPopResponse(
@@ -10766,13 +10384,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_stash_pop_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_stash_pop_response', { sessionId, requestId, envelope }));
   }
 
   private async sendGitStashSaveResponse(
@@ -10782,13 +10394,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_stash_save_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_stash_save_response', { sessionId, requestId, envelope }));
   }
 
   private async stashDropForBridge(
@@ -11013,13 +10619,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'agent_instructions_get_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('agent_instructions_get_response', { sessionId, requestId, envelope }),
+    );
   }
 
   private async sendAgentInstructionsSetResponse(
@@ -11029,13 +10631,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'agent_instructions_set_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('agent_instructions_set_response', { sessionId, requestId, envelope }),
+    );
   }
 
   // -------------------------------------------------------------------
@@ -11106,7 +10704,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: RunStatusPayloadV1 = { status };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({ type: 'run_status', protocolVersion: PROTOCOL_V1, sessionId, envelope });
+    this.relay.send(withEnvelope('run_status', { sessionId, envelope }));
   }
 
   /**
@@ -11236,13 +10834,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_push_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_push_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -11321,13 +10913,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getTargetKey(targetId);
     const envelope = await sealJson(targetId, payload, key);
-    this.relay.send({
-      type: 'session_template_list_result',
-      protocolVersion: PROTOCOL_V1,
-      targetId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('session_template_list_result', { targetId, requestId, envelope }),
+    );
   }
 
   /**
@@ -11406,13 +10994,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_graph_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_graph_response', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -11581,13 +11163,13 @@ export class NodeDaemon extends EventEmitter {
     message: NodeSelfUpdateApplyRequest,
     outcome: { ok: boolean; fromVersion: string; toVersion?: string; message: string },
   ): void {
-    this.relay.send({
-      type: 'node_self_update_apply_response',
-      protocolVersion: PROTOCOL_V1,
-      requestId: message.requestId,
-      nodeId: this.nodeId,
-      ...outcome,
-    });
+    this.relay.send(
+      withEnvelope('node_self_update_apply_response', {
+        requestId: message.requestId,
+        nodeId: this.nodeId,
+        ...outcome,
+      }),
+    );
   }
 
   /**
@@ -11597,15 +11179,15 @@ export class NodeDaemon extends EventEmitter {
    * applying one does ({@link handleNodeSelfUpdateApplyRequest}).
    */
   private pushNodeSelfUpdateStatus(summary: NodeSelfUpdateSummary): void {
-    this.relay.send({
-      type: 'node_self_update_status',
-      protocolVersion: PROTOCOL_V1,
-      nodeId: this.nodeId,
-      status: summary.status,
-      currentVersion: summary.currentVersion,
-      ...(summary.latestVersion ? { latestVersion: summary.latestVersion } : {}),
-      checkedAt: summary.checkedAt,
-    });
+    this.relay.send(
+      withEnvelope('node_self_update_status', {
+        nodeId: this.nodeId,
+        status: summary.status,
+        currentVersion: summary.currentVersion,
+        ...(summary.latestVersion ? { latestVersion: summary.latestVersion } : {}),
+        checkedAt: summary.checkedAt,
+      }),
+    );
   }
 
   /** Re-pushes the last recorded self-update check on every fresh relay `'open'` (including reconnects) — mirrors `buildIdentity`'s own "sent again on every `initialize`" contract, so a client reconnecting to a relay that dropped its prior connection state doesn't wait for this node's next scheduled periodic check to learn what it already knew. A no-op before the first check ever completes. */
@@ -11642,12 +11224,7 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const payload: ReviewCommentStatusPayloadV1 = { status: state };
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'review_comment_status',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('review_comment_status', { sessionId, envelope }));
   }
 
   /**
@@ -11711,13 +11288,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'pr_merge_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('pr_merge_result', { sessionId, requestId, envelope }));
   }
 
   /**
@@ -11869,13 +11440,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_diff_explain_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('git_diff_explain_response', { sessionId, requestId, envelope }));
   }
 
   /** A client asked for its account's saved prompt/snippet catalog (SPEC §7.18; issue #261). Ignored if `sessionId` isn't one of this node's sessions at all ({@link resolveSessionRouting}'s guard) — needs no live agent, mirrors `handleAgentProfileListGet`. */
@@ -11926,13 +11491,7 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'snippet_list_result',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(withEnvelope('snippet_list_result', { sessionId, requestId, envelope }));
   }
 }
 
