@@ -92,16 +92,14 @@ function splitConflictSegments(content: string): ConflictSegment[] {
 export function parseConflictMarkers(content: string): GitConflictHunkV1[] {
   const hunks = splitConflictSegments(content)
     .filter((segment) => segment.kind === 'hunk')
-    .map(
-      (segment, index): GitConflictHunkV1 => ({
-        index,
-        oursLabel: segment.oursLabel,
-        theirsLabel: segment.theirsLabel,
-        oursText: segment.oursText,
-        theirsText: segment.theirsText,
-        baseText: segment.baseText,
-      }),
-    );
+    .map((segment, index): GitConflictHunkV1 => ({
+      index,
+      oursLabel: segment.oursLabel,
+      theirsLabel: segment.theirsLabel,
+      oursText: segment.oursText,
+      theirsText: segment.theirsText,
+      baseText: segment.baseText,
+    }));
   if (hunks.length === 0) {
     throw new GitConflictResolveError(
       'No conflict markers found — this file is not currently conflicted.',

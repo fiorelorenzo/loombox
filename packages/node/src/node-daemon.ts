@@ -12094,7 +12094,10 @@ export class NodeDaemon extends EventEmitter {
    * see this file's own class doc comment on why that trade-off is
    * deliberate here.
    */
-  private async resolveConflictHunkViaAgent(bridge: SessionBridge, promptText: string): Promise<string> {
+  private async resolveConflictHunkViaAgent(
+    bridge: SessionBridge,
+    promptText: string,
+  ): Promise<string> {
     const messageTextById = new Map<string, string>();
     let lastMessageId: string | undefined;
     const onTranscriptUpdate = (update: AcpTranscriptUpdate): void => {

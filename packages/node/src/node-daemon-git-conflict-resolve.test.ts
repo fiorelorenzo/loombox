@@ -106,7 +106,11 @@ async function phoneSeal(
   };
 }
 
-async function phoneOpen<T>(sessionId: string, wire: EncryptedEnvelope, key: CryptoKey): Promise<T> {
+async function phoneOpen<T>(
+  sessionId: string,
+  wire: EncryptedEnvelope,
+  key: CryptoKey,
+): Promise<T> {
   const envelope = {
     resourceId: wire.resourceId,
     iv: fromBase64(wire.iv),
@@ -250,7 +254,7 @@ async function makeConflictingProject(): Promise<string> {
 }
 
 describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #237)', () => {
-  it("proposes a resolution for a REAL git-merge conflict — hunks/resolution/origin/baseHash are all real and derived — then applies it via a real fs_write_request, leaving the on-disk file exactly the resolved content with no markers left", async () => {
+  it('proposes a resolution for a REAL git-merge conflict — hunks/resolution/origin/baseHash are all real and derived — then applies it via a real fs_write_request, leaving the on-disk file exactly the resolved content with no markers left', async () => {
     const amk = generateAmk();
     const accountId = 'acct-git-conflict-resolve-1';
     const projectPath = await makeConflictingProject();
@@ -320,9 +324,15 @@ describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #
     if (payload.outcome !== 'ok') return;
     expect(payload.path).toBe('notes.txt');
     expect(payload.hunks).toHaveLength(1);
-    expect(payload.hunks[0]).toMatchObject({ oursText: 'MAIN-EDIT\n', theirsText: 'FEATURE-EDIT\n' });
+    expect(payload.hunks[0]).toMatchObject({
+      oursText: 'MAIN-EDIT\n',
+      theirsText: 'FEATURE-EDIT\n',
+    });
     expect(payload.resolution).toHaveLength(1);
-    expect(payload.resolution[0]).toMatchObject({ origin: 'rewritten', resolvedText: 'Hello world' });
+    expect(payload.resolution[0]).toMatchObject({
+      origin: 'rewritten',
+      resolvedText: 'Hello world',
+    });
     expect(payload.resolvedContent).toBe('one\nHello world\nthree\n');
     expect(payload.baseHash).toBeTruthy();
 
@@ -365,7 +375,7 @@ describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #
     expect(onDiskAfterApply).not.toContain('<<<<<<<');
   });
 
-  it("declining leaves the file exactly as it was: never calling fs_write_request after a proposal means the real conflict markers are still on disk, byte for byte", async () => {
+  it('declining leaves the file exactly as it was: never calling fs_write_request after a proposal means the real conflict markers are still on disk, byte for byte', async () => {
     const amk = generateAmk();
     const accountId = 'acct-git-conflict-resolve-decline';
     const projectPath = await makeConflictingProject();

@@ -93,9 +93,7 @@ export type GitConflictResolutionHunkV1 = z.infer<typeof gitConflictResolutionHu
 export const gitConflictResolveRequestPayloadV1 = z.object({
   path: z.string().min(1),
 });
-export type GitConflictResolveRequestPayloadV1 = z.infer<
-  typeof gitConflictResolveRequestPayloadV1
->;
+export type GitConflictResolveRequestPayloadV1 = z.infer<typeof gitConflictResolveRequestPayloadV1>;
 
 /** Parses and validates a decrypted `git_conflict_resolve_request` payload, throwing on an invalid one. */
 export function parseGitConflictResolveRequestPayloadV1(
