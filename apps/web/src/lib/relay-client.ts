@@ -134,6 +134,8 @@ import {
   type GitCommitRequestPayloadV1,
   type GitCommitResponse,
   type GitCommitResponsePayloadV1,
+  type GitConflictResolveResponse,
+  type GitConflictResolveResponsePayloadV1,
   type GitDiffResponse,
   type GitDiffResponsePayloadV1,
   type GitGraphRequestPayloadV1,
@@ -1746,6 +1748,14 @@ export class RelayClient {
   private readonly pendingGitCommitRequests = new Map<
     string,
     { resolve: (payload: GitCommitResponsePayloadV1) => void; reject: (error: Error) => void }
+  >();
+  /** requestId -> the pending {@link requestGitConflictResolve} call it belongs to (SPEC §7.6; issue #237) — the exact same shape as {@link pendingGitHunkActionRequests} above (enveloped, one-shot). `git_conflict_resolve_response` is fanned out the same way, so a requestId not in this map means the reply belongs to a sibling device's own request. */
+  private readonly pendingGitConflictResolveRequests = new Map<
+    string,
+    {
+      resolve: (payload: GitConflictResolveResponsePayloadV1) => void;
+      reject: (error: Error) => void;
+    }
   >();
   /** Backs {@link trackerSnapshotFor} (SPEC §7.10; issue #212, #697) — one reactive `TrackerSnapshotState` per project (`projectPath`), not per session: a project's tracker outlives any one session that reads it. */
   private readonly trackerSnapshots = new Map<string, Writable<TrackerSnapshotState>>();
@@ -4831,6 +4841,58 @@ export class RelayClient {
   }
 
   /**
+   * Proposes an AI resolution for every conflicted hunk in `path` (SPEC
+   * §7.6; issue #237) — {@link applyGitHunkAction}'s own sibling for the
+   * enveloped-request shape (`path` is real session content), generated
+   * node-side by prompting the session's own live agent, one turn per
+   * conflicted hunk, never a new, separately-configured provider call
+   * (the same "must go through the session's existing agent" constraint
+   * issue #233's commit draft already enforces). Read-only: nothing is
+   * written to disk by this call — a caller applies the proposal (as
+   * returned or hand-edited) via a plain {@link writeFile} call using the
+   * response's own `baseHash`, issue #205's conflict-safe write reused
+   * rather than reinvented. Resolves with the node's own
+   * `ok`/`too_large`/`error` outcome either way; only REJECTS for a
+   * genuinely unusable call — no open connection, an unknown session, or
+   * a timeout with no response at all — mirroring {@link
+   * applyGitHunkAction}'s identical contract. A caller re-issues this (a
+   * fresh `requestId`) to regenerate after the file changes underneath
+   * (e.g. after a {@link writeFile} `'conflict'` reload).
+   */
+  async requestGitConflictResolve(
+    sessionId: string,
+    params: { path: string },
+    timeoutMs = 120_000,
+  ): Promise<GitConflictResolveResponsePayloadV1> {
+    if (!this.isSocketOpen()) {
+      return Promise.reject(
+        new Error('RelayClient: cannot request a conflict resolution, no open connection'),
+      );
+    }
+    if (!get(this.sessionsStore).some((session) => session.id === sessionId)) {
+      return Promise.reject(new Error(`RelayClient: unknown session ${sessionId}`));
+    }
+    this.ensureSubscribed(sessionId);
+    const envelope = await this.envelopeCrypto.seal('session', sessionId, sessionId, params);
+    const requestId = generateId('gitconflictresolve');
+    return this.sendTrackedRequest(
+      this.pendingGitConflictResolveRequests,
+      requestId,
+      () => {
+        this.send({
+          type: 'git_conflict_resolve_request',
+          protocolVersion: PROTOCOL_V1,
+          sessionId,
+          requestId,
+          envelope,
+        });
+      },
+      timeoutMs,
+      'RelayClient: timed out waiting for git_conflict_resolve_response',
+    );
+  }
+
+  /**
    * Drafts a commit message for the session's currently staged diff
    * (SPEC §7.6; issue #233) — generated node-side by prompting the
    * session's own live agent (`@loombox/protocol`'s `git-commit.ts` own
@@ -6403,6 +6465,9 @@ export class RelayClient {
       case 'git_commit_response':
         this.handleGitCommitResponse(message);
         return;
+      case 'git_conflict_resolve_response':
+        this.handleGitConflictResolveResponse(message);
+        return;
       case 'tracker_snapshot_response':
         this.handleTrackerSnapshotResponse(message);
         return;
@@ -7018,6 +7083,33 @@ export class RelayClient {
 
     this.envelopeCrypto
       .open<GitCommitResponsePayloadV1>(
+        'session',
+        message.sessionId,
+        message.sessionId,
+        message.envelope,
+      )
+      .then((payload) => pending.resolve(payload))
+      .catch((error: unknown) => {
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      });
+  }
+
+  /**
+   * The owning node's reply to one of this client's own {@link
+   * requestGitConflictResolve} calls (issue #237). `git_conflict_resolve_response`
+   * is fanned out to every client subscribed to the session exactly like
+   * `git_commit_response`, so a `requestId` not in {@link
+   * pendingGitConflictResolveRequests} means this reply is to a sibling
+   * device's own request — silently ignored, exactly like {@link
+   * handleGitCommitResponse}'s identical sibling-device awareness.
+   */
+  private handleGitConflictResolveResponse(message: GitConflictResolveResponse): void {
+    const pending = this.pendingGitConflictResolveRequests.get(message.requestId);
+    if (!pending) return;
+    this.pendingGitConflictResolveRequests.delete(message.requestId);
+
+    this.envelopeCrypto
+      .open<GitConflictResolveResponsePayloadV1>(
         'session',
         message.sessionId,
         message.sessionId,

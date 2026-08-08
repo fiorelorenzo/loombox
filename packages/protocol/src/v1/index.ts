@@ -322,6 +322,29 @@ export {
 } from './fs';
 
 export type {
+  GitConflictHunkOriginV1,
+  GitConflictHunkV1,
+  GitConflictResolutionHunkV1,
+  GitConflictResolveRequest,
+  GitConflictResolveRequestPayloadV1,
+  GitConflictResolveResponse,
+  GitConflictResolveResponsePayloadV1,
+} from './git-conflict-resolve';
+export {
+  gitConflictHunkOriginV1,
+  gitConflictHunkV1,
+  gitConflictResolutionHunkV1,
+  gitConflictResolveRequest,
+  gitConflictResolveRequestPayloadV1,
+  gitConflictResolveResponse,
+  gitConflictResolveResponsePayloadV1,
+  parseGitConflictResolveRequestPayloadV1,
+  parseGitConflictResolveResponsePayloadV1,
+  safeParseGitConflictResolveRequestPayloadV1,
+  safeParseGitConflictResolveResponsePayloadV1,
+} from './git-conflict-resolve';
+
+export type {
   GitDiffExplainHunkSideV1,
   GitDiffExplainRequest,
   GitDiffExplainRequestPayloadV1,
@@ -1784,6 +1807,15 @@ import {
   gitDiffResponsePayloadV1,
 } from './git-diff';
 import {
+  gitConflictHunkOriginV1,
+  gitConflictHunkV1,
+  gitConflictResolutionHunkV1,
+  gitConflictResolveRequest,
+  gitConflictResolveRequestPayloadV1,
+  gitConflictResolveResponse,
+  gitConflictResolveResponsePayloadV1,
+} from './git-conflict-resolve';
+import {
   gitDiffExplainHunkSideV1,
   gitDiffExplainRequest,
   gitDiffExplainRequestPayloadV1,
@@ -2229,6 +2261,13 @@ export const schemasV1 = {
   gitDiffRequest,
   gitDiffResponse,
   gitDiffResponsePayloadV1,
+  gitConflictHunkOriginV1,
+  gitConflictHunkV1,
+  gitConflictResolutionHunkV1,
+  gitConflictResolveRequest,
+  gitConflictResolveRequestPayloadV1,
+  gitConflictResolveResponse,
+  gitConflictResolveResponsePayloadV1,
   gitDiffExplainHunkSideV1,
   gitDiffExplainRequest,
   gitDiffExplainRequestPayloadV1,
