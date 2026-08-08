@@ -284,7 +284,7 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   node_identity_conflict: {
     routed: 'not-routed',
     reason:
-      "relay-constructed notice sent by `claimNodeRouting` to whichever connection just lost a nodeConnectionsByNodeId claim (issue #933) — never legitimately arrives inbound.",
+      'relay-constructed notice sent by `claimNodeRouting` to whichever connection just lost a nodeConnectionsByNodeId claim (issue #933) — never legitimately arrives inbound.',
   },
   ping: { routed: 'device' },
   pong: {

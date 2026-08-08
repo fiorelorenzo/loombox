@@ -1009,7 +1009,12 @@ describe('TargetStatusView identity conflict (issue #933)', () => {
 
   it('shows an "Identity conflict" badge only for a node the relay just fought over, silent for every other row', () => {
     render(TargetStatusView, {
-      props: { targets: IDENTITY_CONFLICT_TARGETS, loading: false, error: undefined, onRefresh: noop },
+      props: {
+        targets: IDENTITY_CONFLICT_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+      },
     });
     expect(screen.queryByTestId('target-identity-conflict-node_quiet:local')).toBeNull();
     expect(
@@ -1019,7 +1024,12 @@ describe('TargetStatusView identity conflict (issue #933)', () => {
 
   it('names the rival device and when it was rejected once the row is expanded, and shows nothing for a quiet row', async () => {
     render(TargetStatusView, {
-      props: { targets: IDENTITY_CONFLICT_TARGETS, loading: false, error: undefined, onRefresh: noop },
+      props: {
+        targets: IDENTITY_CONFLICT_TARGETS,
+        loading: false,
+        error: undefined,
+        onRefresh: noop,
+      },
     });
 
     await expandRow('node_quiet:local');

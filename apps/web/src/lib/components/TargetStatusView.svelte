@@ -672,7 +672,10 @@
               <div class="target-expansion" data-testid="target-expansion">
                 <p class="node-id font-mono">Node {target.nodeId}</p>
                 {#if target.identityConflict}
-                  <p class="identity-conflict-detail" data-testid={`target-identity-conflict-detail-${key}`}>
+                  <p
+                    class="identity-conflict-detail"
+                    data-testid={`target-identity-conflict-detail-${key}`}
+                  >
                     A different device ({target.identityConflict.rivalDeviceId}) tried to claim this
                     node's identity, {formatAbsoluteTimestamp(target.identityConflict.detectedAt)}.
                   </p>
