@@ -51,6 +51,7 @@ import {
   type LeaseReleaseResult,
   type LeaseRequest,
   type LeaseResult,
+  type NodeIdentityConflict,
   type McpPromptGetRequest,
   type McpPromptGetResponse,
   type NewDeviceBootstrapRequest,
@@ -211,6 +212,24 @@ async function waitUntil(condition: () => boolean, timeoutMs = 5000): Promise<vo
     setTimeout(check, 5);
   };
   check();
+  return promise;
+}
+
+/**
+ * A genuine real-time wait — the `waitUntil` exception above applies here
+ * too, but there is no `condition` to poll instead: `target_announce` is
+ * fire-and-forget (no ack), and each connection's frames are processed on
+ * their OWN independently-chained `processing` promise (`relay.ts`'s own
+ * per-socket comment), so nothing observable from a test distinguishes
+ * "the relay hasn't processed this socket's announce yet" from "it has, and
+ * there's simply nothing else to check." Used only to order two real
+ * sockets' announces against each other before deliberately racing a
+ * second connection against the first's — the same reasoning
+ * `node-daemon-ssh.test.ts`'s own dual-node fixture already relies on.
+ */
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
   return promise;
 }
 
@@ -6205,6 +6224,113 @@ describe('relay v1', () => {
       expect(requesterReply).toEqual(response);
       const bystanderReply = (await nextMessage(bystander)) as unknown as SessionForkResponse;
       expect(bystanderReply).toEqual(response);
+    });
+  });
+
+  describe('nodeConnectionsByNodeId dual-claim resolution (issue #933, relay-side follow-up from #929)', () => {
+    it('a reconnect from the SAME device (same devicePublicKey) quietly takes over routing: the old connection is told and closed, no identityConflict is ever surfaced', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const original = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-reconnect',
+        authToken: 'acct_reconnect',
+        devicePublicKey: fakeBase64('same-device-key'),
+      });
+      const announce: TargetAnnounce = {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_reconnect',
+        targets: [makeTarget()],
+      };
+      send(original.socket, announce);
+      // Ensures the first announce has landed at the relay before the
+      // reconnect below races it — see `delay`'s own doc comment.
+      await delay(50);
+
+      const reconnected = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-reconnect',
+        authToken: 'acct_reconnect',
+        devicePublicKey: fakeBase64('same-device-key'),
+      });
+      send(reconnected.socket, announce);
+
+      const notice = (await nextMessage(original.socket)) as unknown as NodeIdentityConflict;
+      expect(notice.type).toBe('node_identity_conflict');
+      expect(notice.outcome).toBe('superseded');
+      const closeEvent = await waitForClose(original.socket);
+      expect(closeEvent.code).toBe(4410);
+
+      const client = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-reconnect',
+        authToken: 'acct_reconnect',
+      });
+      const listRequest: TargetListRequest = {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-1',
+      };
+      send(client.socket, listRequest);
+      const list = (await nextMessage(client.socket)) as unknown as TargetList;
+      expect(list.targets).toHaveLength(1);
+      expect(list.targets[0]?.reachable).toBe(true);
+      expect(list.targets[0]?.identityConflict).toBeUndefined();
+    });
+
+    it('a rival connection with a DIFFERENT devicePublicKey is refused and told why, and flags the survivor for a client to see', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const incumbent = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-incumbent',
+        authToken: 'acct_rival',
+        devicePublicKey: fakeBase64('incumbent-key'),
+      });
+      const announce: TargetAnnounce = {
+        type: 'target_announce',
+        protocolVersion: PROTOCOL_V1,
+        nodeId: 'node_rival',
+        targets: [makeTarget()],
+      };
+      send(incumbent.socket, announce);
+      await delay(50);
+
+      const rival = await initConnection(url, {
+        role: 'node',
+        deviceId: 'device-rival',
+        authToken: 'acct_rival',
+        devicePublicKey: fakeBase64('rival-key'),
+      });
+      send(rival.socket, announce);
+
+      const notice = (await nextMessage(rival.socket)) as unknown as NodeIdentityConflict;
+      expect(notice.type).toBe('node_identity_conflict');
+      expect(notice.outcome).toBe('rejected');
+      const closeEvent = await waitForClose(rival.socket);
+      expect(closeEvent.code).toBe(4409);
+
+      // The incumbent is never touched: still connected, still routing, and
+      // its target list is untouched by the rival's own (never-persisted)
+      // announce.
+      const client = await initConnection(url, {
+        role: 'client',
+        deviceId: 'client-rival',
+        authToken: 'acct_rival',
+      });
+      const listRequest: TargetListRequest = {
+        type: 'target_list_request',
+        protocolVersion: PROTOCOL_V1,
+        requestId: 'req-1',
+      };
+      send(client.socket, listRequest);
+      const list = (await nextMessage(client.socket)) as unknown as TargetList;
+      expect(list.targets).toHaveLength(1);
+      expect(list.targets[0]?.reachable).toBe(true);
+      expect(list.targets[0]?.identityConflict?.rivalDeviceId).toBe('device-rival');
     });
   });
 });

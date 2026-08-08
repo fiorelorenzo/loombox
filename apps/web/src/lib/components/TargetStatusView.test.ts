@@ -980,3 +980,53 @@ describe('TargetStatusView concurrency (issue #255)', () => {
     expect(screen.getByTestId(`target-concurrency-cap-${LOCAL_KEY}`).textContent).toBe('0/4');
   });
 });
+
+describe('TargetStatusView identity conflict (issue #933)', () => {
+  const IDENTITY_CONFLICT_TARGETS: TargetListEntry[] = [
+    {
+      nodeId: 'node_quiet',
+      targetId: 'local',
+      label: 'Quiet node',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      // No `identityConflict` at all — the overwhelming majority case,
+      // exactly like `nodeSelfUpdate`'s own "never checked" fixture above.
+    },
+    {
+      nodeId: 'node_fought_over',
+      targetId: 'local',
+      label: 'Contested node',
+      kind: 'local',
+      reachable: true,
+      providers: ['claude'],
+      identityConflict: {
+        rivalDeviceId: 'device-rival-1',
+        detectedAt: Date.UTC(2026, 6, 23, 12, 0, 0),
+      },
+    },
+  ];
+
+  it('shows an "Identity conflict" badge only for a node the relay just fought over, silent for every other row', () => {
+    render(TargetStatusView, {
+      props: { targets: IDENTITY_CONFLICT_TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+    expect(screen.queryByTestId('target-identity-conflict-node_quiet:local')).toBeNull();
+    expect(
+      screen.getByTestId('target-identity-conflict-node_fought_over:local').textContent?.trim(),
+    ).toBe('Identity conflict');
+  });
+
+  it('names the rival device and when it was rejected once the row is expanded, and shows nothing for a quiet row', async () => {
+    render(TargetStatusView, {
+      props: { targets: IDENTITY_CONFLICT_TARGETS, loading: false, error: undefined, onRefresh: noop },
+    });
+
+    await expandRow('node_quiet:local');
+    expect(screen.queryByTestId('target-identity-conflict-detail-node_quiet:local')).toBeNull();
+
+    await expandRow('node_fought_over:local');
+    const detail = screen.getByTestId('target-identity-conflict-detail-node_fought_over:local');
+    expect(detail.textContent).toContain('device-rival-1');
+  });
+});

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { buildIdentityV1, PROTOCOL_V1 } from './handshake';
+import { nodeIdentityConflictWarning } from './node-identity-conflict';
 import { nodeSelfUpdateSummaryV1 } from './node-self-update';
 
 /** The two execution-target kinds v1 supports (SPEC §5.2): run on the node's own machine, or over SSH. */
@@ -193,6 +194,17 @@ export const targetListEntry = z.object({
    * (an older node, or one still on its first check since connecting).
    */
   nodeSelfUpdate: nodeSelfUpdateSummaryV1.optional(),
+  /**
+   * Set exactly when the OWNING NODE's live connection currently carries a
+   * rival-claim warning (issue #933's `relay.ts` `claimNodeRouting`) —
+   * mirrors `build`/`nodeSelfUpdate` immediately above: node-scoped, not
+   * per-target, so every target row this node owns shows the same value.
+   * Absent the overwhelming majority of the time (no live connection, an
+   * older node/relay that predates this field, or simply no rival has ever
+   * shown up) — see `NodeIdentityConflictWarning`'s own doc comment for
+   * when and why it's set.
+   */
+  identityConflict: nodeIdentityConflictWarning.optional(),
 });
 export type TargetListEntry = z.infer<typeof targetListEntry>;
 
