@@ -13,23 +13,23 @@
 import { execFileSync } from 'node:child_process';
 
 function skip(reason) {
-	// Deliberately quiet on stdout: this runs on every `pnpm install`.
-	if (process.env.LOOMBOX_HOOKS_DEBUG) console.log(`install-git-hooks: skipped, ${reason}`);
-	process.exit(0);
+  // Deliberately quiet on stdout: this runs on every `pnpm install`.
+  if (process.env.LOOMBOX_HOOKS_DEBUG) console.log(`install-git-hooks: skipped, ${reason}`);
+  process.exit(0);
 }
 
 try {
-	const inWorkTree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
-		stdio: ['ignore', 'pipe', 'ignore'],
-		encoding: 'utf8',
-	}).trim();
-	if (inWorkTree !== 'true') skip('not inside a git work tree');
+  const inWorkTree = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8',
+  }).trim();
+  if (inWorkTree !== 'true') skip('not inside a git work tree');
 } catch {
-	skip('no usable git (missing binary, or not a repository)');
+  skip('no usable git (missing binary, or not a repository)');
 }
 
 try {
-	execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { stdio: 'ignore' });
+  execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { stdio: 'ignore' });
 } catch {
-	skip('git config refused (read-only or restricted checkout)');
+  skip('git config refused (read-only or restricted checkout)');
 }
