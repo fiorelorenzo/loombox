@@ -1,3 +1,4 @@
+import { assertDirectDaemonEntrypoint } from '../daemon-entrypoint-invariant';
 import { detectRemoteOsArch } from './remote-runtime';
 import { shQuote, type RemoteTransport } from './remote-transport';
 
@@ -32,7 +33,19 @@ export type SystemdProvisionAction = 'noop' | 'install' | 'update' | 'unsupporte
 export const DEFAULT_UNIT_NAME = 'loombox-node.service';
 
 export interface SystemdUnitConfig {
-  /** Absolute path to the command this unit runs — typically the staged supervisor binary's own resident-node entry point (`./supervisor-provisioning.ts`'s `<baseDir>/supervisor-bin`). */
+  /**
+   * Absolute path to the command this unit runs — typically the staged
+   * supervisor binary's own resident-node entry point (`./supervisor-
+   * provisioning.ts`'s `<baseDir>/supervisor-bin`). **MUST be the daemon
+   * process itself, never a wrapper that forks it and returns** — this
+   * unit's `KillMode=process` (below) tracks exactly one pid, and a
+   * wrapper in front means that pid is the wrapper, not the daemon (issue
+   * #929: `generateSystemdUnit` enforces this via
+   * `../daemon-entrypoint-invariant.ts`'s `assertDirectDaemonEntrypoint`,
+   * covering `execArgs` too, since a plain `node` `execStart` with the
+   * wrapper named in an argument is exactly the shape that bit
+   * production).
+   */
   execStart: string;
   /** Extra args appended after `execStart`, space-joined as-is (the caller is responsible for any quoting an arg with spaces needs — matches this unit file being plain text, not a shell invocation). */
   execArgs?: string[];
@@ -50,6 +63,7 @@ export interface SystemdUnitConfig {
  * string comparison against what's already staged on the remote.
  */
 export function generateSystemdUnit(config: SystemdUnitConfig): string {
+  assertDirectDaemonEntrypoint(config.execStart, config.execArgs);
   const execLine = [config.execStart, ...(config.execArgs ?? [])].join(' ');
   const lines = [
     '[Unit]',

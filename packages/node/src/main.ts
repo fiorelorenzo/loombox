@@ -18,6 +18,7 @@ import { runDeviceLogin, type DeviceLoginResult, type RunDeviceLoginOptions } fr
 import type { NodeIdentity } from './identity';
 import { NodeIdentityStore } from './identity';
 import { createNode, type NodeDaemon } from './node-daemon';
+import { acquireNodeLock } from './node-lock';
 import { resolveAccountIdViaRelay, type AccountIdResolver } from './resolve-account-id';
 import { allowLiveNodeStateDir } from './ssh/verify-and-persist';
 import { DEFAULT_LOCAL_TARGET } from './target';
@@ -205,130 +206,146 @@ export async function start(options: StartOptions = {}): Promise<StartedNode> {
   allowLiveNodeStateDir();
   const config = loadNodeConfig(options);
 
-  // Issue #257: the ONE place a `local` session's agent process running
-  // unsandboxed is ever an expected, deliberate state rather than a bug —
-  // `LOOMBOX_SANDBOX=off`/the config file's `sandboxEnabled: false`
-  // overrode the default-on kill switch (`NodeCliConfig.sandboxEnabled`'s
-  // doc comment). Logged loudly, unconditionally, and as early as this
-  // function can (right after config resolves, before the device-login/
-  // AMK-bootstrap flow — either of which can take a while, or even prompt
-  // an operator interactively) every single time this node runs with it
-  // off, so this can never be the silent reason an operator's sessions
-  // turn out unconfined: a stray env var left over from debugging a
-  // `bwrap`-unavailable box stays visible in this node's own startup log,
-  // not just in whatever set it.
-  if (!config.sandboxEnabled) {
-    console.warn(
-      `loombox node "${config.nodeId}": SANDBOX DISABLED (LOOMBOX_SANDBOX=off) — every ` +
-        "local session's agent process will run UNCONFINED, with full access to this " +
-        'account rather than just its own worktree. Remove LOOMBOX_SANDBOX/sandboxEnabled ' +
-        "to restore SPEC §7.17's default-on containment.",
+  // Issue #929: claimed before anything else below touches `config.stateDir`
+  // — a second node process against a state dir another live process
+  // already holds fails right here, loudly and in milliseconds, instead of
+  // both quietly reconnecting to the relay as the same identity for
+  // however long neither operator happens to notice (issue #929's own
+  // incident: 15 hours). Released in `stop()` below on the happy path, and
+  // in the `catch` right below if anything after this point throws — a
+  // `start()` that fails partway through must never leave this state dir
+  // permanently "held" by a process that's about to exit anyway.
+  const nodeLock = acquireNodeLock({ stateDir: config.stateDir, nodeId: config.nodeId });
+  try {
+    // Issue #257: the ONE place a `local` session's agent process running
+    // unsandboxed is ever an expected, deliberate state rather than a bug —
+    // `LOOMBOX_SANDBOX=off`/the config file's `sandboxEnabled: false`
+    // overrode the default-on kill switch (`NodeCliConfig.sandboxEnabled`'s
+    // doc comment). Logged loudly, unconditionally, and as early as this
+    // function can (right after config resolves, before the device-login/
+    // AMK-bootstrap flow — either of which can take a while, or even prompt
+    // an operator interactively) every single time this node runs with it
+    // off, so this can never be the silent reason an operator's sessions
+    // turn out unconfined: a stray env var left over from debugging a
+    // `bwrap`-unavailable box stays visible in this node's own startup log,
+    // not just in whatever set it.
+    if (!config.sandboxEnabled) {
+      console.warn(
+        `loombox node "${config.nodeId}": SANDBOX DISABLED (LOOMBOX_SANDBOX=off) — every ` +
+          "local session's agent process will run UNCONFINED, with full access to this " +
+          'account rather than just its own worktree. Remove LOOMBOX_SANDBOX/sandboxEnabled ' +
+          "to restore SPEC §7.17's default-on containment.",
+      );
+    }
+
+    const deviceLogin = options.runDeviceLogin ?? runDeviceLogin;
+    const authToken = await resolveAuthToken(config, deviceLogin);
+
+    const resolveAccountId = options.resolveAccountId ?? resolveAccountIdViaRelay;
+    const accountId = config.accountId ?? (await resolveAccountId(config.relayUrl, authToken));
+
+    const identityStore = new NodeIdentityStore({ stateDir: config.stateDir });
+    const identity = await identityStore.loadOrCreate();
+
+    const bootstrapAmk = options.bootstrapAmk ?? bootstrapAmkFromRecoveryCode;
+    const adoptWrappedAmkFile = options.adoptWrappedAmkFile ?? adoptWrappedAmkFromFile;
+    const amk = await resolveAmk(
+      config,
+      identity,
+      accountId,
+      authToken,
+      bootstrapAmk,
+      options.webSocketImpl,
+      adoptWrappedAmkFile,
     );
+
+    // Issue #655: this node's own version + (when honestly recoverable)
+    // commit — see `build-identity.ts`'s own doc comment for the
+    // env-var/git-rev-parse resolution order. Resolved once at startup,
+    // exactly like `identity`/`amk` above, and sent on every `initialize`.
+    const buildIdentity = await readNodeBuildIdentity();
+
+    const node = createNode({
+      relayUrl: config.relayUrl,
+      nodeId: config.nodeId,
+      deviceId: config.deviceId,
+      devicePublicKey: identity.publicKeyBase64,
+      buildIdentity,
+      authToken,
+      accountId,
+      amk,
+      targets: config.targets,
+      sshTargets: config.sshTargets,
+      localMaxConcurrentSessions: config.localMaxConcurrentSessions,
+      // What each target can actually run (SPEC §5.5). Sourced from
+      // `@loombox/supervisor`'s own default provider set, NOT a list maintained
+      // here: the supervisor is what later spawns the agent, so deriving the
+      // advertised set from the spawnable set is what stops a picker offering an
+      // agent nothing can start. Without this the probe is a no-op and every
+      // target announces `providers: []`, which a client correctly reads as "no
+      // agent CLI installed here" and refuses to create a session on.
+      providerCandidates: [...DEFAULT_PROVIDER_REQUIREMENTS],
+      // D1-3's node-side security boundary for custom ACP agents (issue
+      // #748) — see `NodeCliConfig.customAgentAllowlist`'s own doc comment
+      // for the full "how it is edited" story; this is the only place that
+      // value ever reaches a running `NodeDaemon`.
+      customAgentAllowlist: config.customAgentAllowlist,
+      // Issues #253/#269: on for every real node started this way (tests
+      // build `NodeDaemon`/`createNode` directly and get the option's own
+      // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s
+      // doc comment for why).
+      resourceSampling: { enabled: true },
+      // Issue #257: same on-for-every-real-node, off-in-tests shape as
+      // `resourceSampling` just above, and for the same reason — see
+      // `NodeDaemonOptions.sessionSandbox`'s doc comment. `config.sandboxEnabled`
+      // (default `true`; `LOOMBOX_SANDBOX=off` is the operator kill switch,
+      // see `NodeCliConfig.sandboxEnabled`'s doc comment) decides whether it's
+      // actually on, not a hardcoded `true` — the loud warning right below
+      // fires whenever that override actually takes effect. Safe to pass
+      // `enabled: true` through on a non-Linux host too: `resolveSessionSandbox`
+      // itself is the platform gate (a no-op off Linux today, SPEC §7.17's
+      // documented weaker macOS fallback not being built yet), not this flag.
+      sessionSandbox: {
+        enabled: config.sandboxEnabled,
+        npmCacheEnabled: config.sandboxNpmCacheEnabled,
+      },
+      // Same convention as `identityStore` above: MCP config/secret storage
+      // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
+      // silently defaulting to `~/.loombox/node` regardless of what the
+      // identity keypair itself was configured to use.
+      stateDir: config.stateDir,
+      webSocketImpl: options.webSocketImpl,
+    });
+
+    // #116: this node holds `identity`'s private key (this module's own
+    // `NodeIdentityStore`, never handed into `NodeDaemon` itself — see that
+    // class's doc comment), so it's the one place that can actually unwrap a
+    // pending rewrapped-AMK-epoch envelope the daemon surfaces via
+    // `'amk-epoch-pending'`.
+    wireAmkEpochAdoption(node, identity, accountId, config.deviceId);
+
+    const targetIds = (config.targets ?? [DEFAULT_LOCAL_TARGET]).map((target) => target.id);
+    console.log(
+      `loombox node "${config.nodeId}": connecting to ${config.relayUrl} (targets: ${targetIds.join(', ')})`,
+    );
+    node.on('connected', () => {
+      console.log(`loombox node "${config.nodeId}": connected`);
+    });
+
+    let stopped = false;
+    const stop = async (): Promise<void> => {
+      if (stopped) return;
+      stopped = true;
+      console.log(`loombox node "${config.nodeId}": shutting down`);
+      node.close();
+      nodeLock.release();
+    };
+
+    return { node, nodeId: config.nodeId, devicePublicKey: identity.publicKeyBase64, stop };
+  } catch (error) {
+    nodeLock.release();
+    throw error;
   }
-
-  const deviceLogin = options.runDeviceLogin ?? runDeviceLogin;
-  const authToken = await resolveAuthToken(config, deviceLogin);
-
-  const resolveAccountId = options.resolveAccountId ?? resolveAccountIdViaRelay;
-  const accountId = config.accountId ?? (await resolveAccountId(config.relayUrl, authToken));
-
-  const identityStore = new NodeIdentityStore({ stateDir: config.stateDir });
-  const identity = await identityStore.loadOrCreate();
-
-  const bootstrapAmk = options.bootstrapAmk ?? bootstrapAmkFromRecoveryCode;
-  const adoptWrappedAmkFile = options.adoptWrappedAmkFile ?? adoptWrappedAmkFromFile;
-  const amk = await resolveAmk(
-    config,
-    identity,
-    accountId,
-    authToken,
-    bootstrapAmk,
-    options.webSocketImpl,
-    adoptWrappedAmkFile,
-  );
-
-  // Issue #655: this node's own version + (when honestly recoverable)
-  // commit — see `build-identity.ts`'s own doc comment for the
-  // env-var/git-rev-parse resolution order. Resolved once at startup,
-  // exactly like `identity`/`amk` above, and sent on every `initialize`.
-  const buildIdentity = await readNodeBuildIdentity();
-
-  const node = createNode({
-    relayUrl: config.relayUrl,
-    nodeId: config.nodeId,
-    deviceId: config.deviceId,
-    devicePublicKey: identity.publicKeyBase64,
-    buildIdentity,
-    authToken,
-    accountId,
-    amk,
-    targets: config.targets,
-    sshTargets: config.sshTargets,
-    localMaxConcurrentSessions: config.localMaxConcurrentSessions,
-    // What each target can actually run (SPEC §5.5). Sourced from
-    // `@loombox/supervisor`'s own default provider set, NOT a list maintained
-    // here: the supervisor is what later spawns the agent, so deriving the
-    // advertised set from the spawnable set is what stops a picker offering an
-    // agent nothing can start. Without this the probe is a no-op and every
-    // target announces `providers: []`, which a client correctly reads as "no
-    // agent CLI installed here" and refuses to create a session on.
-    providerCandidates: [...DEFAULT_PROVIDER_REQUIREMENTS],
-    // D1-3's node-side security boundary for custom ACP agents (issue
-    // #748) — see `NodeCliConfig.customAgentAllowlist`'s own doc comment
-    // for the full "how it is edited" story; this is the only place that
-    // value ever reaches a running `NodeDaemon`.
-    customAgentAllowlist: config.customAgentAllowlist,
-    // Issues #253/#269: on for every real node started this way (tests
-    // build `NodeDaemon`/`createNode` directly and get the option's own
-    // off-by-default instead — see `NodeDaemonOptions.resourceSampling`'s
-    // doc comment for why).
-    resourceSampling: { enabled: true },
-    // Issue #257: same on-for-every-real-node, off-in-tests shape as
-    // `resourceSampling` just above, and for the same reason — see
-    // `NodeDaemonOptions.sessionSandbox`'s doc comment. `config.sandboxEnabled`
-    // (default `true`; `LOOMBOX_SANDBOX=off` is the operator kill switch,
-    // see `NodeCliConfig.sandboxEnabled`'s doc comment) decides whether it's
-    // actually on, not a hardcoded `true` — the loud warning right below
-    // fires whenever that override actually takes effect. Safe to pass
-    // `enabled: true` through on a non-Linux host too: `resolveSessionSandbox`
-    // itself is the platform gate (a no-op off Linux today, SPEC §7.17's
-    // documented weaker macOS fallback not being built yet), not this flag.
-    sessionSandbox: {
-      enabled: config.sandboxEnabled,
-      npmCacheEnabled: config.sandboxNpmCacheEnabled,
-    },
-    // Same convention as `identityStore` above: MCP config/secret storage
-    // (issues #187/#189) honors `LOOMBOX_NODE_STATE_DIR` too, rather than
-    // silently defaulting to `~/.loombox/node` regardless of what the
-    // identity keypair itself was configured to use.
-    stateDir: config.stateDir,
-    webSocketImpl: options.webSocketImpl,
-  });
-
-  // #116: this node holds `identity`'s private key (this module's own
-  // `NodeIdentityStore`, never handed into `NodeDaemon` itself — see that
-  // class's doc comment), so it's the one place that can actually unwrap a
-  // pending rewrapped-AMK-epoch envelope the daemon surfaces via
-  // `'amk-epoch-pending'`.
-  wireAmkEpochAdoption(node, identity, accountId, config.deviceId);
-
-  const targetIds = (config.targets ?? [DEFAULT_LOCAL_TARGET]).map((target) => target.id);
-  console.log(
-    `loombox node "${config.nodeId}": connecting to ${config.relayUrl} (targets: ${targetIds.join(', ')})`,
-  );
-  node.on('connected', () => {
-    console.log(`loombox node "${config.nodeId}": connected`);
-  });
-
-  let stopped = false;
-  const stop = async (): Promise<void> => {
-    if (stopped) return;
-    stopped = true;
-    console.log(`loombox node "${config.nodeId}": shutting down`);
-    node.close();
-  };
-
-  return { node, nodeId: config.nodeId, devicePublicKey: identity.publicKeyBase64, stop };
 }
 
 export interface GracefulShutdownOptions {

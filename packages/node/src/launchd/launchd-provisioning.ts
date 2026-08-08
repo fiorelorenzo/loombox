@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { assertDirectDaemonEntrypoint } from '../daemon-entrypoint-invariant';
 import { buildResidentNodeEnvironment, type ResidentNodeConfig } from '../ssh/provision-target';
 
 /**
@@ -33,7 +34,16 @@ export type LaunchdProvisionAction = 'noop' | 'install' | 'update' | 'unsupporte
 export const DEFAULT_LAUNCHD_LABEL = 'dev.loombox.node';
 
 export interface LaunchdAgentConfig {
-  /** Absolute path to the executable this agent launches — typically the co-located app's own bundled `node` binary. */
+  /**
+   * Absolute path to the executable this agent launches — typically the
+   * co-located app's own bundled `node` binary. **MUST be the daemon
+   * process itself, never a wrapper that forks it and returns** — this
+   * agent's `KeepAlive` (below) restarts the job the instant the pid
+   * launchd itself spawned exits, and a wrapper in front means that pid
+   * is the wrapper, not the daemon (issue #929: `generateLaunchdPlist`
+   * enforces this via `../daemon-entrypoint-invariant.ts`'s
+   * `assertDirectDaemonEntrypoint`, covering `execArgs` too).
+   */
   execStart: string;
   /** Extra args appended after `execStart` — typically the packaged `@loombox/node` entry script's path plus any CLI flags. Each element becomes its own `<string>` in `ProgramArguments`, so (unlike `systemd-provisioning.ts`'s space-joined `ExecStart=`) no shell quoting is ever needed here. */
   execArgs?: string[];
@@ -73,6 +83,7 @@ function stringElement(value: string): string {
  * plain string comparison against whatever is already staged on disk).
  */
 export function generateLaunchdPlist(config: LaunchdAgentConfig): string {
+  assertDirectDaemonEntrypoint(config.execStart, config.execArgs);
   const label = config.label ?? DEFAULT_LAUNCHD_LABEL;
   const programArguments = [config.execStart, ...(config.execArgs ?? [])];
   const runAtLoad = config.runAtLoad ?? true;
