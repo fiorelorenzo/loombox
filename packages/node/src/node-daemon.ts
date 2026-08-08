@@ -11683,13 +11683,9 @@ export class NodeDaemon extends EventEmitter {
   ): Promise<void> {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
-    this.relay.send({
-      type: 'git_conflict_resolve_response',
-      protocolVersion: PROTOCOL_V1,
-      sessionId,
-      requestId,
-      envelope,
-    });
+    this.relay.send(
+      withEnvelope('git_conflict_resolve_response', { sessionId, requestId, envelope }),
+    );
   }
 }
 

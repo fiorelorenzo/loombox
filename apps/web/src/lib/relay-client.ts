@@ -4697,13 +4697,7 @@ export class RelayClient {
       this.pendingGitConflictResolveRequests,
       requestId,
       () => {
-        this.send({
-          type: 'git_conflict_resolve_request',
-          protocolVersion: PROTOCOL_V1,
-          sessionId,
-          requestId,
-          envelope,
-        });
+        this.send(withEnvelope('git_conflict_resolve_request', { sessionId, requestId, envelope }));
       },
       timeoutMs,
       'RelayClient: timed out waiting for git_conflict_resolve_response',
