@@ -27,6 +27,17 @@ export { AttachmentResolver, RelayBlobSource, attachmentResourceId } from './att
 export type { NodeIdentity, NodeIdentityStoreOptions } from './identity';
 export { NodeIdentityStore } from './identity';
 
+// v2: refuses a second node process against a state dir another live
+// process already holds — a state dir IS a node's identity, since it's
+// where NodeIdentityStore above keeps the private key (issue #929).
+export type { AcquireNodeLockOptions, NodeLock } from './node-lock';
+export {
+  acquireNodeLock,
+  NODE_LOCK_FILE_NAME,
+  NodeLockCorruptError,
+  NodeLockHeldError,
+} from './node-lock';
+
 // v1: node-side secrets-at-rest via an OS-native keyring, with a documented
 // and tested 0600-file fallback (SPEC §8, §16; issue #118).
 export type { FileKeyringBackendOptions, KeyringBackend, NodeKeyringOptions } from './keyring';
