@@ -76,7 +76,7 @@
           aria-label={expanded ? 'Collapse edits' : 'Expand edits'}
           data-testid="turn-edits-toggle"
         >
-          <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+          <Icon name="collapse-chevron" size="var(--icon-size-sm)" class="disclosure-icon" />
           <Icon name="tool-edit" class="edits-icon" />
           <span class="label">Edits</span>
           <span class="file-count"

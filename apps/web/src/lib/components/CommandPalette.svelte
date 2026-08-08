@@ -215,8 +215,8 @@
      the documented escape hatch for the `class` prop Dialog's own doc
      comment calls out. */
   :global(.command-palette-panel) {
-    width: min(34rem, 92vw);
-    max-height: 70vh;
+    width: var(--dialog-width-md);
+    max-height: var(--dialog-max-height);
   }
 
   .palette-input {
@@ -291,8 +291,8 @@
      identical value (issue #665's guard-test scan) — redundant dead CSS,
      dropped rather than kept. */
   :global(.entry-icon) {
-    width: 1.125rem;
-    height: 1.125rem;
+    width: var(--icon-size-lg);
+    height: var(--icon-size-lg);
     color: var(--color-text-secondary);
   }
 

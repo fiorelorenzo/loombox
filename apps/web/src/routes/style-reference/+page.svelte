@@ -16,6 +16,7 @@
   import { onMount } from 'svelte';
   import { themeStore, type ThemePreference } from '$lib/theme';
   import WovenLoader from '$lib/components/WovenLoader.svelte';
+  import Icon from '$lib/components/icons/Icon.svelte';
   // Warp Deck shared UI primitives (redesign brief §4, issue #428) — see
   // the "Components" section appended at the end of this file's markup.
   import Badge from '$lib/components/ui/Badge.svelte';
@@ -81,6 +82,36 @@
     '--radius-lg',
     '--radius-xl',
     '--radius-full',
+  ];
+
+  // Issue #580 — the design-system audit's icon-size/dialog-geometry/
+  // one-off-dimension stragglers.
+  const iconSizeSwatches = [
+    { token: '--icon-size-sm', label: 'sm — disclosure chevrons, compact tab icons' },
+    { token: '--icon-size-md', label: 'md — a slightly heavier inline mark' },
+    { token: '--icon-size-lg', label: 'lg — a standalone icon box' },
+  ];
+
+  const dialogGeometrySwatches = [
+    { token: '--dialog-width-sm', label: 'width sm — plain list pickers' },
+    { token: '--dialog-width-md', label: 'width md — CommandPalette (wider rows)' },
+  ];
+
+  const dimensionSwatches = [
+    { token: '--status-meter-track-width', label: 'StatusBar meter track width' },
+    { token: '--status-meter-track-height', label: 'StatusBar meter track height' },
+    { token: '--attachment-thumb-size', label: 'AttachmentBar preview thumbnail' },
+    { token: '--attachment-chip-max-width', label: 'AttachmentBar chip max-width' },
+    { token: '--diff-gutter-width', label: 'DiffViewer line-number column' },
+    { token: '--diff-marker-width', label: 'DiffViewer +/- marker column' },
+    {
+      token: '--scroll-cap-height',
+      label: 'Collapsible scroll cap (DirectoryPicker, MessageItem)',
+    },
+    { token: '--swatch-icon-size', label: 'AppearanceSettings theme-option icon' },
+    { token: '--swatch-size', label: 'AppearanceSettings accent swatch' },
+    { token: '--swatch-check-size', label: 'AppearanceSettings swatch checkmark' },
+    { token: '--swatch-custom-size', label: 'AppearanceSettings custom-color swatch' },
   ];
 
   const shadowSwatches = ['--shadow-sm', '--shadow-md', '--shadow-lg'];
@@ -384,6 +415,57 @@
         </div>
       {/each}
     </div>
+  </section>
+
+  <section aria-labelledby="icon-size-heading">
+    <h2 id="icon-size-heading">Icon-size scale (issue #580)</h2>
+    <div class="scale-row">
+      {#each iconSizeSwatches as { token, label } (token)}
+        <div class="scale-item">
+          <div class="icon-size-box">
+            <Icon name="collapse-chevron" size={`var(${token})`} />
+          </div>
+          <code>{token}</code>
+          <span class="scale-item-label">{label}</span>
+        </div>
+      {/each}
+    </div>
+  </section>
+
+  <section aria-labelledby="dialog-geometry-heading">
+    <h2 id="dialog-geometry-heading">Dialog geometry (issue #580)</h2>
+    <p class="motion-intro">
+      The compact list-picker dialogs (CommandPalette, MentionPicker, SlashCommandPicker,
+      SnippetPicker) override <code>Dialog.svelte</code>'s own default box and now read these
+      instead of each carrying its own literal width/scroll cap.
+    </p>
+    <div class="scale-row">
+      {#each dialogGeometrySwatches as { token, label } (token)}
+        <div class="scale-item">
+          <div class="dialog-geometry-box" style={`width: var(${token});`}></div>
+          <code>{token}</code>
+          <span class="scale-item-label">{label}</span>
+        </div>
+      {/each}
+    </div>
+    <code class="scale-tag">--dialog-max-height: 70vh, the scroll cap all four dialogs share</code>
+  </section>
+
+  <section aria-labelledby="dimension-tokens-heading">
+    <h2 id="dimension-tokens-heading">Component dimensions (issue #580)</h2>
+    <p class="motion-intro">
+      One-off dimensions the v6 design-system audit found repeated (or at risk of drifting apart)
+      across more than one call site — each is named once instead of trusting every copy to stay in
+      sync by hand.
+    </p>
+    <dl class="dimension-list">
+      {#each dimensionSwatches as { token, label } (token)}
+        <div class="dimension-row">
+          <dt><code>{token}</code></dt>
+          <dd>{label}</dd>
+        </div>
+      {/each}
+    </dl>
   </section>
 
   <section aria-labelledby="elevation-heading">
@@ -1311,6 +1393,50 @@
     height: 3rem;
     border-radius: var(--radius-md);
     background: var(--color-surface-raised);
+  }
+
+  .icon-size-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    color: var(--color-text-secondary);
+  }
+
+  .dialog-geometry-box {
+    height: 1.5rem;
+    background: var(--color-fill);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+  }
+
+  .scale-item-label {
+    font-size: var(--text-caption-size);
+    color: var(--color-text-muted);
+    max-width: 12rem;
+  }
+
+  .dimension-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    margin: 0;
+  }
+
+  .dimension-row {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: baseline;
+  }
+
+  .dimension-row dt {
+    flex: 0 0 16rem;
+  }
+
+  .dimension-row dd {
+    margin: 0;
+    color: var(--color-text-secondary);
   }
 
   .display-sample {

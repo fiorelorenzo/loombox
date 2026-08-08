@@ -58,8 +58,9 @@
      gutter used to reserve room for a visible word (v5) then an icon glyph
      (v6), and now paints nothing sighted at all — every role tells apart by
      surface fill alone, so the column survives only as the shared alignment
-     device `MessageItem`/`ToolCallGutter`/`PlanCard`/`QueuedPromptBar`/the
-     composer (`+page.svelte`) all still read from `var(--gutter)`. 2.5rem is
+     device `MessageItem`/`ToolCallGutter`/`PlanCard`/`QueuedPromptBar`/
+     `TurnEditsBar`/the composer (`+page.svelte`) all still read from
+     `var(--gutter)`. 2.5rem is
      the new floor: it comfortably fits `ToolCallGutter`'s tool-kind icon
      (1em ~ the body font size, flush against `--space-sm` of reserved
      padding) and `QueuedPromptBar`'s uppercase "You" caption, the two
@@ -137,6 +138,84 @@
      sections, not one flat option list. */
   --config-popover-width: 14rem;
   --config-popover-max-height: 20rem;
+
+  /* ---------------------------------------------------------------- */
+  /* Icon-size scale (issue #580 — the design-system audit's icon-size  */
+  /* stragglers). `em`, not `rem`, for `sm`/`md`: both size an icon that */
+  /* sits next to running text (a disclosure chevron beside a row        */
+  /* title, a small check beside a label) and is meant to track that     */
+  /* text's own size — the same reason `Icon.svelte`'s own default is    */
+  /* `1em`. `lg` is `rem`: it sizes a standalone icon box (a command-     */
+  /* palette result's leading glyph, an icon-only button's glyph) that   */
+  /* is not sitting inside a line of text, so it should hold still       */
+  /* regardless of the local font context around it. */
+  /* ---------------------------------------------------------------- */
+  --icon-size-sm: 0.7em; /* disclosure chevrons (row headers), compact tab-strip icons */
+  --icon-size-md: 0.85em; /* a small inline mark that reads slightly heavier than a chevron */
+  --icon-size-lg: 1.125rem; /* a standalone icon box — result-row glyph, icon-button glyph */
+
+  /* ---------------------------------------------------------------- */
+  /* Dialog geometry (issue #580): the "compact list picker" dialogs —  */
+  /* CommandPalette, MentionPicker, SlashCommandPicker, SnippetPicker —  */
+  /* each override `Dialog.svelte`'s own default box (tuned for a form,  */
+  /* not a dense result list — see that override's own doc comment at    */
+  /* each call site) and had each landed on a slightly different width    */
+  /* and scroll cap independently, undocumented. `sm` is the plain,       */
+  /* single-list pickers' width; `md` is CommandPalette's own wider one   */
+  /* (it shows a command's label plus a shortcut/description on the same  */
+  /* row, which wants more horizontal room than a plain file/session/     */
+  /* snippet name). The scroll cap unifies on the taller of the two       */
+  /* values previously in independent use — the shorter one was never a   */
+  /* deliberate content-fit choice, just drift, and growing a max-height   */
+  /* can only show more before scrolling kicks in, never clip something    */
+  /* that fit before. */
+  /* ---------------------------------------------------------------- */
+  --dialog-width-sm: min(30rem, 92vw);
+  --dialog-width-md: min(34rem, 92vw);
+  --dialog-max-height: 70vh;
+
+  /* ---------------------------------------------------------------- */
+  /* One-off component dimensions (issue #580) — named because each is  */
+  /* either already shared across more than one file, or a repeated      */
+  /* literal the design-system audit flagged as due to drift the moment   */
+  /* a second call site copies it by hand instead of reading a token. */
+  /* ---------------------------------------------------------------- */
+  /* `StatusBar`'s context/cost meter track — ported verbatim from        */
+  /* `ConfigBar` by issue #736 (see that component's own doc comment);    */
+  /* this is the same literal that used to live there, not a new one. */
+  --status-meter-track-width: 2.5rem;
+  --status-meter-track-height: 3px;
+  /* `AttachmentBar`'s image/file preview thumbnail — square, one token    */
+  /* covers both width and height. */
+  --attachment-thumb-size: 2rem;
+  /* `AttachmentBar`'s chip row: how wide a single attachment chip may      */
+  /* grow before its filename truncates. */
+  --attachment-chip-max-width: 16rem;
+  /* `DiffViewer`'s line-number column and its +/- marker column — two      */
+  /* independent gutters, each its own token despite `--diff-gutter-width`  */
+  /* coincidentally landing on the same 2.5rem as `--gutter` above: that    */
+  /* match is accidental, not a shared concern (this is a diff's own line-  */
+  /* number column, not the transcript's role-alignment gutter documented   */
+  /* above), and tying the two together would make a future retune of one   */
+  /* silently move the other. */
+  --diff-gutter-width: 2.5rem;
+  --diff-marker-width: 1rem;
+  /* Shared scroll cap for a collapsible block that should show a handful   */
+  /* of rows before scrolling rather than pushing the rest of the page      */
+  /* down: `DirectoryPicker`'s file list and `MessageItem`'s thought body    */
+  /* both hand-wrote the identical `12rem` independently before this pass. */
+  --scroll-cap-height: 12rem;
+  /* `AppearanceSettings`'s swatch scale — four sizes for four different     */
+  /* jobs on the same settings page, each independently literal before       */
+  /* this pass: the small inline glyph on a theme-option pill, the primary   */
+  /* accent-color swatch button itself, the checkmark drawn over a selected  */
+  /* swatch, and the custom-color-picker's own preview swatch (bigger than   */
+  /* the glyph, smaller than a full accent swatch — it is a preview, not a   */
+  /* selectable preset, so it doesn't need the full touch target). */
+  --swatch-icon-size: 1rem;
+  --swatch-size: 2.25rem;
+  --swatch-check-size: 1.1rem;
+  --swatch-custom-size: 1.5rem;
 
   /* ---------------------------------------------------------------- */
   /* Elevation (dark surfaces read best with a soft, dark shadow       */

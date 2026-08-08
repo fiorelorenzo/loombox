@@ -95,7 +95,7 @@
           aria-expanded={expanded}
           data-testid="row-header"
         >
-          <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+          <Icon name="collapse-chevron" size="var(--icon-size-sm)" class="disclosure-icon" />
           {@render headerContent()}
         </button>
       {/if}

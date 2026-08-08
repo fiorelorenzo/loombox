@@ -432,8 +432,8 @@
 
   .track {
     align-self: center;
-    width: 2.5rem;
-    height: 3px;
+    width: var(--status-meter-track-width);
+    height: var(--status-meter-track-height);
     flex-shrink: 0;
     border-radius: var(--radius-full);
     background: var(--color-border);

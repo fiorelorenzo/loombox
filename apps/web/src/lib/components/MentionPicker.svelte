@@ -413,8 +413,8 @@
 
 <style>
   :global(.mention-picker-panel) {
-    width: min(30rem, 92vw);
-    max-height: 60vh;
+    width: var(--dialog-width-sm);
+    max-height: var(--dialog-max-height);
   }
 
   .picker-tabs {

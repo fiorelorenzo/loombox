@@ -559,7 +559,7 @@
               aria-expanded={expanded}
               data-testid={`target-row-toggle-${key}`}
             >
-              <Icon name="collapse-chevron" size="0.7em" class="disclosure-icon" />
+              <Icon name="collapse-chevron" size="var(--icon-size-sm)" class="disclosure-icon" />
               <Badge
                 tone={HEALTH_TONES[state]}
                 size="md"
@@ -995,7 +995,7 @@
      content-transform locally). */
   :global(.kind-badge) {
     text-transform: uppercase;
-    letter-spacing: 0.02em;
+    letter-spacing: var(--text-caption-tracking);
   }
 
   .target-label {
