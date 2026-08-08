@@ -7,12 +7,15 @@ import type { TrackerBackend, TrackerBinding } from '@loombox/shared';
 
 import {
   deriveGithubWorkflowCategory,
+  githubBoardsCapableFor,
   GithubTrackerAccessError,
   GithubTrackerBackend,
   GithubTrackerRateLimitError,
   GithubTrackerRequestError,
   type GithubTrackerBackendOptions,
 } from './github-tracker-backend';
+import { GithubGraphQlSecondaryBudget } from './github-projects-v2';
+import type { TrackerBoard } from '@loombox/shared';
 
 /**
  * `GithubTrackerBackend` (SPEC §7.10, issues #213/#215) against a stubbed
@@ -77,13 +80,13 @@ function backend(
   });
 }
 
-describe('GithubTrackerBackend.capabilities (issues #213/#215 slices 1+2)', () => {
-  it('reports comments/transitions/labels/milestones true, boards/sprints/customFields false', () => {
+describe('GithubTrackerBackend.capabilities (issues #213/#215/#218)', () => {
+  it('reports comments/transitions/labels/milestones/boards true, sprints/customFields false', () => {
     const svc = backend(vi.fn());
     expect(svc.capabilities).toEqual({
       comments: true,
       transitions: true,
-      boards: false,
+      boards: true,
       sprints: false,
       labels: true,
       milestones: true,
@@ -535,6 +538,287 @@ describe('GithubTrackerBackend.listTransitions/transition (issue #215 slice 2)',
     await expect(svc.transition(binding(), '213', 'move-to-in-progress')).rejects.toBeInstanceOf(
       GithubTrackerAccessError,
     );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('githubBoardsCapableFor (issue #218 acceptance: capabilities.boards true only when projectNumber is configured)', () => {
+  it('false when projectNumber is absent', () => {
+    expect(githubBoardsCapableFor({ owner: 'fiorelorenzo', repo: 'loombox' })).toBe(false);
+  });
+
+  it('true when projectNumber is set', () => {
+    expect(
+      githubBoardsCapableFor({ owner: 'fiorelorenzo', repo: 'loombox', projectNumber: 4 }),
+    ).toBe(true);
+  });
+});
+
+/** A minimal, schema-shaped Projects v2 board GraphQL response — the same envelope `github-projects-v2.test.ts`'s own real-recorded fixture uses, trimmed to one status field for these class-level wiring tests (the discovery logic itself is covered exhaustively there). */
+function boardGraphQlResponse(projectId = 'PVT_board1', title = 'loombox roadmap') {
+  return {
+    data: {
+      repositoryOwner: {
+        projectV2: {
+          id: projectId,
+          title,
+          fields: {
+            nodes: [
+              {
+                __typename: 'ProjectV2SingleSelectField',
+                id: 'status-field-1',
+                name: 'Status',
+                options: [
+                  { id: 'opt-todo', name: 'Todo' },
+                  { id: 'opt-doing', name: 'In Progress' },
+                  { id: 'opt-done', name: 'Done' },
+                ],
+              },
+              {
+                __typename: 'ProjectV2IterationField',
+                id: 'iter-field-1',
+                name: 'Sprint',
+                configuration: {
+                  iterations: [
+                    { id: 'iter-1', title: 'Sprint 1', startDate: '2026-08-01', duration: 14 },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
+const BOARD: TrackerBoard = {
+  id: 'PVT_board1',
+  name: 'loombox roadmap',
+  statusField: {
+    id: 'status-field-1',
+    name: 'Status',
+    columns: [
+      { id: 'opt-todo', name: 'Todo', targetCategory: 'new' },
+      { id: 'opt-doing', name: 'In Progress', targetCategory: 'indeterminate' },
+      { id: 'opt-done', name: 'Done', targetCategory: 'done' },
+    ],
+  },
+  iterationField: {
+    id: 'iter-field-1',
+    name: 'Sprint',
+    iterations: [{ id: 'iter-1', title: 'Sprint 1', startDate: '2026-08-01', duration: 14 }],
+  },
+};
+
+describe('GithubTrackerBackend.listBoards (issue #218 slice 3)', () => {
+  it('returns [] and never calls fetch when the binding has no projectNumber configured', async () => {
+    const fetchImpl = vi.fn();
+    const svc = backend(fetchImpl);
+
+    const boards = await svc.listBoards(binding());
+
+    expect(boards).toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('POSTs a GraphQL query for {login, number} and maps the response into a discovered TrackerBoard', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.github.com/graphql');
+      const parsed = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+      expect(parsed.variables).toEqual({ login: 'fiorelorenzo', number: 4 });
+      return githubResponse(200, boardGraphQlResponse());
+    });
+    const svc = backend(fetchImpl);
+
+    const boards = await svc.listBoards(
+      binding({ target: { owner: 'fiorelorenzo', repo: 'loombox', projectNumber: 4 } }),
+    );
+
+    expect(boards).toEqual([BOARD]);
+  });
+
+  it('throws GithubTrackerAccessError when the token cannot see a board at that number', async () => {
+    const fetchImpl = vi.fn(async () =>
+      githubResponse(200, { data: { repositoryOwner: { projectV2: null } } }),
+    );
+    const svc = backend(fetchImpl);
+
+    await expect(
+      svc.listBoards(
+        binding({ target: { owner: 'fiorelorenzo', repo: 'loombox', projectNumber: 99 } }),
+      ),
+    ).rejects.toBeInstanceOf(GithubTrackerAccessError);
+  });
+
+  it('a request that would exceed the GraphQL secondary budget throws before ever calling fetch', async () => {
+    const fetchImpl = vi.fn();
+    const exhaustedBudget = new GithubGraphQlSecondaryBudget(() => 0);
+    exhaustedBudget.reserve(2000);
+    const svc = backend(fetchImpl, { secondaryBudget: exhaustedBudget });
+
+    await expect(
+      svc.listBoards(
+        binding({ target: { owner: 'fiorelorenzo', repo: 'loombox', projectNumber: 4 } }),
+      ),
+    ).rejects.toThrow(/secondary rate limit/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('GithubTrackerBackend.addBoardItem (issue #218: Mutation.addProjectV2ItemById)', () => {
+  it('fetches the issue for its node_id, then mutates {contentId, projectId}, returning the project-item id', async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === 'https://api.github.com/repos/fiorelorenzo/loombox/issues/213') {
+        return githubResponse(200, issuePayload({ node_id: 'I_kwDOissue213' }));
+      }
+      expect(url).toBe('https://api.github.com/graphql');
+      const parsed = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+      expect(parsed.variables).toEqual({ contentId: 'I_kwDOissue213', projectId: 'PVT_board1' });
+      return githubResponse(200, {
+        data: { addProjectV2ItemById: { item: { id: 'PVTI_item1' } } },
+      });
+    });
+    const svc = backend(fetchImpl);
+
+    const itemId = await svc.addBoardItem(binding(), 'PVT_board1', '213');
+
+    expect(itemId).toBe('PVTI_item1');
+    expect(calls).toEqual([
+      'https://api.github.com/repos/fiorelorenzo/loombox/issues/213',
+      'https://api.github.com/graphql',
+    ]);
+  });
+
+  it('skips the REST lookup entirely when contentNodeId is already known', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).toBe('https://api.github.com/graphql');
+      return githubResponse(200, {
+        data: { addProjectV2ItemById: { item: { id: 'PVTI_item1' } } },
+      });
+    });
+    const svc = backend(fetchImpl);
+
+    await svc.addBoardItem(binding(), 'PVT_board1', '213', 'I_kwDOalreadyknown');
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws GithubTrackerAccessError when the mutation returns no item', async () => {
+    const fetchImpl = vi.fn(async () =>
+      githubResponse(200, { data: { addProjectV2ItemById: { item: null } } }),
+    );
+    const svc = backend(fetchImpl);
+
+    await expect(
+      svc.addBoardItem(binding(), 'PVT_board1', '213', 'I_known'),
+    ).rejects.toBeInstanceOf(GithubTrackerAccessError);
+  });
+});
+
+describe('GithubTrackerBackend.moveBoardItemToCategory (issue #218: resolve singleSelectOptionId, then Mutation.updateProjectV2ItemFieldValue)', () => {
+  it('resolves the column id from board.statusField.columns and mutates {fieldId, value: {singleSelectOptionId}}', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.github.com/graphql');
+      const parsed = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+      expect(parsed.variables).toEqual({
+        projectId: 'PVT_board1',
+        itemId: 'PVTI_item1',
+        fieldId: 'status-field-1',
+        value: { singleSelectOptionId: 'opt-done' },
+      });
+      return githubResponse(200, {
+        data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_item1' } } },
+      });
+    });
+    const svc = backend(fetchImpl);
+
+    await expect(
+      svc.moveBoardItemToCategory(binding(), BOARD, 'PVTI_item1', 'done'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('throws, never guessing a fallback column, when the board has no discovered status field', async () => {
+    const fetchImpl = vi.fn();
+    const svc = backend(fetchImpl);
+    const boardWithNoStatus: TrackerBoard = {
+      id: 'PVT_board2',
+      name: 'no-status board',
+      statusFieldUnavailableReason: 'no single-select field maps onto a workflow status',
+    };
+
+    await expect(
+      svc.moveBoardItemToCategory(binding(), boardWithNoStatus, 'PVTI_item1', 'done'),
+    ).rejects.toBeInstanceOf(GithubTrackerAccessError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('throws when the status field has no column for the requested category', async () => {
+    const fetchImpl = vi.fn();
+    const svc = backend(fetchImpl);
+    const twoStageBoard: TrackerBoard = {
+      id: 'PVT_board3',
+      name: 'two-stage board',
+      statusField: {
+        id: 'status-field-2',
+        name: 'Status',
+        columns: [
+          { id: 'opt-todo', name: 'Todo', targetCategory: 'new' },
+          { id: 'opt-wip', name: 'Doing', targetCategory: 'indeterminate' },
+        ],
+      },
+    };
+
+    await expect(
+      svc.moveBoardItemToCategory(binding(), twoStageBoard, 'PVTI_item1', 'done'),
+    ).rejects.toBeInstanceOf(GithubTrackerAccessError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('GithubTrackerBackend.moveBoardItemToIteration (issue #218\u2019s "iteration" half of the same move)', () => {
+  it('resolves the iteration id from board.iterationField.iterations and mutates {fieldId, value: {iterationId}}', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.github.com/graphql');
+      const parsed = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+      expect(parsed.variables).toEqual({
+        projectId: 'PVT_board1',
+        itemId: 'PVTI_item1',
+        fieldId: 'iter-field-1',
+        value: { iterationId: 'iter-1' },
+      });
+      return githubResponse(200, {
+        data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_item1' } } },
+      });
+    });
+    const svc = backend(fetchImpl);
+
+    await expect(
+      svc.moveBoardItemToIteration(binding(), BOARD, 'PVTI_item1', 'Sprint 1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('throws when the board has no iteration field', async () => {
+    const fetchImpl = vi.fn();
+    const svc = backend(fetchImpl);
+    const boardWithNoIteration: TrackerBoard = { id: 'PVT_board4', name: 'no-iteration board' };
+
+    await expect(
+      svc.moveBoardItemToIteration(binding(), boardWithNoIteration, 'PVTI_item1', 'Sprint 1'),
+    ).rejects.toBeInstanceOf(GithubTrackerAccessError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('throws when no iteration matches the requested title', async () => {
+    const fetchImpl = vi.fn();
+    const svc = backend(fetchImpl);
+
+    await expect(
+      svc.moveBoardItemToIteration(binding(), BOARD, 'PVTI_item1', 'Sprint 99'),
+    ).rejects.toBeInstanceOf(GithubTrackerAccessError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

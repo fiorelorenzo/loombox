@@ -80,7 +80,9 @@ export class GithubGraphQlError extends Error {
   constructor(errors: ReadonlyArray<{ readonly message: string }>) {
     super(
       `github tracker: GraphQL request failed — ${
-        errors.length > 0 ? errors.map((error) => error.message).join('; ') : '(no error message returned)'
+        errors.length > 0
+          ? errors.map((error) => error.message).join('; ')
+          : '(no error message returned)'
       }`,
     );
     this.name = 'GithubGraphQlError';
@@ -322,12 +324,20 @@ function columnsFor(field: GithubProjectV2FieldNode): TrackerBoardColumn[] | und
  * field than an incidental two-option one that also happens to map.
  */
 function pickStatusField(
-  candidates: ReadonlyArray<{ readonly id: string; readonly name: string; readonly columns: TrackerBoardColumn[] }>,
+  candidates: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly columns: TrackerBoardColumn[];
+  }>,
 ): TrackerBoardStatusField {
-  const namedStatus = candidates.find((candidate) => candidate.name.trim().toLowerCase() === 'status');
+  const namedStatus = candidates.find(
+    (candidate) => candidate.name.trim().toLowerCase() === 'status',
+  );
   const chosen =
     namedStatus ??
-    candidates.reduce((best, candidate) => (candidate.columns.length > best.columns.length ? candidate : best));
+    candidates.reduce((best, candidate) =>
+      candidate.columns.length > best.columns.length ? candidate : best,
+    );
   return { id: chosen.id, name: chosen.name, columns: chosen.columns };
 }
 
@@ -396,10 +406,15 @@ export function toTrackerBoard(project: {
   const { statusField, statusFieldUnavailableReason, iterationField } = discoverGithubBoardFields(
     project.fields.nodes,
   );
-  return { id: project.id, name: project.title, statusField, statusFieldUnavailableReason, iterationField };
+  return {
+    id: project.id,
+    name: project.title,
+    statusField,
+    statusFieldUnavailableReason,
+    iterationField,
+  };
 }
 
 /** The `ProjectV2FieldValue` input `updateProjectV2ItemFieldValue`'s `$value` expects — exactly one of a column move (`singleSelectOptionId`) or an iteration move (`iterationId`), never both (SPEC §7.10). */
 export type GithubProjectV2FieldValue =
-  | { readonly singleSelectOptionId: string }
-  | { readonly iterationId: string };
+  { readonly singleSelectOptionId: string } | { readonly iterationId: string };
