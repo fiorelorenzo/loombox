@@ -208,7 +208,7 @@
     background: var(--color-surface);
     border-radius: var(--radius-lg);
     padding: var(--space-2xs) var(--space-xs);
-    max-width: 16rem;
+    max-width: var(--attachment-chip-max-width);
     animation: chip-in var(--duration-base) var(--ease-beat) both;
   }
 
@@ -228,8 +228,8 @@
   }
 
   .preview {
-    width: 2rem;
-    height: 2rem;
+    width: var(--attachment-thumb-size);
+    height: var(--attachment-thumb-size);
     border-radius: var(--radius-sm);
     object-fit: cover;
     flex-shrink: 0;

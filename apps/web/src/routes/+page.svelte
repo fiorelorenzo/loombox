@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { cubicOut } from 'svelte/easing';
@@ -69,6 +69,7 @@
   import { isThoughtStillThinking } from '$lib/thinking';
   import { latestTurnDiffSummary } from '$lib/transcript/turn-review';
   import { searchTranscript } from '$lib/transcript/search';
+  import { SessionReplay } from '$lib/transcript/replay.svelte';
   import {
     DESKTOP_VIEWPORT_BREAKPOINT_PX,
     isNarrowViewport,
@@ -186,6 +187,8 @@
   import ReviewChangesDialog from '$lib/components/ReviewChangesDialog.svelte';
   import RunnerPanel from '$lib/components/RunnerPanel.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
+  import SessionReplayBanner from '$lib/components/SessionReplayBanner.svelte';
+  import SessionReplayControls from '$lib/components/SessionReplayControls.svelte';
   import SlashCommandPicker from '$lib/components/SlashCommandPicker.svelte';
   import SnippetPicker from '$lib/components/SnippetPicker.svelte';
   import TranscriptSearchBar from '$lib/components/TranscriptSearchBar.svelte';
@@ -1390,6 +1393,50 @@
    * line below.
    */
   const turnIsActive = $derived(transcript?.turnActive ?? false);
+
+  /**
+   * The active replay engine for the selected session, if any (issue
+   * #265). `undefined` outside replay — the ordinary live transcript and
+   * composer render unchanged. Replaying always operates on the FULL
+   * `transcript.items` this client already has synced for the selected
+   * session — the same array the ordinary read-only view already renders
+   * in full (#730's agentless notice proves that sync already happens
+   * for a past session with no live agent) — never a second fetch:
+   * replay only controls how fast that already-known history reveals,
+   * never what it contains.
+   */
+  let sessionReplay = $state<SessionReplay | undefined>(undefined);
+
+  /**
+   * Whether the selected session has a finished-enough history worth
+   * replaying (issue #265). `'exited'`/`'error'` sessions are genuinely
+   * done; `'disconnected'` has no live agent right now either (its
+   * composer works, per #706/#912's on-demand revival, but nothing is
+   * actually running until a prompt is sent) and its history up to the
+   * disconnect is exactly as replayable. Deliberately distinct from
+   * {@link selectedSessionAgentless} above: that one also covers
+   * `'queued'`/`'starting'` (nothing has happened yet, nothing to
+   * replay) and deliberately excludes `'disconnected'` (composer stays
+   * usable there) — the opposite split from this one.
+   */
+  const canReplaySelectedSession = $derived(
+    (selectedSessionStatus === 'exited' ||
+      selectedSessionStatus === 'error' ||
+      selectedSessionStatus === 'disconnected') &&
+      (transcript?.items.length ?? 0) > 0,
+  );
+
+  function startReplay(): void {
+    if (!canReplaySelectedSession || !transcript) return;
+    sessionReplay = new SessionReplay(transcript.items);
+    sessionReplay.play();
+  }
+
+  /** Leaves replay mode — stops its timer (a paused-but-forgotten replay must never keep ticking) and drops the engine so the ordinary live transcript/composer render again. */
+  function exitReplay(): void {
+    sessionReplay?.destroy();
+    sessionReplay = undefined;
+  }
 
   /**
    * A3-2: "the working state is a live line in the transcript itself, on
@@ -2629,6 +2676,35 @@
     closeTranscriptSearch();
   });
 
+  /**
+   * A new session's replay has nothing to do with the previous one's
+   * transcript (same "a new session starts clean" convention as the
+   * search-bar reset just above) — never leaves a stale replay engine
+   * ticking against the wrong session. `untrack` around the call is
+   * required, not decorative: `exitReplay` reads `sessionReplay` itself
+   * (`sessionReplay?.destroy()`), and without `untrack` THAT read would
+   * make `sessionReplay` a tracked dependency of THIS effect too — the
+   * exact `RunnerPanel.svelte`-precedented trap (see its own `untrack`
+   * doc comment) of a cleanup call re-triggering the very effect meant to
+   * depend only on `selectedSessionId`, immediately undoing `startReplay`
+   * the instant it ran.
+   */
+  $effect(() => {
+    void selectedSessionId;
+    untrack(() => exitReplay());
+  });
+
+  /** A live turn starting on the selected session (e.g. #706/#912's on-demand revival, triggered from another device) always wins over an in-progress replay — replay is read-only by definition (issue #265's own acceptance bullet), so it can never keep rendering once there is real live steering to show instead. Same `untrack` requirement as the effect just above. */
+  $effect(() => {
+    if (turnIsActive) untrack(() => exitReplay());
+  });
+
+  /** Belt-and-suspenders alongside {@link exitReplay}'s own explicit `destroy()` call: whichever `SessionReplay` instance is current gets its timer torn down the moment it stops being current, including on this whole page unmounting — `destroy()` is idempotent (a no-op once already stopped), so this never double-fires anything observable. */
+  $effect(() => {
+    const current = sessionReplay;
+    return () => current?.destroy();
+  });
+
   /** Marks any open file tab dirty once the agent's own edit lands on its path (issue #737's acceptance line) — see `CanvasTabsState.syncDirty`'s own doc comment for the transcript-position watermark this compares against. */
   $effect(() => {
     canvasTabs.syncDirty(transcript?.items ?? []);
@@ -3710,6 +3786,20 @@
     if (event.key === 'Escape' && anySidebarMenuOpen) {
       event.preventDefault();
       closeSidebarMenus();
+      return;
+    }
+    // Issue #265's own "interruption attempts do something sensible" bar:
+    // a user reflexively hitting Escape on a PLAYING replay (the same
+    // gesture live steering trains — Stop is `Mod+.`, but Escape is the
+    // universal "make it stop" instinct) gets an immediate, safe result —
+    // playback pauses — rather than silently doing nothing or (worse)
+    // reaching for a live-turn action that doesn't exist here. Checked
+    // after the sidebar-menu branch above: a menu open OVER a playing
+    // replay still closes first, the same top-layer-first precedence
+    // every other Escape case here already follows.
+    if (event.key === 'Escape' && sessionReplay?.playing) {
+      event.preventDefault();
+      sessionReplay.pause();
       return;
     }
     if (paletteOpen) return;
@@ -5008,7 +5098,32 @@
                   {/if}
                 </div>
               {/if}
-              {#if transcriptSearchOpen}
+              <!-- Issue #265: a session with a finished-enough history
+                 (exited/errored/disconnected, with at least one item)
+                 gets a "Replay" entry point regardless of whether the
+                 composer above is disabled — `'disconnected'` isn't part
+                 of `selectedSessionAgentless` (its composer stays usable,
+                 issue #706/#912) but its already-synced history is just
+                 as replayable, so this is its own, separately-gated
+                 block rather than nested inside the notice above. -->
+              {#if canReplaySelectedSession && !sessionReplay}
+                <div class="workspace-notice" data-testid="session-replay-entry">
+                  <Card elevation="flat" padding="sm">
+                    <div class="replay-entry-row">
+                      <span>Review how this session unfolded, at your own pace.</span>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onclick={startReplay}
+                        dataTestId="start-replay-button"
+                      >
+                        <Icon name="play" size="14px" /> Replay
+                      </Button>
+                    </div>
+                  </Card>
+                </div>
+              {/if}
+              {#if transcriptSearchOpen && !sessionReplay}
                 <TranscriptSearchBar
                   query={transcriptSearchQuery}
                   activeIndex={transcriptSearchActiveIndex}
@@ -5035,76 +5150,84 @@
                   onToggle={togglePlanSidebarCollapsed}
                 />
               {/if}
+              {#if sessionReplay}
+                <SessionReplayBanner onExit={exitReplay} />
+              {/if}
               <TranscriptTimeline
                 sessionKey={selectedSessionId}
-                items={transcript?.items ?? []}
+                items={sessionReplay ? sessionReplay.displayItems : (transcript?.items ?? [])}
                 {transcript}
-                turnActive={transcript?.turnActive ?? false}
+                turnActive={sessionReplay
+                  ? sessionReplay.revealing
+                  : (transcript?.turnActive ?? false)}
                 providerId={selectedSession?.provider}
-                {permissionHead}
+                permissionHead={sessionReplay ? undefined : permissionHead}
                 jumpTarget={transcriptJumpTarget}
-                onFork={narrowViewport ? undefined : forkSessionFromTurn}
+                onFork={sessionReplay || narrowViewport ? undefined : forkSessionFromTurn}
                 {forkingTurnId}
                 onOpenFile={openFileTab}
-                searchQuery={transcriptSearchQuery}
+                searchQuery={sessionReplay ? '' : transcriptSearchQuery}
                 activeSearchItemId={transcriptSearchMatches[transcriptSearchActiveIndex]?.itemId}
                 onViewportItemChange={(id) => (viewedItemId = id)}
               />
 
               <div class="canvas-footer">
-                <!-- A3-2 (issue #666): the turn's own live line, not a
+                {#if sessionReplay}
+                  <SessionReplayControls replay={sessionReplay} />
+                {:else}
+                  <!-- A3-2 (issue #666): the turn's own live line, not a
                    spinner welded to the Stop button — see `turnProgressVisible`'s
                    own doc comment (script section) for exactly when this
                    shows. Reuses `.composer-gutter`, the same column every
                    row in this strip aligns to, so it reads as the
                    transcript's own next line rather than a toast bolted
                    onto the footer. -->
-                {#if turnProgressVisible}
-                  <div class="turn-progress" data-testid="turn-progress-line">
-                    <div class="composer-gutter" aria-hidden="true"></div>
-                    <div class="turn-progress-content">
-                      <WovenLoader size="sm" variant="working" label="Turn in progress" />
-                      Working…
+                  {#if turnProgressVisible}
+                    <div class="turn-progress" data-testid="turn-progress-line">
+                      <div class="composer-gutter" aria-hidden="true"></div>
+                      <div class="turn-progress-content">
+                        <WovenLoader size="sm" variant="working" label="Turn in progress" />
+                        Working…
+                      </div>
                     </div>
-                  </div>
-                {/if}
+                  {/if}
 
-                {#if transcript && transcript.plan.length > 0}
-                  <PlanCard
-                    entries={transcript.plan}
-                    collapsed={planCollapsed}
-                    onToggle={togglePlanCollapsed}
-                  />
-                {/if}
+                  {#if transcript && transcript.plan.length > 0}
+                    <PlanCard
+                      entries={transcript.plan}
+                      collapsed={planCollapsed}
+                      onToggle={togglePlanCollapsed}
+                    />
+                  {/if}
 
-                <QueuedPromptBar prompts={queuedPrompts} />
+                  <QueuedPromptBar prompts={queuedPrompts} />
 
-                {#if staleNotice}
-                  <p class="stale-notice" role="status" data-testid="stale-permission-notice">
-                    {staleNotice.message}
-                  </p>
-                {/if}
+                  {#if staleNotice}
+                    <p class="stale-notice" role="status" data-testid="stale-permission-notice">
+                      {staleNotice.message}
+                    </p>
+                  {/if}
 
-                <!-- Issue #706/#912: a prompt this client sent came back
+                  <!-- Issue #706/#912: a prompt this client sent came back
                    `prompt_inject_result: {outcome: 'error'}` — the
                    revival-on-demand reply channel's one visible failure
                    case (a revival attempt failed, or the session is
                    paused on a spend cap). Same spot/shape as
                    `staleNotice` just above: a real, readable message
                    right where the send happened, never a console line. -->
-                {#if promptInjectError}
-                  <ErrorNotice message={promptInjectError.message} />
-                {/if}
+                  {#if promptInjectError}
+                    <ErrorNotice message={promptInjectError.message} />
+                  {/if}
 
-                <PermissionQueueBar
-                  sessionId={selectedSessionId}
-                  queue={permissionQueue}
-                  onResolve={resolvePermission}
-                  onStop={stopSession}
-                  narrow={narrowViewport}
-                />
+                  <PermissionQueueBar
+                    sessionId={selectedSessionId}
+                    queue={permissionQueue}
+                    onResolve={resolvePermission}
+                    onStop={stopSession}
+                    narrow={narrowViewport}
+                  />
 
-                <!-- Issue #740, settled pick C1-3: the turn summary bar sits
+                  <!-- Issue #740, settled pick C1-3: the turn summary bar sits
                    here, in `.canvas-footer`, directly above the composer —
                    not inside `TranscriptTimeline` (issue #755 windows that
                    list to the visible range plus overscan, and this bar's
@@ -5112,22 +5235,22 @@
                    whether or not it's currently mounted) and not inside the
                    composer's own A1-3 lift or the terminal dock (v7 D1-2) —
                    neither settled surface is re-homed by this work. -->
-                <TurnEditsBar
-                  summary={turnEditsSummary}
-                  onJumpToFile={jumpToTranscriptItem}
-                  onReviewChanges={openReviewChanges}
-                />
+                  <TurnEditsBar
+                    summary={turnEditsSummary}
+                    onJumpToFile={jumpToTranscriptItem}
+                    onReviewChanges={openReviewChanges}
+                  />
 
-                <!-- Issue #250: a distinct, dismissable near-context-limit
+                  <!-- Issue #250: a distinct, dismissable near-context-limit
                    warning, separate from `StatusBar`'s own subtle meter
                    colour shift — right above the composer, the exact point
                    a user is about to decide "keep going or wrap up". Same
                    `transcript?.usage` this session's `StatusBar` meter
                    already reads (below), never a second subscription. -->
-                <ContextLimitWarning usage={transcript?.usage} />
+                  <ContextLimitWarning usage={transcript?.usage} />
 
-                <form class="composer" onsubmit={submitPrompt}>
-                  <!-- Design spec v6 §3.4 (issue #575): the composer is the
+                  <form class="composer" onsubmit={submitPrompt}>
+                    <!-- Design spec v6 §3.4 (issue #575): the composer is the
                      last entry in the timeline, not a chat box bolted to the
                      bottom of one. It takes the same fixed role gutter every
                      transcript item uses, so the column runs unbroken from
@@ -5150,80 +5273,84 @@
                      hint occupying the row below the textarea. They now share
                      that one row under the text, so everything about the turn
                      you are composing reads inside the field's own column. -->
-                  <div class="composer-row">
-                    <div class="composer-gutter" aria-hidden="true"></div>
-                    <!-- The drop/paste zone wraps the field (see AttachmentBar's
+                    <div class="composer-row">
+                      <div class="composer-gutter" aria-hidden="true"></div>
+                      <!-- The drop/paste zone wraps the field (see AttachmentBar's
                        doc comment): dropping a file on the textarea, or pasting
                        an image into it, used to do nothing at all. -->
-                    <AttachmentBar
-                      {attachments}
-                      onFiles={attachFiles}
-                      onRetry={retryAttachment}
-                      onRemove={removeAttachment}
-                    >
-                      {#snippet field({ pickFiles })}
-                        <div class="composer-field">
-                          <!-- Removable @-mention pills (issue #742, decisions
+                      <AttachmentBar
+                        {attachments}
+                        onFiles={attachFiles}
+                        onRetry={retryAttachment}
+                        onRemove={removeAttachment}
+                      >
+                        {#snippet field({ pickFiles })}
+                          <div class="composer-field">
+                            <!-- Removable @-mention pills (issue #742, decisions
                              doc C2-3): a separate row above the textarea,
                              never characters inside it — the reference
                              lives beside the prose, not inside it. -->
-                          {#if mentions.length > 0}
-                            <ul class="mention-pills" data-testid="mention-pill-list">
-                              {#each mentions as mention (mentionKey(mention))}
-                                <li class="mention-pill" data-testid="mention-pill">
-                                  {#if mention.kind === 'file'}
-                                    <button
-                                      type="button"
-                                      class="mention-pill-open"
-                                      onclick={() => openFileTab(mention.path)}
-                                      data-testid="mention-pill-open"
-                                    >
+                            {#if mentions.length > 0}
+                              <ul class="mention-pills" data-testid="mention-pill-list">
+                                {#each mentions as mention (mentionKey(mention))}
+                                  <li class="mention-pill" data-testid="mention-pill">
+                                    {#if mention.kind === 'file'}
+                                      <button
+                                        type="button"
+                                        class="mention-pill-open"
+                                        onclick={() => openFileTab(mention.path)}
+                                        data-testid="mention-pill-open"
+                                      >
+                                        <Icon
+                                          name={MENTION_ICON_BY_KIND[mention.kind]}
+                                          size="14px"
+                                        />
+                                        <span class="mention-pill-label"
+                                          >{mention.resourceLink.name}</span
+                                        >
+                                      </button>
+                                    {:else}
                                       <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
                                       <span class="mention-pill-label"
                                         >{mention.resourceLink.name}</span
                                       >
-                                    </button>
-                                  {:else}
-                                    <Icon name={MENTION_ICON_BY_KIND[mention.kind]} size="14px" />
-                                    <span class="mention-pill-label"
-                                      >{mention.resourceLink.name}</span
+                                    {/if}
+                                    <IconButton
+                                      label={`Remove ${mention.resourceLink.name}`}
+                                      size="sm"
+                                      dataTestId="mention-pill-remove"
+                                      onclick={() => removeMention(mention)}
                                     >
-                                  {/if}
-                                  <IconButton
-                                    label={`Remove ${mention.resourceLink.name}`}
-                                    size="sm"
-                                    dataTestId="mention-pill-remove"
-                                    onclick={() => removeMention(mention)}
-                                  >
-                                    <Icon name="close" size="12px" />
-                                  </IconButton>
-                                </li>
-                              {/each}
-                            </ul>
-                          {/if}
-                          <textarea
-                            bind:this={composerTextarea}
-                            bind:value={draft}
-                            oninput={handleComposerInput}
-                            onkeydown={handleComposerKeydown}
-                            disabled={selectedSessionAgentless}
-                            placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
-                            aria-label="Follow-up prompt"
-                            aria-describedby="composer-hint"
-                            rows="1"
-                            data-testid="composer-input"></textarea>
-                          <!-- Screen-reader only: the row below is full of live
+                                      <Icon name="close" size="12px" />
+                                    </IconButton>
+                                  </li>
+                                {/each}
+                              </ul>
+                            {/if}
+                            <textarea
+                              bind:this={composerTextarea}
+                              bind:value={draft}
+                              oninput={handleComposerInput}
+                              onkeydown={handleComposerKeydown}
+                              disabled={selectedSessionAgentless}
+                              placeholder={composerUnavailableReason ?? 'Send a follow-up prompt…'}
+                              aria-label="Follow-up prompt"
+                              aria-describedby="composer-hint"
+                              rows="1"
+                              data-testid="composer-input"></textarea>
+                            <!-- Screen-reader only: the row below is full of live
                              facts now (agent, model, context, cost), and a
                              keyboard hint read once in a lifetime does not get
                              to compete with them for the same pixels. It stays
                              in the DOM because `aria-describedby` above points
                              at it. -->
-                          <p class="composer-hint sr-only" id="composer-hint">
-                            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
-                            line · <kbd>@</kbd> to reference a file, directory, session, or tracker item
-                          </p>
-                          <div class="composer-controls" data-testid="composer-controls">
-                            <!-- Issue #578: two clusters, not five equally-spaced
+                            <p class="composer-hint sr-only" id="composer-hint">
+                              <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
+                              line · <kbd>@</kbd> to reference a file, directory, session, or tracker
+                              item
+                            </p>
+                            <div class="composer-controls" data-testid="composer-controls">
+                              <!-- Issue #578: two clusters, not five equally-spaced
                                buttons. `.composer-message-actions` acts on THIS
                                message (attach a file, insert a snippet) — every
                                turn, always live. `.composer-session-controls`
@@ -5235,66 +5362,68 @@
                                the wider `--space-md` between them (`.composer-
                                controls`' own gap, below) is what reads as
                                "two groups plus Send", not a toolbar of leftovers. -->
-                            <div class="composer-message-actions">
-                              <IconButton label="Attach image" onclick={pickFiles}>
-                                <Icon name="attach" size="20px" />
-                              </IconButton>
-                              <IconButton
-                                label="Insert snippet"
-                                disabled={!client || !selectedSessionId}
-                                onclick={openSnippetPicker}
-                              >
-                                <Icon name="file" size="20px" />
-                              </IconButton>
-                            </div>
-                            <div class="composer-session-controls">
-                              {#if narrowViewport}
-                                <IconButton
-                                  label={configControlsExpanded
-                                    ? 'Hide composer options'
-                                    : 'More composer options'}
-                                  pressed={configControlsExpanded}
-                                  onclick={() => (configControlsExpanded = !configControlsExpanded)}
-                                >
-                                  <Icon name="more" />
+                              <div class="composer-message-actions">
+                                <IconButton label="Attach image" onclick={pickFiles}>
+                                  <Icon name="attach" size="20px" />
                                 </IconButton>
-                              {/if}
-                              <ConfigBar
-                                options={configOptions}
-                                onChange={changeConfigOption}
-                                providerId={selectedSession?.provider}
-                                compact={!configControlsVisible}
-                                sources={configOptionSources}
-                                onPinToProject={pinConfigOptionToProject}
-                                onUnpinFromProject={unpinConfigOptionFromProject}
-                                bind:popoverOpen={configBarPopoverOpen}
-                              />
-                            </div>
-                            <div class="composer-actions">
-                              <!-- A3-2 (issue #666): one button in one slot —
+                                <IconButton
+                                  label="Insert snippet"
+                                  disabled={!client || !selectedSessionId}
+                                  onclick={openSnippetPicker}
+                                >
+                                  <Icon name="file" size="20px" />
+                                </IconButton>
+                              </div>
+                              <div class="composer-session-controls">
+                                {#if narrowViewport}
+                                  <IconButton
+                                    label={configControlsExpanded
+                                      ? 'Hide composer options'
+                                      : 'More composer options'}
+                                    pressed={configControlsExpanded}
+                                    onclick={() =>
+                                      (configControlsExpanded = !configControlsExpanded)}
+                                  >
+                                    <Icon name="more" />
+                                  </IconButton>
+                                {/if}
+                                <ConfigBar
+                                  options={configOptions}
+                                  onChange={changeConfigOption}
+                                  providerId={selectedSession?.provider}
+                                  compact={!configControlsVisible}
+                                  sources={configOptionSources}
+                                  onPinToProject={pinConfigOptionToProject}
+                                  onUnpinFromProject={unpinConfigOptionFromProject}
+                                  bind:popoverOpen={configBarPopoverOpen}
+                                />
+                              </div>
+                              <div class="composer-actions">
+                                <!-- A3-2 (issue #666): one button in one slot —
                                  while a turn runs the button IS Stop, Send is
                                  gone (not disabled-and-present). Both render
                                  at `size="md"` (Stop no longer takes the
                                  smaller `sm` it used to sit at next to a
                                  disabled Send) so the slot itself never
                                  changes footprint at the swap. -->
-                              {#if turnIsActive}
-                                <TurnStopControl turnActive={turnIsActive} onStop={stopSession} />
-                              {:else}
-                                <Button
-                                  type="submit"
-                                  variant="primary"
-                                  disabled={sendDisabled}
-                                  ariaLabel="Send prompt">Send</Button
-                                >
-                              {/if}
+                                {#if turnIsActive}
+                                  <TurnStopControl turnActive={turnIsActive} onStop={stopSession} />
+                                {:else}
+                                  <Button
+                                    type="submit"
+                                    variant="primary"
+                                    disabled={sendDisabled}
+                                    ariaLabel="Send prompt">Send</Button
+                                  >
+                                {/if}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      {/snippet}
-                    </AttachmentBar>
-                  </div>
-                </form>
+                        {/snippet}
+                      </AttachmentBar>
+                    </div>
+                  </form>
+                {/if}
               </div>
             </div>
             {#if activeFileTab}
@@ -5865,6 +5994,18 @@
     display: flex;
     align-items: center;
     gap: var(--space-xs);
+  }
+
+  /* issue #265's "Replay" entry point — a single row, the same "one flat
+     Card, a sentence, a button" shape `.escrow-inflight-row` already
+     uses just above, wrapping at narrow widths rather than truncating
+     the sentence. */
+  .replay-entry-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
   }
 
   /* thread-draw for the escrow in-flight state (redesign brief §6's

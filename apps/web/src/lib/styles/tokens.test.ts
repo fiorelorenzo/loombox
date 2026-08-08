@@ -82,3 +82,44 @@ describe('design tokens (coherence v5 §5 token hygiene, issue #508)', () => {
     ).toEqual([]);
   });
 });
+
+describe('issue #580 stragglers migration (icon sizes, dialog geometry, one-off dimensions)', () => {
+  const iconSizeTokens = ['--icon-size-sm', '--icon-size-md', '--icon-size-lg'];
+  const dialogGeometryTokens = ['--dialog-width-sm', '--dialog-width-md', '--dialog-max-height'];
+  const dimensionTokens = [
+    '--status-meter-track-width',
+    '--status-meter-track-height',
+    '--attachment-thumb-size',
+    '--attachment-chip-max-width',
+    '--diff-gutter-width',
+    '--diff-marker-width',
+    '--scroll-cap-height',
+    '--swatch-icon-size',
+    '--swatch-size',
+    '--swatch-check-size',
+    '--swatch-custom-size',
+  ];
+
+  it('every token this pass added is both defined and actually consumed somewhere under apps/web/src', () => {
+    const defined = definedTokens();
+    const used = usedTokens(walk(srcDir));
+    for (const token of [...iconSizeTokens, ...dialogGeometryTokens, ...dimensionTokens]) {
+      expect(defined.has(token), `${token} must be defined in styles/*.css`).toBe(true);
+      expect(
+        used.has(token),
+        `${token} must be read via var() somewhere under apps/web/src — a defined-but-unused
+         token is exactly the drift this pass exists to close, and the hygiene test above only
+         catches the opposite direction (used but never defined)`,
+      ).toBe(true);
+    }
+  });
+
+  it("DirectoryPicker's git-badge icon and its file-list scroll cap read the shared tokens, not a re-inlined literal", () => {
+    const text = readFileSync(join(srcDir, 'lib', 'components', 'DirectoryPicker.svelte'), 'utf8');
+    expect(text).toContain('size="var(--icon-size-md)"');
+    expect(text).toContain('max-height: var(--scroll-cap-height)');
+    // The pre-migration literals never come back by hand.
+    expect(text).not.toContain('size="0.85em"');
+    expect(text).not.toContain('max-height: 12rem');
+  });
+});

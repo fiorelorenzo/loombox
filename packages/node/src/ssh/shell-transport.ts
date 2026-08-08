@@ -27,6 +27,20 @@
 export interface ShellChannelOptions {
   cols: number;
   rows: number;
+  /**
+   * The directory the remote shell should already be in from its very
+   * first byte (issue #704) — `openTerminalForBridge`'s
+   * `routing.session.worktreePath`, always known, so this is never
+   * optional. `Ssh2Transport` bakes it into the SSH `exec` request itself
+   * (`cd <cwd> && exec "$SHELL" -l`, PTY attached) rather than typing a
+   * `cd` as PTY input once the channel is open: a real `ssh2` shell
+   * channel is a plain PTY with no `cwd` option (unlike `node-pty`'s local
+   * spawn), and typed input is echoed back by the remote PTY's own line
+   * discipline — the exact mechanism this issue reported. The exec
+   * command itself is never echoed; only what the shell it starts prints
+   * on its own ever reaches the channel.
+   */
+  cwd: string;
 }
 
 export interface ShellChannel {

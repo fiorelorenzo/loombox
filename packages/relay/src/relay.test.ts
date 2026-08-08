@@ -415,6 +415,127 @@ describe('relay v1', () => {
     });
   });
 
+  describe('compatibility window (#657): a peer below the declared floor is refused, not just flagged', () => {
+    it('refuses a node build strictly below minNodeVersion with update_required and closes 4400', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        compatWindow: { minNodeVersion: '0.5.0' },
+      });
+      closers.push(close);
+
+      const socket = await connect(url);
+      send(socket, {
+        type: 'initialize',
+        protocolVersion: PROTOCOL_V1,
+        role: 'node',
+        authToken: 't',
+        deviceId: 'd',
+        devicePublicKey: fakeBase64('d-pubkey'),
+        buildIdentity: { version: '0.4.9' },
+      });
+
+      const notice = await nextMessage(socket);
+      expect(notice.type).toBe('update_required');
+      expect(notice.message).toContain('0.5.0');
+      expect(notice.message).toContain('0.4.9');
+
+      const closeEvent = await waitForClose(socket);
+      expect(closeEvent.code).toBe(4400);
+    });
+
+    it('refuses a client build strictly below minClientVersion, independent of the node floor', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        compatWindow: { minClientVersion: '0.5.0' },
+      });
+      closers.push(close);
+
+      const socket = await connect(url);
+      send(socket, {
+        type: 'initialize',
+        protocolVersion: PROTOCOL_V1,
+        role: 'client',
+        authToken: 't',
+        deviceId: 'd',
+        devicePublicKey: fakeBase64('d-pubkey'),
+        buildIdentity: { version: '0.4.9' },
+      });
+
+      const notice = await nextMessage(socket);
+      expect(notice.type).toBe('update_required');
+
+      const closeEvent = await waitForClose(socket);
+      expect(closeEvent.code).toBe(4400);
+    });
+
+    it('allows a build exactly at the floor — the floor itself is still served', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        compatWindow: { minNodeVersion: '0.5.0' },
+      });
+      closers.push(close);
+
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+        buildIdentity: { version: '0.5.0' },
+      });
+      expect(result.type).toBe('initialize_result');
+    });
+
+    it('allows a build above the floor', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        compatWindow: { minNodeVersion: '0.5.0' },
+      });
+      closers.push(close);
+
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+        buildIdentity: { version: '0.6.0' },
+      });
+      expect(result.type).toBe('initialize_result');
+    });
+
+    it('never refuses a peer that sends no buildIdentity at all, even with a window configured — unknown never reads as behind', async () => {
+      const { url, close } = await startRelay({
+        host: '127.0.0.1',
+        port: 0,
+        compatWindow: { minNodeVersion: '0.5.0' },
+      });
+      closers.push(close);
+
+      // `initConnection` omits `buildIdentity` unless explicitly given —
+      // exactly the pre-#655 peer shape this must still let through.
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+      });
+      expect(result.type).toBe('initialize_result');
+    });
+
+    it('refuses nothing when no window is configured — every relay running today, unchanged', async () => {
+      const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });
+      closers.push(close);
+
+      const { result } = await initConnection(url, {
+        role: 'node',
+        deviceId: 'd1',
+        authToken: 't1',
+        buildIdentity: { version: '0.0.1' },
+      });
+      expect(result.type).toBe('initialize_result');
+    });
+  });
+
   describe('target registry (#66 relay side) and session_create routing', () => {
     it('routes session_create to the node that announced the requested target', async () => {
       const { url, close } = await startRelay({ host: '127.0.0.1', port: 0 });

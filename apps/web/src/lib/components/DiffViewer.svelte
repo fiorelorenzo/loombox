@@ -176,7 +176,7 @@
 
   .line-no {
     display: inline-block;
-    width: 2.5rem;
+    width: var(--diff-gutter-width);
     text-align: right;
     opacity: 0.45;
     flex-shrink: 0;
@@ -185,7 +185,7 @@
   }
 
   .marker {
-    width: 1rem;
+    width: var(--diff-marker-width);
     flex-shrink: 0;
     opacity: 0.6;
   }

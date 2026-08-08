@@ -319,7 +319,7 @@
             aria-label={displayExpanded ? 'Collapse thought' : 'Expand thought'}
             onclick={() => (manualExpandOverride = !displayExpanded)}
           >
-            <Icon name="collapse-chevron" size="0.75em" class="expand-icon" />
+            <Icon name="collapse-chevron" size="var(--icon-size-sm)" class="expand-icon" />
           </button>
           {#if thinking}
             <WovenLoader size="sm" variant="working" label="Agent thinking" />
@@ -667,7 +667,7 @@
   /* Sane height limit (issue #136): a long thought scrolls internally
      instead of pushing the rest of the transcript out of view. */
   .thought-body {
-    max-height: 12rem;
+    max-height: var(--scroll-cap-height);
     overflow-y: auto;
   }
 

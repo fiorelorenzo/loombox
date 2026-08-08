@@ -253,7 +253,7 @@
     font-size: var(--text-caption-size);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.02em;
+    letter-spacing: var(--text-caption-tracking);
     opacity: 0.6;
   }
 
