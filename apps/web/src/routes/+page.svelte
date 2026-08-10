@@ -79,7 +79,7 @@
     WIDE_VIEWPORT_BREAKPOINT_PX,
   } from '$lib/viewport';
   import { CanvasTabsState } from '$lib/tabs.svelte';
-  import { resolvePendingPushAction } from '$lib/push-action-routing';
+  import { resolvePendingPushAction } from '@loombox/push-core';
   import {
     SESSION_STATUS_LABELS,
     SESSION_STATUS_TONES,
@@ -1589,7 +1589,7 @@
 
   // #164: "tapping/clicking a notification opens directly to the relevant
   // session" — the service worker's `notificationclick` handler
-  // (`push-payload.ts`'s `sessionUrlFromNotificationData`) opens/focuses
+  // (`@loombox/push-core`'s `sessionUrlFromNotificationData`) opens/focuses
   // this app at `?session=<id>`; this is the other half, read once on
   // mount and consumed as soon as that session actually shows up in the
   // account's session list (which may arrive after this page has already
@@ -1598,7 +1598,7 @@
 
   // #165: an approve/deny tap on a push notification's action button landed
   // here as `?session=<id>&action=approve|deny` — the other half of
-  // `push-action-routing.ts`'s `resolvePendingPushAction`. Consumed as soon
+  // `@loombox/push-core`'s `resolvePendingPushAction`. Consumed as soon
   // as this session's real permission queue arrives (may be empty on the
   // very first emission, if the request itself hasn't reached this device
   // yet — `maybeResolvePendingPushAction` below is re-checked on every
@@ -3740,7 +3740,7 @@
    * `sessionId -> projectPath` map, into the active service worker (#166) —
    * there is no `localStorage` access from a service worker, and the push
    * payload itself never carries a `projectPath` (SPEC §8's blind-relay
-   * boundary), so the SW's `push` handler (`push-suppression.ts`'s
+   * boundary), so the SW's `push` handler (`@loombox/push-core`'s
    * `shouldSuppressPush`) relies entirely on this sync. A no-op wherever
    * there is no controlling service worker yet (unsupported browser, or the
    * very first load before the SW has taken control).

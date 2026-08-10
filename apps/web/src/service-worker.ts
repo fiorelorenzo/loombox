@@ -7,26 +7,25 @@
  * custom application logic `generateSW`'s Workbox-generated wrapper has no
  * hook for, so this file is a real, bundled entry point instead, with the
  * precache manifest injected at `self.__WB_MANIFEST` (`@vite-pwa/sveltekit`'s
- * own documented pattern). Every actual decision (what a payload means, what
- * to show, where a click goes) lives in `$lib/push-payload.ts`, a plain
- * DOM/SW-API-free module — this file is only the thin `self.addEventListener`
- * glue, mirroring the split every other browser-API surface in this package
- * already uses (`viewport.ts`, `attachments.ts`, ...).
+ * own documented pattern). The actual payload/suppression decision logic
+ * lives in `@loombox/push-core` (#282 moved it there, out of `$lib/push-payload.ts`,
+ * so `apps/mobile`'s native push path can share it too) — `$lib/push-payload.ts`
+ * keeps only what is genuinely `ServiceWorkerRegistration`/`Clients`-shaped.
+ * This file is only the thin `self.addEventListener` glue, mirroring the
+ * split every other browser-API surface in this package already uses
+ * (`viewport.ts`, `attachments.ts`, ...).
  */
 import { precacheAndRoute } from 'workbox-precaching';
 
 import {
-  focusOrOpenSession,
+  defaultNotificationPreferences,
   parsePushPayload,
   sessionUrlFromNotificationData,
-  showAttentionNotification,
-  type ClientsLike,
-} from '$lib/push-payload';
-import {
-  defaultNotificationPreferences,
+  shouldSuppressPush,
   type NotificationPreferences,
-} from '$lib/notification-preferences';
-import { shouldSuppressPush, type SessionProjectMap } from '$lib/push-suppression';
+  type SessionProjectMap,
+} from '@loombox/push-core';
+import { focusOrOpenSession, showAttentionNotification, type ClientsLike } from '$lib/push-payload';
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -36,7 +35,7 @@ precacheAndRoute(self.__WB_MANIFEST);
 // `sessionId -> projectPath` map, kept in sync by `+page.svelte`'s
 // `syncNotificationPreferencesToServiceWorker` via `postMessage` (there is
 // no `localStorage` access from a service worker, and the push payload
-// itself carries no `projectPath` — see `push-suppression.ts`'s doc
+// itself carries no `projectPath` — see `@loombox/push-core`'s `suppression.ts`
 // comment). Lives only in this worker's own memory: a freshly (re)started
 // worker that hasn't yet heard from an open tab falls back to the
 // defaults — no mutes, no quiet hours, an empty project map — so a push
