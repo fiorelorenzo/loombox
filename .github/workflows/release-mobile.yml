@@ -1,0 +1,319 @@
+name: release-mobile
+
+# Attaches @loombox/mobile's build/signing/submission artifacts to the
+# GitHub Release changesets/action already created for this package's
+# version bump (issue #283, epic #34's "native mobile" build order). No new
+# tag, no new release object -- this workflow only builds, signs (when
+# configured) and uploads, matching release-desktop.yml's own shape and the
+# tag-collision lesson issue #924 drew from electron-builder's GitHub
+# publisher: the trigger below is `@loombox/mobile@<version>` (Changesets'
+# own tag, `.changeset/config.json`'s empty `ignore` array already covers
+# apps/mobile the same as every other package), never a bare `v*` tag,
+# which would collide with scripts/deploy-prod.sh's unrelated tag sequence.
+#
+# What this workflow can actually do today, precisely: build both
+# platforms up through an unsigned artifact (identical to ci.yml's own
+# `mobile` job), then check for the four families of secrets a real store
+# submission needs (Android keystore, Play Console service account, iOS
+# distribution certificate + provisioning profile, App Store Connect API
+# key) and either sign/submit for real or fail with the exact missing-secret
+# list -- see apps/mobile/README.md#what-lorenzo-has-to-obtain for the
+# complete list of what none of those secrets exist yet means concretely.
+# **None of them are configured as of this PR.** Every run of this workflow
+# until they are will build successfully and then stop, loudly, at the
+# first signing step.
+#
+# `workflow_dispatch` is the manual fallback, same rationale as
+# release-desktop.yml's: re-run for a tag whose automated attempt failed,
+# or backfill artifacts for a version bump that shipped before this
+# workflow existed.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The @loombox/mobile@<version> release tag to attach artifacts to'
+        required: true
+
+permissions:
+  contents: write # gh release upload
+
+jobs:
+  android:
+    name: android (build, sign, submit)
+    if: |
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, '@loombox/mobile@')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, '@loombox/mobile@'))
+    runs-on: ubuntu-latest
+    steps:
+      # Same "release event checks out the default branch, not the tag"
+      # gotcha release-desktop.yml documents and resolves the same way.
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build www
+        run: pnpm --filter @loombox/mobile run build
+
+      - name: cap add android
+        run: pnpm --filter @loombox/mobile run cap:add:android
+
+      # Always real, always run: derives versionCode/versionName from this
+      # exact tag's package.json version (see
+      # apps/mobile/scripts/lib/native-version.mjs) -- the version/identity
+      # plumbing a store submission needs, independent of whether signing
+      # secrets exist yet.
+      - name: Set Android version from the release tag
+        run: node apps/mobile/scripts/patch-android-project.mjs
+
+      - name: Check Android signing secrets
+        id: android_signing
+        run: node apps/mobile/scripts/check-secrets.mjs android-signing
+
+      - name: Sign (wire build.gradle to the keystore)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: node apps/mobile/scripts/sign-android.mjs
+
+      - name: Build signed release (.aab + .apk)
+        working-directory: apps/mobile/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease assembleRelease --console=plain
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(apps/mobile/android/app/build/outputs/bundle/release/*.aab apps/mobile/android/app/build/outputs/apk/release/*.apk)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no distributable artifacts found under apps/mobile/android/app/build/outputs/ -- packaging must have failed silently"
+            exit 1
+          fi
+          gh release upload "${{ steps.tag.outputs.tag }}" "${files[@]}" --clobber --repo "${{ github.repository }}"
+
+      - name: Check Play Console submission secrets
+        run: node apps/mobile/scripts/check-secrets.mjs play-submission
+
+      # Google Play Developer API upload, internal-testing track: the
+      # standard first destination for a private/early app, well short of
+      # a public production release, which stays a deliberate manual step
+      # Lorenzo takes from the Play Console once he's ready. Uses
+      # r0adkll/upload-google-play (the widely used, actively maintained
+      # community action wrapping this exact API) rather than a hand-rolled
+      # curl-based client this box has no way to test against a real
+      # service account. UNVERIFIED: no Google Play account/service account
+      # exists yet (see the secret check above and
+      # apps/mobile/README.md#what-lorenzo-has-to-obtain) -- this step has
+      # never run to completion.
+      - name: Submit to Play Console (internal track)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_BASE64 }}
+          packageName: dev.loombox.app
+          releaseFiles: apps/mobile/android/app/build/outputs/bundle/release/*.aab
+          track: internal
+
+  ios:
+    name: ios (build, sign, submit)
+    if: |
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, '@loombox/mobile@')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, '@loombox/mobile@'))
+    runs-on: macos-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build www
+        run: pnpm --filter @loombox/mobile run build
+
+      - name: cap add ios
+        run: pnpm --filter @loombox/mobile run cap:add:ios
+
+      - name: Set iOS version from the release tag
+        run: node apps/mobile/scripts/patch-ios-project.mjs
+
+      - name: Check iOS signing secrets
+        run: node apps/mobile/scripts/check-secrets.mjs ios-signing
+
+      # Standard "import a p12 + a provisioning profile into a dedicated
+      # CI keychain" recipe (Apple's own documented approach for
+      # non-interactive codesigning; a temporary keychain avoids touching
+      # the runner's login keychain, which is torn down with the runner
+      # either way but keeps a re-run from colliding with a stale entry).
+      - name: Import signing certificate and provisioning profile
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
+          IOS_DIST_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/loombox-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/dist-cert.p12"
+          PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/loombox-release.mobileprovision"
+
+          echo -n "$IOS_DIST_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo -n "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$IOS_DIST_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Word-splitting is the point here: each existing keychain path
+          # becomes its own argument to `-s`, Apple's own documented recipe
+          # for adding a keychain to the search list without dropping the
+          # runner's existing ones.
+          # shellcheck disable=SC2046
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive
+        working-directory: apps/mobile/ios/App
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild -scheme App -configuration Release -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            archive
+
+      - name: Export .ipa
+        working-directory: apps/mobile/ios/App
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/export/*.ipa)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no .ipa found under $RUNNER_TEMP/export -- exportArchive must have failed silently"
+            exit 1
+          fi
+          gh release upload "${{ steps.tag.outputs.tag }}" "${files[@]}" --clobber --repo "${{ github.repository }}"
+
+      - name: Check App Store Connect submission secrets
+        run: node apps/mobile/scripts/check-secrets.mjs app-store-submission
+
+      # `xcrun altool --upload-app` is deprecated in favor of
+      # `--upload-package` (confirmed against Apple's own current altool
+      # docs before writing this, not assumed) -- the newer form additionally
+      # needs the app's own numeric Apple ID and ASC public ID, both looked
+      # up in App Store Connect once the app record exists there, which is
+      # why those two are their own secrets rather than reused from the
+      # signing gate above. UNVERIFIED: no Apple Developer account or App
+      # Store Connect app record exists yet, so this exact invocation has
+      # never run for real -- see apps/mobile/README.md#what-lorenzo-has-to-obtain.
+      - name: Submit to App Store Connect
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+          APP_STORE_CONNECT_APPLE_ID: ${{ secrets.APP_STORE_CONNECT_APPLE_ID }}
+          APP_STORE_CONNECT_ASC_PUBLIC_ID: ${{ secrets.APP_STORE_CONNECT_ASC_PUBLIC_ID }}
+        run: |
+          set -euo pipefail
+          API_KEY_DIR="$RUNNER_TEMP/private_keys"
+          mkdir -p "$API_KEY_DIR"
+          echo -n "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode -o "$API_KEY_DIR/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          shopt -s nullglob
+          ipa_files=("$RUNNER_TEMP"/export/*.ipa)
+          IPA_PATH="${ipa_files[0]}"
+          MOBILE_VERSION_JSON=$(node apps/mobile/scripts/print-native-version.mjs)
+          MOBILE_VERSION_NAME=$(node -p "JSON.parse(process.argv[1]).name" "$MOBILE_VERSION_JSON")
+          MOBILE_VERSION_CODE=$(node -p "JSON.parse(process.argv[1]).code" "$MOBILE_VERSION_JSON")
+          API_PRIVATE_KEYS_DIR="$API_KEY_DIR" xcrun altool --upload-package "$IPA_PATH" \
+            --type ios \
+            --asc-public-id "$APP_STORE_CONNECT_ASC_PUBLIC_ID" \
+            --apple-id "$APP_STORE_CONNECT_APPLE_ID" \
+            --bundle-id dev.loombox.app \
+            --bundle-version "$MOBILE_VERSION_CODE" \
+            --bundle-short-version-string "$MOBILE_VERSION_NAME" \
+            --apiKey "$APP_STORE_CONNECT_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
