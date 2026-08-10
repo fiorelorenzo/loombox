@@ -37,3 +37,19 @@ apps/web/.audit/
 apps/web/test-results/
 apps/web/playwright-report/
 apps/web/tests-e2e/zz-audit-screens.spec.ts
+
+# `apps/mobile`'s native shells (issue #281's spike): `cap add android`/
+# `cap add ios` generates a full native project (Gradle module,
+# Xcode project + CocoaPods) from `capacitor.config.ts` + `www/` on demand.
+# Nothing in either tree is hand-edited yet (no plugin, no native code), so
+# regenerating loses nothing — the moment that stops being true, the tree
+# has to come out of this ignore and become real source, or edits get
+# silently discarded by the next `cap add`/`cap sync`.
+apps/mobile/android/
+apps/mobile/ios/
+
+# `apps/mobile/scripts/build-www.mjs`'s esbuild output — `www/index.html` is
+# hand-written and stays tracked, `diagnostics.js`(.map) is generated from
+# `src/` on every `build` and never hand-edited.
+apps/mobile/www/diagnostics.js
+apps/mobile/www/diagnostics.js.map

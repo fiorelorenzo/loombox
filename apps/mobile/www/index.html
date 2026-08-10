@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>loombox mobile spike diagnostics</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background: #0b0d10;
+        color: #e6e6e6;
+        padding: 16px;
+      }
+      .pass {
+        color: #6fd08c;
+      }
+      .fail {
+        color: #ff6b6b;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>loombox mobile spike (issue #281)</h1>
+    <p>
+      Not the loombox app — a runtime probe for the questions the spike needs a real WebView to
+      answer (secure context, crypto.subtle, localStorage, WebSocket). See
+      <code>docs/superpowers/specs/2026-08-08-capacitor-mobile-spike.md</code>.
+    </p>
+    <div id="results">running...</div>
+    <script type="module" src="./diagnostics.js"></script>
+  </body>
+</html>

@@ -1,4 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  // `src/diagnostics.ts`/`src/www-bootstrap.ts` run inside the Capacitor
+  // WebView, not Node — unlike every sibling package here, this one needs
+  // DOM types (`crypto.subtle`, `localStorage`, `WebSocket`,
+  // `isSecureContext`) alongside the base config's ES2024 lib.
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"]
+  },
+  "include": ["src", "capacitor.config.ts"]
 }
