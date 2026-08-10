@@ -41,10 +41,10 @@ Capacitor-hardcoded field (versionCode, versionName, MARKETING_VERSION,
 CURRENT_PROJECT_VERSION) gets patched back in on every run by the scripts below rather than
 committed once.
 
-Android needs **JDK 21** (Capacitor 8.5.0's Android Gradle Plugin requirement, issue #951)
-— `apps/mobile/mise.toml` pins it for anyone running `mise`-activated shells from inside
-this directory; CI pins it directly via `actions/setup-java`. Building `android/` from a
-fresh checkout:
+Android needs **JDK 21** (Capacitor 8.5.0's Android Gradle Plugin requirement, issue #951,
+fixed separately) — `apps/mobile/.mise.toml` pins it for anyone running `mise`-activated
+shells from inside this directory; CI pins it directly via `actions/setup-java` below,
+independent of that file. Building `android/` from a fresh checkout:
 
 ```bash
 cd apps/mobile/android && ./gradlew assembleDebug   # unsigned debug APK, no secrets needed
