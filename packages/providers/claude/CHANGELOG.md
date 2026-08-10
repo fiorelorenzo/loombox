@@ -1,5 +1,12 @@
 # @loombox/providers-claude
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [e48bae0]
+  - @loombox/providers-core@0.7.0
+
 ## 0.1.1
 
 ### Patch Changes
