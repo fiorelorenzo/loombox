@@ -1,5 +1,12 @@
 # @loombox/providers-generic
 
+## 0.0.8
+
+### Patch Changes
+
+- Updated dependencies [e48bae0]
+  - @loombox/providers-core@0.7.0
+
 ## 0.0.7
 
 ### Patch Changes

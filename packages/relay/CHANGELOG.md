@@ -1,5 +1,41 @@
 # @loombox/relay
 
+## 0.9.0
+
+### Minor Changes
+
+- 18e04f5: AI-assisted merge-conflict resolution (SPEC §7.6; issue #237): when a session's own worktree merge stops on real conflicts, the session's live agent can now propose a resolution for a conflicted file, one agent turn per conflicted hunk, reusing #236's diff-explain shape.
+
+  A proposal is always reviewable before anything is written: `git_conflict_resolve_request`/`_response` is read-only, carrying the raw conflict hunks, the agent's per-hunk resolution, and a derived (never self-reported) `origin` — `'ours'`/`'theirs'` only when the agent's reply is an exact match to that real side, `'rewritten'` otherwise, so it's always obvious whether a decision silently picked a side. Applying is one deliberate action reusing #205's own conflict-safe `fs_write_request` with the proposal's `baseHash` — never a bespoke apply message — so a file edited elsewhere between the proposal and the click comes back `'conflict'` rather than being clobbered, and declining is simply never calling it. A file with more conflicted hunks than a 12-hunk bound refuses outright (`'too_large'`) rather than spending an unbounded number of agent turns from one click.
+
+- 2f0c992: Finishes issue #657's remainder left open by PR #924: relay migration reversibility and the PWA's stale-bundle toast.
+
+  **Relay migration reversibility.** Every entry in `packages/relay/src/migrations.ts` now carries a `reversible: boolean`, not just a comment. `0010_device_token_ids` is the one irreversible entry in this repo's history: its `down` drops a backfilled `id` column that every token minted after the migration depends on, non-derivably, and the pre-migration insert statement can't satisfy that column's `NOT NULL` constraint if it were still there. `packages/relay/src/migrate.ts`'s new `assessRollback(pg, targetId?)` reads that classification against what `_migrations` actually shows applied. `migrate-cli.ts` exposes it as two new subcommands, `migrate list` (no `DATABASE_URL` needed, reads a given relay image's own known migrations) and `migrate assess-rollback [targetId]` (DB-backed, prints `{allowed,toRollBack,blockedBy}` as JSON, non-zero exit when refused). `scripts/deploy-prod.sh`'s `rollback()` calls both before it ever retags the relay image back, refusing loudly instead of silently leaving old code running against a schema it never agreed to. This is a gate, not a ban: an irreversible migration is never forbidden, it only has to be known.
+
+  **The PWA's stale-bundle toast.** A tab's own bundle can go stale the moment a new deploy lands, with no indication before this change. `vite.config.ts`'s `registerType` moves from `autoUpdate` to `prompt`: the old setting made `vite-plugin-pwa` call a bare `window.location.reload()` the instant a new service worker activated, with no warning, a forced reload mid-session. `apps/web/src/lib/pwa-update.ts` is the new signal: a waiting service worker (wired from `+layout.svelte`) and a straight commit comparison between this tab's own build (`$app/environment`'s `version`) and what the relay is currently serving (`RelayClient.relayBuildIdentity`, issue #655's protocol-level build identity), which also covers the Electron desktop shell's webview, where no service worker ever runs. Either signal shows the same dismissible `UpdateAvailableToast`; Reload is always a real click, never automatic.
+
+- 556c65b: Closes issue #933, the relay-side half of #929 I deliberately left open in that PR: two connections claiming the same nodeId on the same relay used to resolve with a plain `Map.set()`, whichever announced last silently took over routing, with no check and no signal to either side. That is exactly why #929's own two duplicate `devbox-node-1` processes looked perfectly healthy for 15 hours. #937 already closed the same-machine case with a node-side state-dir lock; this closes the case a lock can never see, when the two connections are not on the same machine.
+
+  I picked a rule rather than the first thing that compiled. `relay.ts`'s new `claimNodeRouting` compares `devicePublicKey` (issue #655's build-identity sibling field, an ECDH identity a node's `NodeIdentityStore` persists and reuses across restarts) between the connection that already owns a nodeId and the one that just announced it, since that is the one thing a genuinely different device cannot present:
+
+  - Same `devicePublicKey` is an ordinary reconnect: a flaky network dropped a socket and the same physical node came back before the relay's own close/timeout noticed the old one was dead. The new connection takes over exactly like before this fix. The old connection is still told (a new `node_identity_conflict` wire message, then closed 4410), but nothing is logged and nothing is flagged for a client to see, so the common case stays exactly as quiet as it always was.
+  - A different `devicePublicKey` is a rival: a different device claiming an identity another connection already holds live, the actual #929 failure mode, or a plain misconfiguration. The relay refuses the newcomer rather than the incumbent, on purpose: whatever session an operator is actually driving over the existing connection should not be yanked out from under them by a connection that only just showed up. The rejected connection is told why (`node_identity_conflict`, then closed 4409, mirroring #108's `update_required`/4400 precedent for refusing a peer with a reason), the relay logs a warning naming both connections' accountId/deviceId/remoteAddress, and the surviving connection's `identityConflict` is now mirrored onto every `target_list` row it owns.
+
+  The Nodes page (`TargetStatusView.svelte`) renders that as a small "Identity conflict" badge next to a fought-over node's row, with the rival device id and when it happened behind the disclosure, so an operator sees the fight instead of everything looking quietly fine. Reuses the existing `Badge` component and row layout end to end, so it renders the same at 390px as the Behind/Update available badges already sitting next to it.
+
+### Patch Changes
+
+- 8ebfb75: Adopts `@loombox/protocol`'s `withEnvelope` helper (issue #921/#934) at all 19 of `packages/relay/src/relay.ts`'s own `{ type, protocolVersion: PROTOCOL_V1, ...fields }` hand-rebuilds, the follow-up #934 left out to keep that PR from touching a third contested file (issue #935, epic #558).
+
+  All 19 sites are the relay originating its own reply or broadcast (a new type distinct from whatever inbound message prompted it, or a store-driven broadcast) — never a verbatim forward of a message it received, so every one structurally fits `withEnvelope` the same way #934's two files did. `protocolVersion: PROTOCOL_V1` no longer appears anywhere in `relay.ts` except the unrelated `RELAY_SUPPORTED_VERSIONS` negotiation constant. No wire format change, no behavioural change, `packages/relay`'s existing tests pass unmodified.
+
+- Updated dependencies [e48bae0]
+- Updated dependencies [e96daf9]
+- Updated dependencies [18e04f5]
+- Updated dependencies [556c65b]
+- Updated dependencies [7ac47be]
+  - @loombox/protocol@0.10.0
+
 ## 0.8.0
 
 ### Minor Changes

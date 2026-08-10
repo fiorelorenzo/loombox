@@ -1,5 +1,19 @@
 # @loombox/desktop
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [00ebc5d]
+- Updated dependencies [e96daf9]
+- Updated dependencies [58921ae]
+- Updated dependencies [18e04f5]
+- Updated dependencies [383d46f]
+- Updated dependencies [ac3cc2f]
+- Updated dependencies [14acc70]
+- Updated dependencies [7ac47be]
+  - @loombox/node@0.10.0
+
 ## 0.3.0
 
 ### Minor Changes

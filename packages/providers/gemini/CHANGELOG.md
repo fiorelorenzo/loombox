@@ -1,5 +1,13 @@
 # @loombox/providers-gemini
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies [e48bae0]
+  - @loombox/providers-core@0.7.0
+  - @loombox/providers-generic@0.0.8
+
 ## 0.0.2
 
 ### Patch Changes

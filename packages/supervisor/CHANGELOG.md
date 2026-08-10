@@ -1,5 +1,15 @@
 # @loombox/supervisor
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [e48bae0]
+  - @loombox/providers-core@0.7.0
+  - @loombox/providers-claude@0.1.2
+  - @loombox/providers-codex@0.1.2
+  - @loombox/providers-ohmypi@0.1.7
+
 ## 0.4.0
 
 ### Minor Changes

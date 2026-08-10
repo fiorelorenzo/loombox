@@ -1,5 +1,60 @@
 # @loombox/protocol
 
+## 0.10.0
+
+### Minor Changes
+
+- e48bae0: Carry the three `SessionConfigOption` fields loombox was dropping (issue #897)
+
+  #633's audit against the real pinned `@agentclientprotocol/sdk` found three fields
+  that are genuinely part of ACP's own schema and that the client silently ignored: a
+  per-option and per-choice `description`, the boolean variant's `currentValue`, and
+  grouped select options.
+
+  All three now survive from the wire to the UI. A description reaches the config
+  popover, a boolean option renders as a switch that knows its own state instead of
+  being dropped for having no `options` array, and a grouped response keeps its groups
+  rather than being discarded by the flat-choice filter. The schema conformance test
+  covers each against the real SDK schema, so an SDK change that reshapes them fails
+  here rather than in production.
+
+- e96daf9: GitHub Projects v2 boards via GraphQL — live tracker slice 3 for GitHub (SPEC §7.10, issue #218), on top of the REST issue/comment/transition slices #213/#215 already shipped.
+
+  I read loombox's own project board (`gh project field-list 4 --owner fiorelorenzo --format json`) before designing this, since Projects v2's field model is genuinely unusual: a board's columns are a single-select FIELD whose OPTIONS are the statuses, and every project names its own fields. loombox's board has 16 fields, four of them single-select (`Status`, `Priority`, `Effort`, `Parallel`) — exactly the trap the issue calls out: a naive "grab the field named Status" or "grab the first single-select" both happen to work on this one board and would break on a differently-shaped one.
+
+  `GithubTrackerBackend.listBoards` (`packages/node/src/github-projects-v2.ts`, new) discovers a project's own status field by resolving every option of every single-select field through `@loombox/protocol`'s (newly exported) `categorizeKnownStatusName` — the exact vocabulary native-tracker status resolution already uses — and only accepts a field as the status field when ALL of its options resolve. A project with no such field (Priority/Effort/Parallel-only, say) gets `statusFieldUnavailableReason` naming every rejected field and its real options, never a guess. An iteration field, when present, is discovered the same pass.
+
+  `addBoardItem`/`moveBoardItemToCategory`/`moveBoardItemToIteration` are extra `GithubTrackerBackend` methods beyond the `TrackerBackend` interface's own spec-locked method set (SPEC §7.10's literal code block has no "move a card" method at all) — the same "extra method beyond the interface" pattern `JiraTrackerBackend`'s `createSprint`/`startSprint`/`closeSprint` already established. They implement `Mutation.addProjectV2ItemById` and, after resolving a `singleSelectOptionId`/`iterationId` from the board's own discovered fields, `Mutation.updateProjectV2ItemFieldValue`. `GithubGraphQlSecondaryBudget` paces batched calls against GitHub's undocumented-via-header 2,000 pts/min GraphQL secondary limit (the primary 5,000 pts/hr limit reuses the exact `x-ratelimit-*` header check the REST path already has). `githubBoardsCapableFor(target)` answers the per-repo-binding "is Projects v2 usable here" question `capabilities.boards`'s flat, backend-level flag can't (`target.projectNumber != null`).
+
+  `@loombox/shared`'s `TrackerBoard` gains `statusField`/`statusFieldUnavailableReason`/`iterationField` (additive; coordinated with the concurrent #217 Jira-boards work over IRC so as not to collide on the same placeholder types).
+
+  Tests: `github-projects-v2.test.ts` (discovery logic, tie-breaking, the secondary-rate-limit budget, the GraphQL request helper's error/rate-limit handling) against a fixture recorded from the real project #4 GraphQL response, not hand-written. `github-tracker-backend.test.ts` gains fetch-stub coverage for the four new methods plus `githubBoardsCapableFor`. `node-daemon-tracker-live-github-boards.test.ts` (new) mirrors `node-daemon-tracker-live.test.ts`'s real-relay shape (issue #696) end to end: a real relay, a real `connected_account_announce`/`connected_account_list_request` round trip, a real `GithubConnectService` + file-fallback keyring resolving the actual stored token, real `resolveTrackerBackend` composition, only the GitHub GraphQL HTTP call stubbed — covering both the successful discovery case and the degrade-honestly case, plus a full add-then-move write path under a write-intent account pin.
+
+  Verified: `pnpm --filter @loombox/node exec vitest run src/github-tracker-backend.test.ts src/github-projects-v2.test.ts src/node-daemon-tracker-live-github-boards.test.ts` (70 tests), `pnpm --filter @loombox/node --filter @loombox/shared --filter @loombox/protocol typecheck`, `pnpm exec eslint` on every changed file (clean), `pnpm format:check` (clean), and the full `pnpm test` (protocol touched): 525 passed / 1 skipped test files, 6454 passed / 2 skipped tests, 0 failed.
+
+- 18e04f5: AI-assisted merge-conflict resolution (SPEC §7.6; issue #237): when a session's own worktree merge stops on real conflicts, the session's live agent can now propose a resolution for a conflicted file, one agent turn per conflicted hunk, reusing #236's diff-explain shape.
+
+  A proposal is always reviewable before anything is written: `git_conflict_resolve_request`/`_response` is read-only, carrying the raw conflict hunks, the agent's per-hunk resolution, and a derived (never self-reported) `origin` — `'ours'`/`'theirs'` only when the agent's reply is an exact match to that real side, `'rewritten'` otherwise, so it's always obvious whether a decision silently picked a side. Applying is one deliberate action reusing #205's own conflict-safe `fs_write_request` with the proposal's `baseHash` — never a bespoke apply message — so a file edited elsewhere between the proposal and the click comes back `'conflict'` rather than being clobbered, and declining is simply never calling it. A file with more conflicted hunks than a 12-hunk bound refuses outright (`'too_large'`) rather than spending an unbounded number of agent turns from one click.
+
+- 556c65b: Closes issue #933, the relay-side half of #929 I deliberately left open in that PR: two connections claiming the same nodeId on the same relay used to resolve with a plain `Map.set()`, whichever announced last silently took over routing, with no check and no signal to either side. That is exactly why #929's own two duplicate `devbox-node-1` processes looked perfectly healthy for 15 hours. #937 already closed the same-machine case with a node-side state-dir lock; this closes the case a lock can never see, when the two connections are not on the same machine.
+
+  I picked a rule rather than the first thing that compiled. `relay.ts`'s new `claimNodeRouting` compares `devicePublicKey` (issue #655's build-identity sibling field, an ECDH identity a node's `NodeIdentityStore` persists and reuses across restarts) between the connection that already owns a nodeId and the one that just announced it, since that is the one thing a genuinely different device cannot present:
+
+  - Same `devicePublicKey` is an ordinary reconnect: a flaky network dropped a socket and the same physical node came back before the relay's own close/timeout noticed the old one was dead. The new connection takes over exactly like before this fix. The old connection is still told (a new `node_identity_conflict` wire message, then closed 4410), but nothing is logged and nothing is flagged for a client to see, so the common case stays exactly as quiet as it always was.
+  - A different `devicePublicKey` is a rival: a different device claiming an identity another connection already holds live, the actual #929 failure mode, or a plain misconfiguration. The relay refuses the newcomer rather than the incumbent, on purpose: whatever session an operator is actually driving over the existing connection should not be yanked out from under them by a connection that only just showed up. The rejected connection is told why (`node_identity_conflict`, then closed 4409, mirroring #108's `update_required`/4400 precedent for refusing a peer with a reason), the relay logs a warning naming both connections' accountId/deviceId/remoteAddress, and the surviving connection's `identityConflict` is now mirrored onto every `target_list` row it owns.
+
+  The Nodes page (`TargetStatusView.svelte`) renders that as a small "Identity conflict" badge next to a fought-over node's row, with the rival device id and when it happened behind the disclosure, so an operator sees the fight instead of everything looking quietly fine. Reuses the existing `Badge` component and row layout end to end, so it renders the same at 390px as the Behind/Update available badges already sitting next to it.
+
+- 7ac47be: One `withEnvelope` helper for the 194 wire-message call sites that hand-rebuilt `{ type, protocolVersion, requestId }` (issue #921, ref #652).
+
+  `@loombox/protocol` gains `withEnvelope(type, fields)`: defaults `protocolVersion` to `PROTOCOL_V1` and, via `Extract<WireMessageV1, { type: T }>`, keeps each message type's own required fields intact instead of widening to `Partial<WireMessageV1>`. It does not generate `requestId` itself — callers still produce it exactly as before (a fresh id, an echoed inbound id, or omitted for fire-and-forget messages) — so this is a pure envelope wrapper with no behavioural change.
+
+  Adopted at 189 of the 194 sites the issue counted: 89 of `apps/web/src/lib/relay-client.ts`'s 94 and all 100 of `packages/node/src/node-daemon.ts`'s. Left alone, by design: `relay-client.ts`'s `getAccountPins`/`setAccountPin`/`unsetAccountPin`/`getTrackerMode`/`setTrackerMode` (5 sites) build a message deliberately missing `requestId` — `sendAccountPinRequest`/`sendTrackerModeRequest` generate it afterwards and splice it in (`{ ...message, requestId }`) so a shared timeout/dedupe path owns exactly one `requestId` per family instead of five call sites each minting their own. `withEnvelope`'s return type always includes every field the wire type requires, `requestId` included, so it does not fit that split-construction shape without either weakening the helper's guarantee or making those five call sites pass a throwaway placeholder `requestId` — worse than leaving the pre-existing pattern in place.
+
+  `packages/relay/src/relay.ts`'s own ~19 sites of the same shape (noted in #921 as a natural extension) are left for a follow-up: this PR is already the largest mechanical diff of the wave, in the repo's two most actively-touched files; folding in a third file and a different call pattern (the relay is the routing layer, not a session-scoped client/node) buys nothing acceptance-wise and only grows the reviewable surface.
+
+  No wire format change: every migrated site is verified byte-identical (same `type`, same `protocolVersion`, same other fields) — the AST codemod moved only `protocolVersion: PROTOCOL_V1` into the helper. `relay-client.test.ts`, `node-daemon*.test.ts`, and the full protocol schema suite pass unmodified.
+
 ## 0.9.0
 
 ### Minor Changes
