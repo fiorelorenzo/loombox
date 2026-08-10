@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-www.mjs",
+    "pretypecheck": "node \"$(git rev-parse --show-toplevel)/scripts/check-worktree-leak.mjs\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src scripts",
     "test": "vitest run",

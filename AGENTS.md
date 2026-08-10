@@ -86,6 +86,66 @@ reformats a staged `.changeset/*.md` file with Prettier and re-stages it, so
 there's nothing to remember here either; see CONTRIBUTING.md's changeset
 section for the mechanics and the `--no-verify` bypass.
 
+## Working in a `.claude/worktrees/*` agent worktree
+
+Parallel agents each get an isolated worktree under `.claude/worktrees/<name>`,
+sitting alongside the shared root checkout at this repo's own path. Two rules,
+because getting either wrong has cost a wave's worth of recovered-by-luck work
+five waves running (issue #948):
+
+**Every path you address is worktree-absolute.** A relative path in a
+read/edit/write header resolves against the session's *original* working
+directory, which is the root checkout — never the worktree you believe you are
+in, whatever a tool's own display made it look like. `packages/foo/src/bar.ts`
+addressed from inside `.claude/worktrees/fix-thing` can silently become an edit
+to `/home/dev/Progetti/loombox/packages/foo/src/bar.ts` on `main`, with no
+error at all. Always spell the whole thing out:
+`/home/dev/Progetti/loombox/.claude/worktrees/<name>/packages/foo/src/bar.ts`.
+Before yielding, `git -C /home/dev/Progetti/loombox status --short` must show
+nothing that is yours.
+
+**An automated guard fails the command, not just prints a warning.**
+`scripts/check-worktree-leak.mjs` runs before every `typecheck`,
+`format:check`, `lint`, and vitest invocation — wired into each package's
+`pretypecheck`, root's `preformat:check`, the repo's one `eslint.config.js`
+(every `eslint` invocation loads it, scoped or not, since it's the only flat
+config in the tree), and every `vitest.config.ts`'s `globalSetup` — and checks
+whether the *root* checkout is on `main` with uncommitted changes to
+already-tracked files. That is the leak's exact signature: nobody works on
+`main` in root on purpose, agent or human, so a tracked diff there while on
+`main` means a write meant for a worktree landed in the wrong place. A plain
+git hook can't catch this — agents never commit in the root checkout, so a
+pre-commit hook there would never fire; this instead rides a command every
+agent already runs constantly, and fails it. It deliberately never fires for a
+human who checked out a feature branch directly in root to edit it there
+(branch isn't `main`, so that's a normal non-agent workflow) or for a stray
+untracked file (only already-tracked modifications count, so incidental
+clutter can't trip it), and costs about 80ms — two `git` calls — added to a
+command you were running anyway.
+
+**Recovery, if the guard fires or you catch a leak another way.** The instinct
+to revert root first is wrong — it destroys the work. In order:
+
+```bash
+# 1. Capture what leaked, scoped to your own files if more than one agent is
+#    leaking at once
+git -C /home/dev/Progetti/loombox diff -- <your files> > /tmp/leak.patch
+
+# 2. Replay it in YOUR worktree
+cd /home/dev/Progetti/loombox/.claude/worktrees/<name>
+git apply --check /tmp/leak.patch && git apply /tmp/leak.patch
+
+# 3. Verify it applied
+git status --short
+
+# 4. Only now, clean root — scoped to the same files
+git -C /home/dev/Progetti/loombox checkout -- <your files>
+```
+
+Re-read the moved files from the worktree path before editing them again:
+their snapshot tags and line numbers are stale for the new location, and an
+anchored edit against a stale tag mangles the file.
+
 ## Checking the PWA here, headless (the Mac is only for Electron)
 
 Most UX/UI work needs no Mac at all. This box has **Chrome 149 and Playwright's own
@@ -458,8 +518,19 @@ STATUS_FIELD=$(gh project field-list 4 --owner fiorelorenzo --format json \
   --jq '.fields[] | select(.name=="Status") | .id')
 OPTION_ID=$(gh project field-list 4 --owner fiorelorenzo --format json \
   --jq ".fields[] | select(.name==\"Status\") | .options[] | select(.name==\"$STATUS\") | .id")
-ITEM_ID=$(gh project item-list 4 --owner fiorelorenzo --format json --limit 500 \
+# --limit must stay above the board's real item count or this silently returns
+# nothing for a recently created issue (the board passed 500 items and a
+# hardcoded --limit 500 here cost a real debugging detour reading like a
+# permissions/id-format problem — issue #948). 2000 has headroom past today's
+# ~526; if it's ever not enough, the empty-ITEM_ID check below still catches it.
+ITEM_ID=$(gh project item-list 4 --owner fiorelorenzo --format json --limit 2000 \
   --jq ".items[] | select(.content.number==$ISSUE) | .id")
+if [ -z "$ITEM_ID" ]; then
+  echo "ITEM_ID empty for issue #$ISSUE — board lookup truncated or issue not on the" \
+       "board yet, not a permissions problem. Re-run with a higher --limit or add it" \
+       "with 'gh project item-add 4 --owner fiorelorenzo --url ...' first." >&2
+  exit 1
+fi
 gh project item-edit --id "$ITEM_ID" --project-id "$PROJECT_ID" \
   --field-id "$STATUS_FIELD" --single-select-option-id "$OPTION_ID"
 

@@ -7,6 +7,7 @@ import { defineConfig } from 'vitest/config';
 // pipeline nothing ever runs against real esbuild output (issue #817).
 export default defineConfig({
   test: {
+    globalSetup: ['./check-worktree-leak.mjs'],
     name: 'scripts',
     environment: 'node',
     include: ['**/*.test.mjs'],

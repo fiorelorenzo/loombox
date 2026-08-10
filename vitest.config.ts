@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config';
 // while `pnpm -r test` runs each package independently.
 export default defineConfig({
   test: {
+    globalSetup: ['./scripts/check-worktree-leak.mjs'],
     projects: [
       'packages/*/vitest.config.ts',
       'packages/providers/*/vitest.config.ts',
