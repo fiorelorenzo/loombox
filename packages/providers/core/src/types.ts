@@ -187,6 +187,30 @@ export type AcpPermissionOutcome =
 export interface AcpConfigOptionChoice {
   id: string;
   name: string;
+  /**
+   * This choice's own help text (`SessionConfigSelectOption.description`;
+   * issue #897) — e.g. "Auto-detect per prompt". Real, present data (a real
+   * `omp acp` binary sends one for nearly every model/mode choice), not
+   * hypothetical; `mapConfigOptions` (`client.ts`) is the only producer.
+   * Rendered as `ui/Select`'s own existing per-option `hint` — no new UI
+   * element, since that slot already existed for exactly this purpose and
+   * simply never had a real caller feeding it choice-level help text.
+   */
+  description?: string;
+  /**
+   * The display name of the `SessionConfigSelectGroup` this choice belongs
+   * to (issue #897), when the agent sent `options` as a grouped
+   * `SessionConfigSelectGroup[]` list rather than a flat
+   * `SessionConfigSelectOption[]` one — `undefined` for a choice from an
+   * ungrouped list. Choices from the SAME group carry the identical string
+   * and stay adjacent in `choices`' own order (`mapConfigOptions` flattens
+   * group-by-group, never interleaving), so a renderer can fold consecutive
+   * same-`group` choices under one heading by a single pass, without a
+   * second nested shape every existing flat-array consumer of `choices`
+   * (`config-option-resolution.ts`'s membership checks, `ConfigBar`'s
+   * `.find`/`.map`) would otherwise have to learn.
+   */
+  group?: string;
 }
 
 export interface AcpConfigOption {
@@ -208,9 +232,25 @@ export interface AcpConfigOption {
    * than widening the whole cross-package shape — `AcpClient.setConfigOption`
    * throws when they're missing instead of guessing `configId` from
    * `category`.
+   *
+   * Unlike `id`, `type` now also rides the browser-facing wire
+   * (`@loombox/protocol`'s `acpConfigOptionV1`, issue #897): a `'boolean'`
+   * option is a real switch, not a `<Select>` dropdown, and only
+   * `ConfigBar` (client-side) can make that rendering choice — `id` has no
+   * equivalent client-side consumer, so it stays server-only.
    */
   id?: string;
   type?: string;
+  /**
+   * This option's own help text (`SessionConfigOption.description`; issue
+   * #897) — e.g. what the category as a whole controls, as opposed to
+   * {@link AcpConfigOptionChoice.description}'s per-CHOICE help text.
+   * Rendered as a native `title` tooltip on the popover's own section (the
+   * same "explain via a native tooltip, not new chrome" convention
+   * `ConfigBar`'s trigger already uses for its D4-3 source summary), never
+   * a new UI element of its own.
+   */
+  description?: string;
 }
 
 /* -------------------------------------------------------------------------

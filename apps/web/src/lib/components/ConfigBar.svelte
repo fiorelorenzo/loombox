@@ -142,6 +142,24 @@
    * `IconButton` per category to set or clear that project's override
    * directly from here, the one place a user is already looking at the
    * value worth pinning.
+   *
+   * Three real ACP `SessionConfigOption` fields this bar never carried
+   * (issue #897, filed by #633's audit against the real pinned SDK schema):
+   * a per-choice/per-option `description`, a `type: 'boolean'` option's
+   * real switch state, and grouped select options. None of the three get a
+   * new UI surface of their own — the whole point of #711's consolidation
+   * was one popover, not a settings dump. `description` renders through
+   * two slots that already existed for exactly this: the section's own
+   * `title` tooltip (the same native-tooltip convention `sourceSummary`
+   * below already uses) for the OPTION's own text, and `Select`'s existing
+   * per-choice `hint` for each CHOICE's own text. A `type: 'boolean'`
+   * entry renders the shared `Checkbox` switch instead of a `Select`
+   * dropdown — `mapConfigOptions` (`client.ts`) synthesizes a `{'true',
+   * 'false'}` choice pair for it, so `current`/`choices` stay the one
+   * shape every other category already uses; only the rendering choice
+   * here is type-specific. Grouped options are `Select`'s own concern now
+   * (issue #897's own doc comment there) — this file just forwards each
+   * choice's `group` through unchanged.
    */
   import { tick } from 'svelte';
   import { type AcpConfigOption } from '@loombox/providers-core/browser';
@@ -149,6 +167,7 @@
   import type { ConfigOptionSource } from '$lib/config-option-resolution';
   import Badge, { type BadgeTone } from './ui/Badge.svelte';
   import Button from './ui/Button.svelte';
+  import Checkbox from './ui/Checkbox.svelte';
   import IconButton from './ui/IconButton.svelte';
   import Select from './ui/Select.svelte';
   import Icon from './icons/Icon.svelte';
@@ -428,6 +447,31 @@
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
+{#snippet sourceBadge(category: string)}
+  {#if sources?.[category]}
+    <Badge size="sm" tone={sourceTone(sources[category])} dataTestId={`config-source-${category}`}>
+      {sourceLabel(sources[category])}
+    </Badge>
+  {/if}
+{/snippet}
+
+{#snippet pinButton(category: string)}
+  {#if onPinToProject && onUnpinFromProject}
+    <IconButton
+      label={sources?.[category] === 'project'
+        ? `Unpin ${categoryLabel(category)} from this project`
+        : `Pin ${categoryLabel(category)} to this project`}
+      size="sm"
+      pressed={sources?.[category] === 'project'}
+      dataTestId={`config-pin-${category}`}
+      onclick={() =>
+        sources?.[category] === 'project' ? onUnpinFromProject(category) : onPinToProject(category)}
+    >
+      <Icon name="pin" />
+    </IconButton>
+  {/if}
+{/snippet}
+
 <div class="config-bar" data-testid="config-bar">
   {#if !compact}
     {#if agentName}
@@ -467,63 +511,52 @@
             data-testid="config-popover"
           >
             {#each pickerOptions as option (option.category)}
-              <div class="config-popover-section" data-testid={`config-option-${option.category}`}>
-                <div class="config-popover-section-head">
-                  <span class="label">{categoryLabel(option.category)}</span>
-                  {#if sources?.[option.category]}
-                    <Badge
+              <div
+                class="config-popover-section"
+                data-testid={`config-option-${option.category}`}
+                title={option.description}
+              >
+                {#if option.type === 'boolean'}
+                  <div class="config-popover-section-row">
+                    <Checkbox
+                      checked={option.current === 'true'}
+                      onCheckedChange={(checked) =>
+                        onChange(option.category, checked ? 'true' : 'false')}
+                      label={categoryLabel(option.category)}
+                      dataTestId={`config-option-${option.category}-toggle`}
+                    />
+                    {@render sourceBadge(option.category)}
+                    {@render pinButton(option.category)}
+                  </div>
+                {:else}
+                  <div class="config-popover-section-head">
+                    <span class="label">{categoryLabel(option.category)}</span>
+                    {@render sourceBadge(option.category)}
+                  </div>
+                  <div class="config-popover-section-row">
+                    <Select
+                      value={option.current ?? ''}
+                      options={option.choices.map((choice) => ({
+                        id: choice.id,
+                        label: choice.name,
+                        hint: choice.description,
+                        group: choice.group,
+                      }))}
+                      onChange={(optionId) => onChange(option.category, optionId)}
+                      label={categoryLabel(option.category)}
                       size="sm"
-                      tone={sourceTone(sources[option.category])}
-                      dataTestId={`config-source-${option.category}`}
-                    >
-                      {sourceLabel(sources[option.category])}
-                    </Badge>
-                  {/if}
-                </div>
-                <div class="config-popover-section-row">
-                  <Select
-                    value={option.current ?? ''}
-                    options={option.choices.map((choice) => ({
-                      id: choice.id,
-                      label: choice.name,
-                    }))}
-                    onChange={(optionId) => onChange(option.category, optionId)}
-                    label={categoryLabel(option.category)}
-                    size="sm"
-                  />
-                  {#if onPinToProject && onUnpinFromProject}
-                    <IconButton
-                      label={sources?.[option.category] === 'project'
-                        ? `Unpin ${categoryLabel(option.category)} from this project`
-                        : `Pin ${categoryLabel(option.category)} to this project`}
-                      size="sm"
-                      pressed={sources?.[option.category] === 'project'}
-                      dataTestId={`config-pin-${option.category}`}
-                      onclick={() =>
-                        sources?.[option.category] === 'project'
-                          ? onUnpinFromProject(option.category)
-                          : onPinToProject(option.category)}
-                    >
-                      <Icon name="pin" />
-                    </IconButton>
-                  {/if}
-                </div>
+                    />
+                    {@render pinButton(option.category)}
+                  </div>
+                {/if}
               </div>
             {/each}
 
             {#if modeOption}
-              <div class="config-popover-section">
+              <div class="config-popover-section" title={modeOption.description}>
                 <div class="config-popover-section-head">
                   <span class="label">Mode</span>
-                  {#if sources?.mode}
-                    <Badge
-                      size="sm"
-                      tone={sourceTone(sources.mode)}
-                      dataTestId="config-source-mode"
-                    >
-                      {sourceLabel(sources.mode)}
-                    </Badge>
-                  {/if}
+                  {@render sourceBadge('mode')}
                 </div>
                 <div class="config-popover-section-row">
                   <div
@@ -541,6 +574,7 @@
                         role="radio"
                         ariaChecked={modeOption.current === choice.id}
                         tabindex={modeOption.current === choice.id ? 0 : -1}
+                        title={choice.description}
                         onclick={() => onChange('mode', choice.id)}
                         onkeydown={handleModeKeydown}
                       >
@@ -548,22 +582,7 @@
                       </Button>
                     {/each}
                   </div>
-                  {#if onPinToProject && onUnpinFromProject}
-                    <IconButton
-                      label={sources?.mode === 'project'
-                        ? 'Unpin Mode from this project'
-                        : 'Pin Mode to this project'}
-                      size="sm"
-                      pressed={sources?.mode === 'project'}
-                      dataTestId="config-pin-mode"
-                      onclick={() =>
-                        sources?.mode === 'project'
-                          ? onUnpinFromProject('mode')
-                          : onPinToProject('mode')}
-                    >
-                      <Icon name="pin" />
-                    </IconButton>
-                  {/if}
+                  {@render pinButton('mode')}
                 </div>
               </div>
             {/if}

@@ -42,6 +42,15 @@
     label: string;
     /** Optional secondary text rendered muted beside the option's label. */
     hint?: string;
+    /**
+     * Optional group label (ACP's grouped `SessionConfigSelectGroup[]`,
+     * issue #897 finding 3) — consecutive options sharing the identical
+     * `group` string render under one non-interactive heading, once, the
+     * first time that group's name changes walking `options`' own order
+     * (see `optionRuns` below); `undefined` renders no heading at all, so
+     * every pre-#897 caller (a flat, ungrouped list) is unaffected.
+     */
+    group?: string;
   }
 
   export type SelectSize = 'sm' | 'md';
@@ -96,6 +105,36 @@
 
   function optionId(index: number): string {
     return `${dataTestId}-option-${index}`;
+  }
+
+  interface OptionRun {
+    group: string | undefined;
+    items: { option: SelectOption; index: number }[];
+  }
+
+  /**
+   * `options` split into consecutive runs sharing the same `group` (issue
+   * #897 finding 3). Presentation only: every item still carries its own
+   * index into the flat `options` array, so `activeIndex`/`selectedIndex`/
+   * `optionId`/`commit` below all keep addressing that same flat index —
+   * grouping never touches the keyboard-navigation math, only how the
+   * listbox lays the rows out.
+   */
+  const optionRuns = $derived.by((): OptionRun[] => {
+    const runs: OptionRun[] = [];
+    for (const [index, option] of options.entries()) {
+      const last = runs.at(-1);
+      if (last && last.group === option.group) {
+        last.items.push({ option, index });
+      } else {
+        runs.push({ group: option.group, items: [{ option, index }] });
+      }
+    }
+    return runs;
+  });
+
+  function groupLabelId(index: number): string {
+    return `${dataTestId}-group-${index}`;
   }
 
   function openListbox(): void {
@@ -200,6 +239,27 @@
     <span class="ui-select-value">{triggerText}</span>
     <Icon name="chevron-down" class="ui-select-chevron" />
   </button>
+  {#snippet optionRow(option: SelectOption, index: number)}
+    <li>
+      <button
+        type="button"
+        role="option"
+        tabindex="-1"
+        id={optionId(index)}
+        aria-selected={option.id === value}
+        class="ui-select-option"
+        class:ui-select-option-active={index === activeIndex}
+        onpointerenter={() => (activeIndex = index)}
+        onclick={() => commit(index)}
+        data-testid={`${dataTestId}-option-${option.id}`}
+      >
+        <span class="ui-select-option-label">{option.label}</span>
+        {#if option.hint}
+          <span class="ui-select-option-hint">{option.hint}</span>
+        {/if}
+      </button>
+    </li>
+  {/snippet}
   {#if open}
     <ul
       class="ui-select-listbox"
@@ -209,26 +269,27 @@
       aria-label={label}
       data-testid={`${dataTestId}-listbox`}
     >
-      {#each options as option, index (option.id)}
-        <li>
-          <button
-            type="button"
-            role="option"
-            tabindex="-1"
-            id={optionId(index)}
-            aria-selected={option.id === value}
-            class="ui-select-option"
-            class:ui-select-option-active={index === activeIndex}
-            onpointerenter={() => (activeIndex = index)}
-            onclick={() => commit(index)}
-            data-testid={`${dataTestId}-option-${option.id}`}
-          >
-            <span class="ui-select-option-label">{option.label}</span>
-            {#if option.hint}
-              <span class="ui-select-option-hint">{option.hint}</span>
-            {/if}
-          </button>
-        </li>
+      {#each optionRuns as run (run.items[0]!.index)}
+        {#if run.group}
+          <li role="presentation" class="ui-select-group">
+            <span class="ui-select-group-label" id={groupLabelId(run.items[0]!.index)}
+              >{run.group}</span
+            >
+            <ul
+              role="group"
+              aria-labelledby={groupLabelId(run.items[0]!.index)}
+              class="ui-select-group-options"
+            >
+              {#each run.items as { option, index } (option.id)}
+                {@render optionRow(option, index)}
+              {/each}
+            </ul>
+          </li>
+        {:else}
+          {#each run.items as { option, index } (option.id)}
+            {@render optionRow(option, index)}
+          {/each}
+        {/if}
       {/each}
     </ul>
   {/if}
@@ -356,6 +417,27 @@
   .ui-select-option-hint {
     color: var(--color-text-secondary);
     font-size: var(--text-small-size);
+  }
+
+  /* A grouped run's heading (issue #897 finding 3, `SessionConfigSelectGroup`)
+     — the same uppercase-caption treatment `ui/Field`'s own generated label
+     uses (`typography.css`'s `--text-caption-*` tokens), non-interactive,
+     never itself a tab stop or an `option` row. */
+  .ui-select-group-label {
+    display: block;
+    padding: var(--space-2xs) var(--space-sm);
+    font-size: var(--text-caption-size);
+    line-height: var(--text-caption-line);
+    letter-spacing: var(--text-caption-tracking);
+    text-transform: uppercase;
+    font-weight: var(--text-caption-weight);
+    color: var(--color-text-secondary);
+  }
+
+  .ui-select-group-options {
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   /* Touch-optimized controls (SPEC.md §7.3, issue #133), the same
