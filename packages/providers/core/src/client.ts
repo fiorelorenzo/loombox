@@ -19,6 +19,7 @@ import type {
   AcpAgentCapabilities,
   AcpAvailableCommand,
   AcpConfigOption,
+  AcpConfigOptionChoice,
   AcpDiff,
   AcpInitializeResult,
   AcpMcpServerConfig,
@@ -377,26 +378,38 @@ function extractDiff(content: unknown): AcpDiff | undefined {
  * `AcpConfigOption` (`types.ts`: `category`/`current`/`choices`), which
  * `mapConfigOptions` is the one place that translates — issue #705.
  *
- * Three real schema fields this shape does NOT carry through today, each
- * confirmed present on the wire (not hypothetical) and filed as its own
- * follow-up (issue #897) rather than folded into this shape-correctness
- * pass, since each needs its own UI/product decision first (the same
+ * Three real schema fields this shape did NOT carry through until issue
+ * #897 fixed each, confirmed present on the wire (not hypothetical) and
+ * left for their own follow-up when #633 landed the shape-correctness pass
+ * above, since each needed its own UI/product decision first (the same
  * "flag, don't fold in" call issue #844 made for Gemini's `models`):
  *  - `SessionConfigOption.description` (`:2669-2672`) and each choice's
  *    own `SessionConfigSelectOption.description` (`:2715-2723`) — real,
  *    present data (`test/fixtures/omp-acp-session-new-response.json`'s
- *    recording carries one for nearly every model/mode choice), silently
- *    dropped by `mapConfigOptions`'s choice-to-`{id, name}` mapping below.
+ *    recording carries one for nearly every model/mode choice). Both now
+ *    survive onto `AcpConfigOption.description`/`AcpConfigOptionChoice.
+ *    description` respectively — see `mapConfigOptionChoices` below and
+ *    each field's own doc comment in `types.ts` for where they render.
  *  - `SessionConfigBoolean`'s `currentValue: boolean` (`:2783-2791`, no
- *    `options` field at all) — `currentValue` below is typed `string`
- *    only, honest for the `'select'` variant this interface actually
- *    handles, not for a real `type: 'boolean'` option (none of the three
- *    currently-integrated agents send one).
+ *    `options` field at all) — `currentValue` below is typed
+ *    `string | boolean` now (was `string`-only, honest only for the
+ *    `'select'` variant), and a `type: 'boolean'` entry gets its own
+ *    branch below: `current` is the stringified `'true'`/`'false'`, and
+ *    `choices` is a synthesized fixed `{id:'true'}`/`{id:'false'}` pair so
+ *    every OTHER piece of this client's config-option machinery (project/
+ *    account remembered-value membership checks, `ConfigBar`'s pin/unpin)
+ *    keeps working off `choices` unmodified — only `ConfigBar`'s own
+ *    rendering (a real switch, not a two-item dropdown) and
+ *    `AcpClient.setConfigOption`'s outbound request (a real wire
+ *    `boolean`, not the string id) branch on `type === 'boolean'` at all.
  *  - `SessionConfigSelectOptions`'s grouped-options variant,
  *    `SessionConfigSelectGroup[]` (`:2739-2765`, `{group, name, options}`)
  *    as an alternative to the flat `SessionConfigSelectOption[]` this
- *    interface's `options` field assumes — `mapConfigOptions`'s choice
- *    filter below silently drops every entry of a grouped response.
+ *    interface's `options` field assumes — `mapConfigOptionChoices` below
+ *    now flattens either shape into `AcpConfigOptionChoice[]`, carrying
+ *    each group's own display name onto every choice inside it as
+ *    `AcpConfigOptionChoice.group` rather than inventing a second, nested
+ *    shape for `choices` itself (see that field's own doc comment).
  */
 interface RawConfigOptionChoice {
   value?: string;
@@ -404,13 +417,31 @@ interface RawConfigOptionChoice {
   description?: string;
 }
 
+/**
+ * ACP's `SessionConfigSelectGroup` (`SessionConfigSelectOptions`'s OTHER
+ * possible shape, `types.gen.d.ts:2711/2739-2765`; issue #897 finding 3):
+ * a real agent MAY send its `options` array as groups instead of flat
+ * choices. Distinguished from a flat `RawConfigOptionChoice` by shape
+ * alone in {@link isRawConfigOptionGroup} — a group carries its own nested
+ * `options` ARRAY, which a flat `SessionConfigSelectOption` never has (its
+ * own fields are `value`/`name`/`description`/`_meta` only) — the real
+ * wire schema is a union of the two array shapes, never a mix of both
+ * kinds in the same array.
+ */
+interface RawConfigOptionGroup {
+  group?: string;
+  name?: string;
+  options?: RawConfigOptionChoice[];
+}
+
 interface RawConfigOption {
   id?: string;
   name?: string;
   category?: string;
   type?: string;
-  currentValue?: string;
-  options?: RawConfigOptionChoice[];
+  currentValue?: string | boolean;
+  options?: (RawConfigOptionChoice | RawConfigOptionGroup)[];
+  description?: string;
 }
 
 /**
@@ -530,21 +561,95 @@ interface RawConfigCatalog {
  * the real binary (this same recording's own `configOptions` entry for
  * `mode` has `id === category === 'mode'`).
  */
+/** True for a raw group entry (`{group?, name, options: [...]}`, issue #897 finding 3) rather than a flat choice (`{value, name, description?}`) — a group has its own nested `options` ARRAY, which a flat `SessionConfigSelectOption` never carries at all (see `RawConfigOptionGroup`'s own doc comment). A type guard, not a rename: this is what lets `mapConfigOptionChoices` below narrow `RawConfigOptionChoice | RawConfigOptionGroup` to the right member of the union without a duplicate `Array.isArray` check at each call site. */
+function isRawConfigOptionGroup(
+  entry: RawConfigOptionChoice | RawConfigOptionGroup,
+): entry is RawConfigOptionGroup {
+  return Array.isArray((entry as RawConfigOptionGroup).options);
+}
+
+/**
+ * Flattens ACP's `SessionConfigSelectOptions` (`SessionConfigSelectOption[]`
+ * OR `SessionConfigSelectGroup[]`, issue #897 finding 3) into this client's
+ * own flat `AcpConfigOptionChoice[]`, carrying each choice's own
+ * `description` (finding 1) through regardless of which shape it came
+ * from. A real `<Select>` can render a flat list with a group heading per
+ * run just as well as a nested one, and every existing consumer of
+ * `AcpConfigOption.choices` (`config-option-resolution.ts`'s membership
+ * checks, `ConfigBar`'s `.find`/`.map`) already assumes a flat array —
+ * inventing a second, nested shape here would mean widening every one of
+ * them for a structure ACP itself only uses for grouping, never for
+ * anything a flat list plus a per-choice `group` label can't already
+ * express. A malformed entry (missing `value`/`name`, or a group missing
+ * `name`) is silently dropped, same "ignore what doesn't parse" behavior
+ * the pre-#897 flat-only filter already had.
+ */
+function mapConfigOptionChoices(
+  rawOptions: (RawConfigOptionChoice | RawConfigOptionGroup)[] | undefined,
+): AcpConfigOptionChoice[] {
+  const choices: AcpConfigOptionChoice[] = [];
+  for (const entry of rawOptions ?? []) {
+    if (isRawConfigOptionGroup(entry)) {
+      if (typeof entry.name !== 'string') continue;
+      for (const choice of entry.options ?? []) {
+        if (typeof choice.value !== 'string' || typeof choice.name !== 'string') continue;
+        choices.push({
+          id: choice.value,
+          name: choice.name,
+          description: typeof choice.description === 'string' ? choice.description : undefined,
+          group: entry.name,
+        });
+      }
+      continue;
+    }
+    if (typeof entry.value !== 'string' || typeof entry.name !== 'string') continue;
+    choices.push({
+      id: entry.value,
+      name: entry.name,
+      description: typeof entry.description === 'string' ? entry.description : undefined,
+    });
+  }
+  return choices;
+}
+
 export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigOption[] {
   const options: AcpConfigOption[] = [];
   for (const option of wire?.configOptions ?? []) {
     if (typeof option.category !== 'string') continue;
+    const id = typeof option.id === 'string' ? option.id : undefined;
+    const type = typeof option.type === 'string' ? option.type : undefined;
+    const description = typeof option.description === 'string' ? option.description : undefined;
+    if (type === 'boolean') {
+      // SessionConfigBoolean's currentValue is a real boolean, not the
+      // string `RawConfigOption.currentValue` was typed for before issue
+      // #897 (see `RawConfigOptionChoice`'s own doc comment) — stringified
+      // so `AcpConfigOption.current` stays the one plain-string field
+      // every other category already uses. `choices` is a fresh
+      // {id:'true'|'false'} pair literal every time, never a shared
+      // module constant: `ConfigOptionStore.setAll`'s clone is shallow
+      // over `choices`' element references, so two sessions' boolean
+      // entries sharing one array would let one session's store mutate
+      // the other's the moment it clones.
+      options.push({
+        category: option.category,
+        current: typeof option.currentValue === 'boolean' ? String(option.currentValue) : undefined,
+        id,
+        type,
+        description,
+        choices: [
+          { id: 'true', name: 'On' },
+          { id: 'false', name: 'Off' },
+        ],
+      });
+      continue;
+    }
     options.push({
       category: option.category,
-      current: option.currentValue,
-      id: typeof option.id === 'string' ? option.id : undefined,
-      type: typeof option.type === 'string' ? option.type : undefined,
-      choices: (option.options ?? [])
-        .filter(
-          (choice): choice is RawConfigOptionChoice & { value: string; name: string } =>
-            typeof choice.value === 'string' && typeof choice.name === 'string',
-        )
-        .map((choice) => ({ id: choice.value, name: choice.name })),
+      current: typeof option.currentValue === 'string' ? option.currentValue : undefined,
+      id,
+      type,
+      description,
+      choices: mapConfigOptionChoices(option.options),
     });
   }
 
@@ -972,20 +1077,27 @@ export class AcpClient extends EventEmitter {
    * `mapConfigOptions` already seeded for `category`.
    *
    * The ordinary path (a real wire `configOptions` entry, or a `modes`-
-   * folded `mode` entry) is `session/set_config_option`: `{sessionId,
-   * configId, value, type}` (issue #707), not `{category, choiceId}` (a
-   * real agent 400s that with "Invalid params" — verified against the
-   * real `omp acp` binary). `configId` is the wire entry's own `id` (its
-   * `thinking` option has `id: "thinking"` but `category: "thought_level"`
-   * — sending `category` as `configId` is rejected outright, "Unknown ACP
-   * config option: thought_level"), and `type` is that entry's own
-   * `'select' | 'boolean'`. Both are sourced from the catalogue entry
-   * already seeded for this category — `mapConfigOptions` retains
-   * `AcpConfigOption.id`/`.type` for exactly this reason, a field this
-   * store used to drop. The response's real field is `configOptions`
-   * (wire-shaped), not `options` (this client's internal shape) — the
-   * same class of bug #705 fixed for `session/new`/`config_option_update`;
-   * reuses that same `mapConfigOptions` rather than a second translation.
+   * folded `mode` entry) is `session/set_config_option`. Its request shape
+   * has TWO variants (`SetSessionConfigOptionRequest`,
+   * `@agentclientprotocol/sdk@1.3.0`'s generated schema): `type: 'boolean'`
+   * options send `value` as a real `boolean`, everything else sends it as
+   * the plain string id (issue #897 — before this, `value` was always the
+   * caller's own string `choiceId`, which is honest for `'select'` but
+   * would have sent the literal STRING `"true"`/`"false"` for a boolean
+   * option instead of the real wire boolean the schema requires). Neither
+   * variant is `{category, choiceId}` (a real agent 400s that with
+   * "Invalid params" — verified against the real `omp acp` binary).
+   * `configId` is the wire entry's own `id` (its `thinking` option has
+   * `id: "thinking"` but `category: "thought_level"` — sending `category`
+   * as `configId` is rejected outright, "Unknown ACP config option:
+   * thought_level"), and `type` is that entry's own `'select' | 'boolean'`.
+   * Both are sourced from the catalogue entry already seeded for this
+   * category — `mapConfigOptions` retains `AcpConfigOption.id`/`.type` for
+   * exactly this reason, a field this store used to drop. The response's
+   * real field is `configOptions` (wire-shaped), not `options` (this
+   * client's internal shape) — the same class of bug #705 fixed for
+   * `session/new`/`config_option_update`; reuses that same
+   * `mapConfigOptions` rather than a second translation.
    *
    * The vendor path (`category === 'model'` folded from Gemini's `models`,
    * `UNSTABLE_MODEL_CONFIG_TYPE`; issue #844) is different at the wire
@@ -1027,10 +1139,15 @@ export class AcpClient extends EventEmitter {
     if (current.type === UNSTABLE_MODEL_CONFIG_TYPE) {
       return this.setUnstableSessionModel(sessionId, category, choiceId);
     }
+    // A `type: 'boolean'` entry's wire `value` is a real boolean (issue
+    // #897), not `choiceId` itself — `choiceId` is this client's own
+    // internal string id (`'true'`/`'false'`, `mapConfigOptions`'s
+    // synthesized pair), never the wire shape for this variant.
+    const value = current.type === 'boolean' ? choiceId === 'true' : choiceId;
     const result = await this.sendRequest<RawConfigCatalog>('session/set_config_option', {
       sessionId,
       configId: current.id,
-      value: choiceId,
+      value,
       type: current.type,
     });
     this.configOptionStore.setAll(sessionId, mapConfigOptions(result), { unprompted: false });

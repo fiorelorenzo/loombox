@@ -455,3 +455,145 @@ describe('ConfigBar: config-option source (issue #753, D4-3)', () => {
     expect(onPinToProject).toHaveBeenCalledWith('mode');
   });
 });
+
+describe('ConfigBar: description, boolean switch, and grouped options (issue #897)', () => {
+  it("renders an option's own description as a native title tooltip on its section, not new chrome", async () => {
+    const described: AcpConfigOption[] = [
+      {
+        category: 'thought_level',
+        current: 'medium',
+        description: 'Controls how much the agent reasons before acting',
+        choices: [{ id: 'medium', name: 'Medium' }],
+      },
+    ];
+    render(ConfigBar, { props: { options: described, onChange: vi.fn() } });
+    await openPopover();
+    expect(screen.getByTestId('config-option-thought_level').getAttribute('title')).toBe(
+      'Controls how much the agent reasons before acting',
+    );
+  });
+
+  it('carries each choice\u2019s own description through to Select as its per-option hint', async () => {
+    const withChoiceDescriptions: AcpConfigOption[] = [
+      {
+        category: 'mode',
+        current: 'default',
+        choices: [
+          { id: 'default', name: 'Default', description: 'Standard ACP headless mode' },
+          { id: 'plan', name: 'Plan' },
+        ],
+      },
+    ];
+    render(ConfigBar, { props: { options: withChoiceDescriptions, onChange: vi.fn() } });
+    await openPopover();
+    // `mode` still renders as the segmented control, not a Select — its
+    // own choice descriptions surface as a native title on each segment.
+    expect(screen.getByRole('radio', { name: 'Default' }).getAttribute('title')).toBe(
+      'Standard ACP headless mode',
+    );
+  });
+
+  it("a type: 'boolean' option renders a real switch, not a Select dropdown, reflecting its current state", async () => {
+    const boolOption: AcpConfigOption[] = [
+      {
+        category: '_custom_auto_approve',
+        current: 'true',
+        type: 'boolean',
+        choices: [
+          { id: 'true', name: 'On' },
+          { id: 'false', name: 'Off' },
+        ],
+      },
+    ];
+    render(ConfigBar, { props: { options: boolOption, onChange: vi.fn() } });
+    await openPopover();
+    const toggle = screen.getByTestId('config-option-_custom_auto_approve-toggle');
+    expect(toggle).toBeTruthy();
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByTestId('config-option-_custom_auto_approve-select')).toBeNull();
+  });
+
+  it("toggling a boolean option calls onChange with the category and the new value as 'true'/'false'", async () => {
+    const onChange = vi.fn();
+    const boolOption: AcpConfigOption[] = [
+      {
+        category: '_custom_auto_approve',
+        current: 'false',
+        type: 'boolean',
+        choices: [
+          { id: 'true', name: 'On' },
+          { id: 'false', name: 'Off' },
+        ],
+      },
+    ];
+    render(ConfigBar, { props: { options: boolOption, onChange } });
+    await openPopover();
+    await fireEvent.click(screen.getByTestId('config-option-_custom_auto_approve-toggle'));
+    expect(onChange).toHaveBeenCalledWith('_custom_auto_approve', 'true');
+  });
+
+  it('a boolean option still gets a source badge and pin control, exactly like a Select-backed category', async () => {
+    const onPinToProject = vi.fn();
+    const boolOption: AcpConfigOption[] = [
+      {
+        category: '_custom_auto_approve',
+        current: 'true',
+        type: 'boolean',
+        choices: [
+          { id: 'true', name: 'On' },
+          { id: 'false', name: 'Off' },
+        ],
+      },
+    ];
+    render(ConfigBar, {
+      props: {
+        options: boolOption,
+        onChange: vi.fn(),
+        sources: { _custom_auto_approve: 'account' },
+        onPinToProject,
+        onUnpinFromProject: vi.fn(),
+      },
+    });
+    await openPopover();
+    expect(screen.getByTestId('config-source-_custom_auto_approve').textContent).toContain(
+      'Account',
+    );
+    await fireEvent.click(screen.getByTestId('config-pin-_custom_auto_approve'));
+    expect(onPinToProject).toHaveBeenCalledWith('_custom_auto_approve');
+  });
+
+  it('a boolean option still folds into the trigger text using its own choice label ("On"/"Off"), same as any other category', () => {
+    const boolOption: AcpConfigOption[] = [
+      {
+        category: '_custom_auto_approve',
+        current: 'true',
+        type: 'boolean',
+        choices: [
+          { id: 'true', name: 'On' },
+          { id: 'false', name: 'Off' },
+        ],
+      },
+    ];
+    render(ConfigBar, { props: { options: boolOption, onChange: vi.fn() } });
+    expect(screen.getByTestId('config-trigger').textContent).toContain('On');
+  });
+
+  it('forwards a grouped-select choice\u2019s group label through to Select, rendering a group heading inside the popover', async () => {
+    const grouped: AcpConfigOption[] = [
+      {
+        category: 'model',
+        current: 'anthropic/claude-haiku-4-5',
+        choices: [
+          { id: 'anthropic/claude-haiku-4-5', name: 'Haiku', group: 'Fast' },
+          { id: 'anthropic/claude-opus-5', name: 'Opus', group: 'Balanced' },
+        ],
+      },
+    ];
+    render(ConfigBar, { props: { options: grouped, onChange: vi.fn() } });
+    await openPopover();
+    const section = screen.getByTestId('config-option-model');
+    await fireEvent.click(within(section).getByTestId('ui-select-trigger'));
+    expect(within(section).getByText('Fast')).toBeTruthy();
+    expect(within(section).getByText('Balanced')).toBeTruthy();
+  });
+});

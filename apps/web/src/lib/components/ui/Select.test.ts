@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/svelte';
-import { fireEvent } from '@testing-library/dom';
+import { fireEvent, within } from '@testing-library/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Select from './Select.svelte';
 
@@ -220,5 +220,62 @@ describe('Select (redesign v3 design spec §3.5, issue #502)', () => {
     expect(screen.getByTestId('config-option-model')).toBeTruthy();
     expect(screen.getByTestId('config-option-model-trigger')).toBeTruthy();
     expect(screen.queryByTestId('ui-select')).toBeNull();
+  });
+
+  it("renders a choice's own hint as muted secondary text beside its label", async () => {
+    render(Select, {
+      props: {
+        value: 'sonnet',
+        options: [{ id: 'sonnet', label: 'Sonnet', hint: 'anthropic/claude-sonnet-5' }],
+        onChange: vi.fn(),
+        label: 'Model',
+      },
+    });
+    await fireEvent.click(screen.getByTestId('ui-select-trigger'));
+    expect(screen.getByRole('option', { name: /Sonnet/ }).textContent).toContain(
+      'anthropic/claude-sonnet-5',
+    );
+  });
+
+  it('renders one heading per contiguous run of the same group (issue #897 finding 3, ACP grouped SessionConfigSelectGroup), wrapping that run in role="group"', async () => {
+    const grouped = [
+      { id: 'haiku', label: 'Haiku', group: 'Fast' },
+      { id: 'sonnet', label: 'Sonnet', group: 'Balanced' },
+      { id: 'opus', label: 'Opus', group: 'Balanced' },
+    ];
+    render(Select, { props: { value: 'sonnet', options: grouped, onChange: vi.fn(), label: 'Model' } });
+    await fireEvent.click(screen.getByTestId('ui-select-trigger'));
+
+    expect(screen.getByText('Fast')).toBeTruthy();
+    expect(screen.getByText('Balanced')).toBeTruthy();
+    const balancedGroup = screen.getByRole('group', { name: 'Balanced' });
+    expect(within(balancedGroup).getAllByRole('option')).toHaveLength(2);
+    // Only one heading for the two consecutive "Balanced" options, not one per option.
+    expect(screen.getAllByText('Balanced')).toHaveLength(1);
+  });
+
+  it('an ungrouped option renders directly in the listbox, no heading, even alongside grouped ones', async () => {
+    const mixed = [
+      { id: 'sonnet', label: 'Sonnet', group: 'Anthropic' },
+      { id: 'custom', label: 'Custom model' },
+    ];
+    render(Select, { props: { value: 'sonnet', options: mixed, onChange: vi.fn(), label: 'Model' } });
+    await fireEvent.click(screen.getByTestId('ui-select-trigger'));
+
+    expect(screen.getByRole('option', { name: 'Custom model' }).closest('[role="group"]')).toBeNull();
+  });
+
+  it('keyboard navigation still addresses options by their flat index across a grouped list, unaffected by heading rows', async () => {
+    const onChange = vi.fn();
+    const grouped = [
+      { id: 'haiku', label: 'Haiku', group: 'Fast' },
+      { id: 'sonnet', label: 'Sonnet', group: 'Balanced' },
+    ];
+    render(Select, { props: { value: 'haiku', options: grouped, onChange, label: 'Model' } });
+    const trigger = screen.getByTestId('ui-select-trigger');
+    await fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    await fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    await fireEvent.keyDown(trigger, { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('sonnet');
   });
 });

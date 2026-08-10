@@ -31,10 +31,12 @@ import { z } from 'zod';
  * `@loombox/providers-core`) so neither side's build graph gains a cycle.
  */
 
-/** One ACP config-option choice (mirrors `@loombox/providers-core`'s `AcpConfigOptionChoice`). */
+/** One ACP config-option choice (mirrors `@loombox/providers-core`'s `AcpConfigOptionChoice`). `description` (`SessionConfigSelectOption.description`, issue #897) is the choice's own help text, e.g. "Auto-detect per prompt" — real, present data a real agent sends for nearly every model/mode choice, previously dropped on the floor. `group` (issue #897) is the display name of the `SessionConfigSelectGroup` this choice belongs to when the agent sent a grouped `options` list rather than a flat one; `undefined` for an ungrouped choice. */
 export const acpConfigOptionChoiceV1 = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
+  description: z.string().optional(),
+  group: z.string().optional(),
 });
 export type AcpConfigOptionChoiceV1 = z.infer<typeof acpConfigOptionChoiceV1>;
 
@@ -44,11 +46,26 @@ export type AcpConfigOptionChoiceV1 = z.infer<typeof acpConfigOptionChoiceV1>;
  * closed enum: SPEC §7.24 requires an unrecognized/future category to still
  * render generically rather than being dropped, so this schema must not
  * reject one.
+ *
+ * `description` (`SessionConfigOption.description`, issue #897) is the
+ * option's own help text. `type` (`'select' | 'boolean'`, plus this
+ * client's own `unstable_model` sentinel) is now carried too — issue #897:
+ * unlike the wire's own `id` (`SessionConfigOption.id`, `AcpConfigOption.id`
+ * below), which stays server-side forever (only `AcpClient.setConfigOption`
+ * needs it to build a real `session/set_config_option` request, and the
+ * browser never builds one itself), `type` now has a real client-side
+ * consumer: a `'boolean'` option renders as a switch, not a `<Select>`
+ * dropdown, and only the browser can make that rendering choice. Both stay
+ * optional so a `config_options`/`config_option_update` push from before
+ * this issue — or the `modes`-folded `mode` entry's synthesized shape,
+ * which has no wire `description` of its own — still parses.
  */
 export const acpConfigOptionV1 = z.object({
   category: z.string().min(1),
   current: z.string().optional(),
   choices: z.array(acpConfigOptionChoiceV1),
+  type: z.string().optional(),
+  description: z.string().optional(),
 });
 export type AcpConfigOptionV1 = z.infer<typeof acpConfigOptionV1>;
 
