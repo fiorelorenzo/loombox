@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 
 import { shQuote, type RemoteTransport } from './ssh/remote-transport';
 import type { RemoteProcessRunner } from './ssh/remote-process-runner';
+import { startWindowsLocalRun } from './windows/windows-job-runner';
 
 /**
  * Runs a project's configured test/lint/build command and streams its
@@ -12,12 +13,20 @@ import type { RemoteProcessRunner } from './ssh/remote-process-runner';
  * *before* calling either (see that class's `executeRun`), so a denied
  * command never reaches this module at all.
  *
- * **Local**: `child_process.spawn` with `detached: true`, which makes the
- * spawned `sh` the leader of its own new process group — the actual
- * mechanism behind "no leftover process after cancel": `cancel()` signals
- * the whole group via the negative-pid convention (`process.kill(-pid,
- * ...)`), not just the leader, so a command that forks children (any real
- * test runner) doesn't leak them.
+ * **Local**: dispatches on `process.platform`. On POSIX, `child_process.
+ * spawn` with `detached: true`, which makes the spawned `sh` the leader of
+ * its own new process group — the actual mechanism behind "no leftover
+ * process after cancel": `cancel()` signals the whole group via the
+ * negative-pid convention (`process.kill(-pid, ...)`), not just the
+ * leader, so a command that forks children (any real test runner) doesn't
+ * leak them. On `win32`, `startLocalRun` hands off to `./windows/windows-
+ * job-runner.ts`'s `startWindowsLocalRun` — same `StartRunOptions` in,
+ * same `RunHandle` out — which spawns a PowerShell-hosted Win32 Job Object
+ * instead of a process group (issue #940: Windows has no process groups
+ * for `detached`/negative-pid to mean anything; see that module's own doc
+ * comment for why a Job Object is the correct equivalent and never
+ * `taskkill /T`). Genuinely never run on a real Windows machine — issue
+ * #939 tracks real-machine verification for this whole platform.
  *
  * **ssh:**: reuses `RemoteProcessRunner` (setsid+fifo+log-tail) rather than
  * opening a second ssh channel — see that module's own doc comment for why
@@ -87,8 +96,10 @@ function classifyExitCode(exitCode: number): RunExitResult {
   return exitCode === 0 ? { outcome: 'pass', exitCode } : { outcome: 'fail', exitCode };
 }
 
-/** Runs `command` as a detached local process group and streams its combined stdout+stderr. See this module's own doc comment for the cancel mechanism. */
+/** Runs `command` locally and streams its combined stdout+stderr — a detached POSIX process group, or (`process.platform === 'win32'`) `./windows/windows-job-runner.ts`'s Job Object wrapper. See this module's own doc comment for the cancel mechanism on each platform. */
 export function startLocalRun(options: StartRunOptions): RunHandle {
+  if (process.platform === 'win32') return startWindowsLocalRun(options);
+
   const { command, onOutput, onExit } = options;
   let cancelled = false;
   let settled = false;

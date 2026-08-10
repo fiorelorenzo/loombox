@@ -113,6 +113,7 @@ import {
   nodeSelfUpdateApplyResponse,
   nodeSelfUpdateStatusAnnounce,
 } from './node-self-update';
+import { nodeIdentityConflict } from './node-identity-conflict';
 import {
   sessionArchiveRequest,
   sessionArchiveResponse,
@@ -425,6 +426,7 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   nodeSelfUpdateStatusAnnounce,
   nodeSelfUpdateApplyRequest,
   nodeSelfUpdateApplyResponse,
+  nodeIdentityConflict,
 ]);
 export type WireMessageV1 = z.infer<typeof wireMessageV1>;
 

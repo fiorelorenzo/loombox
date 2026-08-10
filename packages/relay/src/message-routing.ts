@@ -283,6 +283,11 @@ export const MESSAGE_ROUTES: { readonly [T in WireMessageV1['type']]: MessageRou
   node_self_update_status: { routed: 'node' },
   node_self_update_apply_request: { routed: 'client' },
   node_self_update_apply_response: { routed: 'node' },
+  node_identity_conflict: {
+    routed: 'not-routed',
+    reason:
+      'relay-constructed notice sent by `claimNodeRouting` to whichever connection just lost a nodeConnectionsByNodeId claim (issue #933) — never legitimately arrives inbound.',
+  },
   ping: { routed: 'device' },
   pong: {
     routed: 'not-routed',

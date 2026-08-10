@@ -810,6 +810,17 @@ export {
 } from './node-self-update';
 
 export type {
+  NodeIdentityConflict,
+  NodeIdentityConflictOutcome,
+  NodeIdentityConflictWarning,
+} from './node-identity-conflict';
+export {
+  nodeIdentityConflict,
+  nodeIdentityConflictOutcome,
+  nodeIdentityConflictWarning,
+} from './node-identity-conflict';
+
+export type {
   GitHubTarget,
   JiraTarget,
   TrackerBackendResolutionErrorV1,
@@ -1565,6 +1576,11 @@ import {
   nodeSelfUpdateSummaryV1,
 } from './node-self-update';
 import {
+  nodeIdentityConflict,
+  nodeIdentityConflictOutcome,
+  nodeIdentityConflictWarning,
+} from './node-identity-conflict';
+import {
   githubTarget,
   jiraTarget,
   trackerMode,
@@ -2066,6 +2082,9 @@ export const schemasV1 = {
   nodeSelfUpdateStatusAnnounce,
   nodeSelfUpdateApplyRequest,
   nodeSelfUpdateApplyResponse,
+  nodeIdentityConflict,
+  nodeIdentityConflictOutcome,
+  nodeIdentityConflictWarning,
   githubTarget,
   jiraTarget,
   trackerMode,
