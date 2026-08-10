@@ -279,29 +279,12 @@ describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #
     const session = await node.createSession({ projectPath, provider: 'test-echo' });
     const key = await derivePhoneSessionKey(amk, accountId, session.id);
 
-    // A real merge, on the real isolated worktree, that really conflicts.
-    const mergeResult = await execFileAsync('git', ['merge', 'feature'], {
-      cwd: session.worktreePath,
-    }).catch((error) => error as { stdout?: string; stderr?: string; code?: number });
-    // TEMP DIAGNOSTIC for CI root-cause investigation (issue #237) — removed before merge.
-    if (process.env.CI) {
-      const { stdout: gitVersion } = await execFileAsync('git', ['--version']);
-      const { stdout: headSha } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
-        cwd: session.worktreePath,
-      });
-      const { stdout: branchList } = await execFileAsync('git', ['branch', '-a', '-v'], {
-        cwd: session.worktreePath,
-      });
-      console.error(
-        '[DIAG] gitVersion=' + gitVersion.trim(),
-        '\n[DIAG] PATH=' + process.env.PATH,
-        '\n[DIAG] worktreePath=' + session.worktreePath,
-        '\n[DIAG] projectPath=' + projectPath,
-        '\n[DIAG] headSha=' + headSha.trim(),
-        '\n[DIAG] branchList=\n' + branchList,
-        '\n[DIAG] mergeResult=' + JSON.stringify(mergeResult),
-      );
-    }
+    // A real merge, on the real isolated worktree, that really conflicts. This has to go
+    // through `execGit`: a merge writes a commit, so git demands a committer identity, and
+    // a bare `execFileAsync('git', ['merge', ...])` inherits whatever the machine happens to
+    // have. On CI that is nothing, so the merge died with `fatal: empty ident name` and the
+    // file kept main's content, which is how this test passed here and failed there.
+    await execGit(session.worktreePath, ['merge', 'feature']).catch(() => undefined);
     const conflictedBefore = await readFile(path.join(session.worktreePath, 'notes.txt'), 'utf8');
     expect(conflictedBefore).toContain('<<<<<<<');
     expect(conflictedBefore).toContain('MAIN-EDIT');
@@ -413,9 +396,7 @@ describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #
 
     const session = await node.createSession({ projectPath, provider: 'test-echo' });
     const key = await derivePhoneSessionKey(amk, accountId, session.id);
-    await execFileAsync('git', ['merge', 'feature'], { cwd: session.worktreePath }).catch(
-      () => undefined,
-    );
+    await execGit(session.worktreePath, ['merge', 'feature']).catch(() => undefined);
     const conflictedBefore = await readFile(path.join(session.worktreePath, 'notes.txt'), 'utf8');
 
     phone = new TestPhone(relay.url, {
@@ -466,9 +447,7 @@ describe('NodeDaemon git-conflict-resolve (AI merge-conflict resolution, issue #
     });
     const session = await beforeRestart.createSession({ projectPath, provider: 'test-echo' });
     const key = await derivePhoneSessionKey(amk, accountId, session.id);
-    await execFileAsync('git', ['merge', 'feature'], { cwd: session.worktreePath }).catch(
-      () => undefined,
-    );
+    await execGit(session.worktreePath, ['merge', 'feature']).catch(() => undefined);
     beforeRestart.close();
 
     node = createNode({
