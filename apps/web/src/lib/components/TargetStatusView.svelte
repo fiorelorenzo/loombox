@@ -361,6 +361,15 @@
     });
   }
 
+  /** Same UTC/en-US formatting as {@link formatAbsoluteSampledAt}, generalized to a raw epoch-ms timestamp — used by `target.identityConflict.detectedAt` (issue #933), which isn't a `TargetHealth` sample. */
+  function formatAbsoluteTimestamp(epochMs: number): string {
+    return new Date(epochMs).toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'medium',
+      timeZone: 'UTC',
+    });
+  }
+
   /**
    * "Reconnect" (redesign v2 §3.3; issue #476): there is no reconnect wire
    * message at all (`@loombox/protocol`'s `target-lifecycle.ts` doc comment)
@@ -598,6 +607,14 @@
                   dataTestId={`target-node-update-available-${key}`}>Update available</Badge
                 >
               {/if}
+              {#if target.identityConflict}
+                <Badge
+                  tone="danger"
+                  size="sm"
+                  class="identity-conflict-badge"
+                  dataTestId={`target-identity-conflict-${key}`}>Identity conflict</Badge
+                >
+              {/if}
               <span class="target-metrics">
                 {#if target.maxConcurrentSessions !== undefined}
                   {@const snapshot = concurrency.get(key) ?? { running: 0, queued: 0 }}
@@ -654,6 +671,15 @@
             {#if expanded}
               <div class="target-expansion" data-testid="target-expansion">
                 <p class="node-id font-mono">Node {target.nodeId}</p>
+                {#if target.identityConflict}
+                  <p
+                    class="identity-conflict-detail"
+                    data-testid={`target-identity-conflict-detail-${key}`}
+                  >
+                    A different device ({target.identityConflict.rivalDeviceId}) tried to claim this
+                    node's identity, {formatAbsoluteTimestamp(target.identityConflict.detectedAt)}.
+                  </p>
+                {/if}
                 {#if target.health}
                   {@const health = target.health}
                   <div class="meters">
@@ -1012,6 +1038,12 @@
   .node-id {
     font-size: var(--text-small-size);
     opacity: 0.7;
+    margin: 0;
+  }
+
+  .identity-conflict-detail {
+    font-size: var(--text-small-size);
+    color: var(--color-danger);
     margin: 0;
   }
 

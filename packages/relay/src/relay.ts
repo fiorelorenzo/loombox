@@ -8,10 +8,13 @@ import {
   isBelowCompatWindow,
   negotiateVersion,
   safeParseWireMessageV1,
+  withEnvelope,
   type AmkEpochFetchResponse,
   type BlobDownloadResponse,
   type BuildIdentityV1,
   type CompatibilityWindowV1,
+  type NodeIdentityConflict,
+  type NodeIdentityConflictWarning,
   type NodeSelfUpdateSummaryV1,
   type ConnectedAccountList,
   type KeymapResult,
@@ -98,6 +101,8 @@ interface BaseConnection {
   socket: WsWebSocket;
   deviceId: string;
   accountId: string;
+  /** This connection's remote address (`request.ip`, captured once at `initialize`) — used only for `claimNodeRouting`'s conflict log line (issue #933): naming which physical peer showed up matters far more once two connections are already fighting over one identity than it does day to day. */
+  remoteAddress: string;
 }
 
 interface NodeConnection extends BaseConnection {
@@ -108,6 +113,10 @@ interface NodeConnection extends BaseConnection {
   buildIdentity?: BuildIdentityV1;
   /** This node's latest self-update check (issue #656), from its `node_self_update_status` push — `undefined` until the first one arrives on this connection, or for a node that predates the field. Connection-scoped, exactly like `buildIdentity` above: never persisted, since a disconnected node has nothing live to report. */
   selfUpdate?: NodeSelfUpdateSummaryV1;
+  /** This device's persisted ECDH identity key, base64 (`initialize.devicePublicKey` — issue #64/#655's sibling field). Compared across connections claiming the same nodeId (issue #933's `claimNodeRouting`) to tell a reconnect from a rival without any timing heuristic: the SAME install reconnecting presents the SAME key every time, a genuinely different device cannot. Connection-scoped exactly like `buildIdentity`: the live socket's own announced key, never a persisted `TargetStore` property. */
+  devicePublicKey: string;
+  /** Set the moment `claimNodeRouting` refuses a DIFFERENT-device rival trying to claim a nodeId this connection already owns (issue #933) — mirrors `buildIdentity`/`selfUpdate`: connection-scoped, sticky until this connection itself disconnects, never persisted in `TargetStore`. Read back into `target_list`'s own `identityConflict` field (`targets.ts`) so a client watching that node sees the same warning the relay logged. */
+  identityConflict?: NodeIdentityConflictWarning;
 }
 
 interface ClientConnection extends BaseConnection {
@@ -862,11 +871,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   /** SPEC §7.26, issue #221/#631: `connected_account_list_request`'s reply, shared by both `handleClientMessage` and `handleNodeMessage` — a node needs its own account's registry exactly like a client does (`@loombox/node`'s `resolveTrackerBackend`, issue #631, is the first node-side consumer), scoped identically to `connection.accountId` either way. One implementation rather than two near-identical case bodies is what keeps a future change here (an added field, a different scoping rule) from landing in only one of the two call sites. */
   async function sendConnectedAccountList(connection: Connection): Promise<void> {
     const accounts = await store.connectedAccounts.listForAccount(connection.accountId);
-    const response: ConnectedAccountList = {
-      type: 'connected_account_list',
-      protocolVersion: PROTOCOL_V1,
+    const response: ConnectedAccountList = withEnvelope('connected_account_list', {
       accounts: [...accounts],
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -1042,6 +1049,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   async function handleInitialize(
     socket: WsWebSocket,
     raw: string,
+    remoteAddress: string,
   ): Promise<Connection | undefined> {
     let parsed: unknown;
     try {
@@ -1137,14 +1145,17 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             socket,
             deviceId: message.deviceId,
             accountId,
+            remoteAddress,
             nodeIds: new Set(),
             buildIdentity: message.buildIdentity,
+            devicePublicKey: message.devicePublicKey,
           }
         : {
             kind: 'client',
             socket,
             deviceId: message.deviceId,
             accountId,
+            remoteAddress,
             subscriptions: new Set(),
             outbox: new BoundedClientOutbox((item, done) => {
               sendJson(socket, item);
@@ -1157,13 +1168,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
     if (connection.kind === 'node') registry.nodes.add(connection);
     else registry.clients.add(connection);
 
-    const initResult: InitializeResult = {
-      type: 'initialize_result',
-      protocolVersion: PROTOCOL_V1,
+    const initResult: InitializeResult = withEnvelope('initialize_result', {
       negotiatedVersion: negotiated,
       capabilities: [...RELAY_CAPABILITIES],
       ...(relayBuildIdentity ? { buildIdentity: relayBuildIdentity } : {}),
-    };
+    });
     sendDirect(connection, initResult);
     return connection;
   }
@@ -1180,7 +1189,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       // never deliver another frame. Same for both roles, hence here rather
       // than in the node/client switches below.
       case 'ping': {
-        const reply: Pong = { type: 'pong', protocolVersion: PROTOCOL_V1, nonce: message.nonce };
+        const reply: Pong = withEnvelope('pong', { nonce: message.nonce });
         sendDirect(connection, reply);
         return true;
       }
@@ -1279,11 +1288,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return true;
         }
-        const response: NewDeviceBootstrapResponse = {
-          type: 'new_device_bootstrap_response',
-          protocolVersion: PROTOCOL_V1,
+        const response: NewDeviceBootstrapResponse = withEnvelope('new_device_bootstrap_response', {
           wrappedAmk,
-        };
+        });
         sendDirect(connection, response);
         return true;
       }
@@ -1328,12 +1335,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             );
           }
         }
-        const response: AmkEpochFetchResponse = {
-          type: 'amk_epoch_fetch_response',
-          protocolVersion: PROTOCOL_V1,
+        const response: AmkEpochFetchResponse = withEnvelope('amk_epoch_fetch_response', {
           deviceId: connection.deviceId,
           pending: responsePending,
-        };
+        });
         sendDirect(connection, response);
         return true;
       }
@@ -1375,13 +1380,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       app.log.warn({ sessionId: message.sessionId, ref: message.ref }, 'relay: blob not found');
       return;
     }
-    const response: BlobDownloadResponse = {
-      type: 'blob_download_response',
-      protocolVersion: PROTOCOL_V1,
+    const response: BlobDownloadResponse = withEnvelope('blob_download_response', {
       sessionId: message.sessionId,
       ref: message.ref,
       envelope,
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -1420,15 +1423,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             ttlMs,
             now,
           );
-    const response: LeaseResult = {
-      type: 'lease_result',
-      protocolVersion: PROTOCOL_V1,
+    const response: LeaseResult = withEnvelope('lease_result', {
       requestId: message.requestId,
       sessionId: message.sessionId,
       result: outcome.granted
         ? { outcome: 'granted', expiresAt: outcome.lease.expiresAt }
         : { outcome: 'denied', heldBy: outcome.heldBy, expiresAt: outcome.expiresAt },
-    };
+    });
     sendDirect(connection, response);
   }
 
@@ -1442,14 +1443,114 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       message.sessionId,
       message.nodeId,
     );
-    const response: LeaseReleaseResult = {
-      type: 'lease_release_result',
-      protocolVersion: PROTOCOL_V1,
+    const response: LeaseReleaseResult = withEnvelope('lease_release_result', {
       requestId: message.requestId,
       sessionId: message.sessionId,
       released,
-    };
+    });
     sendDirect(connection, response);
+  }
+
+  /**
+   * Issue #933, the relay-side follow-up from #929's 15-hour duplicate-node
+   * incident (#937 already closed the same-machine half with a state-dir
+   * lock — this is the half a lock can never see, since the two
+   * connections aren't on the same machine). Called by both
+   * `target_announce` and `session_announce` below, right before either
+   * would otherwise hand `registry.nodeConnectionsByNodeId` to a plain
+   * `Map.set()`: that used to happen unconditionally, so whichever
+   * connection announced a nodeId LAST simply took over routing, with no
+   * check and no signal to anyone — exactly how #929 stayed invisible for
+   * 15 hours, since two different node processes both claimed
+   * `devbox-node-1` and the relay had no opinion.
+   *
+   * The rule: `devicePublicKey` (an ECDH identity persisted by
+   * `NodeIdentityStore` and reused across restarts, issue #64 — announced
+   * on every `initialize`, #655's sibling field) tells a reconnect from a
+   * rival apart without any timing heuristic, because it's the one thing a
+   * genuinely different device cannot present:
+   *
+   * - No existing claim, or the SAME connection re-announcing (the normal
+   *   case every time a node's target list changes) — claims/keeps the
+   *   entry, nothing else happens.
+   * - A DIFFERENT connection already owns it, SAME devicePublicKey —
+   *   reconnect: a flaky network dropped a socket and the same physical
+   *   node came back before the relay's own close/timeout noticed the old
+   *   one was dead. The new connection takes over exactly like before this
+   *   issue; the OLD one is told why (`node_identity_conflict`, outcome
+   *   `'superseded'`) and closed (4410). Nothing is logged and
+   *   `identityConflict` is never touched — this stays exactly as
+   *   unremarkable as it always was.
+   * - A DIFFERENT connection already owns it, DIFFERENT devicePublicKey —
+   *   rival: a different device claiming an identity another connection
+   *   already holds live, the actual #929 failure mode (or a plain
+   *   misconfiguration). The relay refuses the NEWCOMER rather than the
+   *   incumbent: whatever session an operator is actually driving over the
+   *   existing connection should not be yanked out from under them by a
+   *   connection that only just showed up, and "whoever's still there
+   *   wins" is exactly the policy that would have masked #929's own
+   *   crashed-but-not-yet-evicted duplicate for even longer. The rejected
+   *   connection is told why (`node_identity_conflict`, outcome
+   *   `'rejected'`) and closed (4409); the relay logs a warning naming
+   *   both connections' accountId/deviceId/remoteAddress (this issue's own
+   *   "log the collision loudly" ask), and marks the SURVIVING
+   *   connection's `identityConflict` — mirrored onto every target row it
+   *   owns via `target_list` (`targets.ts`) — so a client watching that
+   *   node sees it was just fought over, rather than both sides looking
+   *   perfectly healthy the way they did for 15 hours.
+   *
+   * Returns whether `connection` may proceed to persist/route this
+   * announce; `false` means the caller must return immediately without
+   * touching `store.targets`/`store.sessions` — a rejected rival's payload
+   * is never even considered, so it can never silently reassign a target's
+   * recorded owner (accountId included) out from under the incumbent.
+   */
+  function claimNodeRouting(nodeId: string, connection: NodeConnection): boolean {
+    const existing = registry.nodeConnectionsByNodeId.get(nodeId);
+    if (!existing || existing === connection) {
+      registry.nodeConnectionsByNodeId.set(nodeId, connection);
+      return true;
+    }
+    if (existing.devicePublicKey === connection.devicePublicKey) {
+      registry.nodeConnectionsByNodeId.set(nodeId, connection);
+      const notice: NodeIdentityConflict = {
+        type: 'node_identity_conflict',
+        protocolVersion: PROTOCOL_V1,
+        nodeId,
+        outcome: 'superseded',
+        message: `a new connection for nodeId ${nodeId} took over routing (same device reconnecting)`,
+      };
+      sendDirect(existing, notice);
+      existing.socket.close(4410, 'superseded by a reconnect');
+      return true;
+    }
+    const notice: NodeIdentityConflict = {
+      type: 'node_identity_conflict',
+      protocolVersion: PROTOCOL_V1,
+      nodeId,
+      outcome: 'rejected',
+      message: `nodeId ${nodeId} is already live from a different device`,
+    };
+    sendDirect(connection, notice);
+    connection.socket.close(4409, 'node identity conflict');
+    app.log.warn(
+      {
+        nodeId,
+        incumbent: {
+          accountId: existing.accountId,
+          deviceId: existing.deviceId,
+          remoteAddress: existing.remoteAddress,
+        },
+        rival: {
+          accountId: connection.accountId,
+          deviceId: connection.deviceId,
+          remoteAddress: connection.remoteAddress,
+        },
+      },
+      'relay: rival connection rejected — a different device tried to claim a nodeId another connection already holds live (issue #933)',
+    );
+    existing.identityConflict = { rivalDeviceId: connection.deviceId, detectedAt: Date.now() };
+    return false;
   }
 
   async function handleNodeMessage(
@@ -1460,9 +1561,9 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
     switch (message.type) {
       case 'target_announce': {
+        if (!claimNodeRouting(message.nodeId, connection)) return;
         store.targets.announce(message.nodeId, connection.accountId, message.targets);
         connection.nodeIds.add(message.nodeId);
-        registry.nodeConnectionsByNodeId.set(message.nodeId, connection);
         return;
       }
       case 'target_status': {
@@ -1481,12 +1582,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           );
           return;
         }
+        if (!claimNodeRouting(message.session.nodeId, connection)) return;
         await store.sessions.announce({
           meta: message.session,
           privateEnvelope: message.privateEnvelope,
         });
         connection.nodeIds.add(message.session.nodeId);
-        registry.nodeConnectionsByNodeId.set(message.session.nodeId, connection);
         return;
       }
       case 'connected_account_announce': {
@@ -1628,6 +1729,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'git_commit_draft_response':
       case 'git_commit_response':
       case 'git_diff_explain_response':
+      case 'git_conflict_resolve_response':
         // The owning node's reply to a client's mcp_prompt_get_request
         // (Zed-parity D5-2; issue #754), fs_read_request (issue #737's
         // read-only file viewer), git_diff_request (issue #206's
@@ -1660,6 +1762,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // from one) fan out exactly the same way: the relay never learns
         // which file/hunk was addressed or what the agent's explanation
         // said.
+        // git_conflict_resolve_request/git_conflict_resolve_response
+        // (issue #237's AI merge-conflict resolution assist, this same
+        // git_diff_explain_request family's own sibling) fan out exactly
+        // the same way: the relay never learns which file was addressed,
+        // its real conflict markers, or the agent's proposed resolution.
         fanOutDirect(message.sessionId, message);
         return;
       case 'git_branch_list_response':
@@ -2179,6 +2286,13 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
               ...(health ? { health } : {}),
               ...(nodeConnection?.buildIdentity ? { build: nodeConnection.buildIdentity } : {}),
               ...(nodeConnection?.selfUpdate ? { selfUpdate: nodeConnection.selfUpdate } : {}),
+              // Issue #933: mirrored from the owning connection's own
+              // `identityConflict`, exactly like `build`/`selfUpdate` above
+              // — absent unless a rival has actually been rejected while
+              // THIS connection was live.
+              ...(nodeConnection?.identityConflict
+                ? { identityConflict: nodeConnection.identityConflict }
+                : {}),
               // Issue #255: forwarded verbatim from the node's own
               // `target_announce`, exactly like `providers` above — absent
               // for a node that predates it.
@@ -2191,12 +2305,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             });
           }
         }
-        const response: TargetList = {
-          type: 'target_list',
-          protocolVersion: PROTOCOL_V1,
+        const response: TargetList = withEnvelope('target_list', {
           requestId: message.requestId,
           targets,
-        };
+        });
         sendDirect(connection, response);
         return;
       }
@@ -2206,11 +2318,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           session: record.meta,
           privateEnvelope: record.privateEnvelope,
         }));
-        const response: SessionListV1 = {
-          type: 'session_list',
-          protocolVersion: PROTOCOL_V1,
-          sessions,
-        };
+        const response: SessionListV1 = withEnvelope('session_list', { sessions });
         sendDirect(connection, response);
         return;
       }
@@ -2230,12 +2338,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // `envelope: null` (never an error) is "this account has never
         // saved one yet"; every action still uses its built-in default.
         const envelope = await store.keymaps.get(connection.accountId);
-        const response: KeymapResult = {
-          type: 'keymap_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: KeymapResult = withEnvelope('keymap_result', {
           requestId: message.requestId,
           envelope: envelope ?? null,
-        };
+        });
         sendDirect(connection, response);
         return;
       }
@@ -2246,12 +2352,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // `apps/web/src/lib/keymap.ts`'s client-side `validateKeymapCandidate`
         // checked it against the live registry before this was ever sent.
         await store.keymaps.set(connection.accountId, message.envelope);
-        const response: KeymapResult = {
-          type: 'keymap_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: KeymapResult = withEnvelope('keymap_result', {
           requestId: message.requestId,
           envelope: message.envelope,
-        };
+        });
         sendDirect(connection, response);
         // Issue #760's "a merge story for the same account editing from
         // two tabs": last full write wins here at the relay, but every
@@ -2280,14 +2384,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           return;
         }
         const saved = await store.sessionViewStates.get(message.sessionId);
-        const response: SessionViewStateResult = {
-          type: 'session_view_state_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: SessionViewStateResult = withEnvelope('session_view_state_result', {
           requestId: message.requestId,
           sessionId: message.sessionId,
           envelope: saved?.envelope ?? null,
           revision: saved?.revision ?? 0,
-        };
+        });
         sendDirect(connection, response);
         return;
       }
@@ -2304,14 +2406,12 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           envelope: message.envelope,
           revision: message.revision,
         });
-        const response: SessionViewStateResult = {
-          type: 'session_view_state_result',
-          protocolVersion: PROTOCOL_V1,
+        const response: SessionViewStateResult = withEnvelope('session_view_state_result', {
           requestId: message.requestId,
           sessionId: message.sessionId,
           envelope: message.envelope,
           revision: message.revision,
-        };
+        });
         sendDirect(connection, response);
         // Mirrors `keymap_set_request`'s own cross-tab/cross-device push
         // (issue #760) — a device live right now on this session sees the
@@ -2335,12 +2435,10 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
           return;
         }
         subscribeClientToSession(connection, message.sessionId);
-        const announce: SessionAnnounceV1 = {
-          type: 'session_announce',
-          protocolVersion: PROTOCOL_V1,
+        const announce: SessionAnnounceV1 = withEnvelope('session_announce', {
           session: record.meta,
           privateEnvelope: record.privateEnvelope,
-        };
+        });
         sendDirect(connection, announce);
         return;
       }
@@ -2357,13 +2455,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             { sessionId: message.sessionId },
             'relay: session_archive_request for unknown/foreign session',
           );
-          const errorResponse: SessionArchiveResponse = {
-            type: 'session_archive_response',
-            protocolVersion: PROTOCOL_V1,
+          const errorResponse: SessionArchiveResponse = withEnvelope('session_archive_response', {
             requestId: message.requestId,
             sessionId: message.sessionId,
             result: { outcome: 'error', message: `unknown session ${message.sessionId}` },
-          };
+          });
           sendDirect(connection, errorResponse);
           return;
         }
@@ -2413,13 +2509,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
             { targetId: message.targetId },
             'relay: session_fork_request for unknown/foreign target',
           );
-          const errorResponse: SessionForkResponse = {
-            type: 'session_fork_response',
-            protocolVersion: PROTOCOL_V1,
+          const errorResponse: SessionForkResponse = withEnvelope('session_fork_response', {
             requestId: message.requestId,
             sessionId: message.sessionId,
             result: { outcome: 'error', message: `unknown target ${message.targetId}` },
-          };
+          });
           sendDirect(connection, errorResponse);
           return;
         }
@@ -2734,6 +2828,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
       case 'agent_instructions_set_request':
       case 'git_commit_request':
       case 'git_diff_explain_request':
+      case 'git_conflict_resolve_request':
         // fs_list_request (SPEC §7.4; issue #171/#160), its D5-2 sibling
         // mcp_prompt_get_request (Zed-parity D5-2; issue #754), its
         // #737 sibling fs_read_request (read-only file viewer), its
@@ -2765,6 +2860,11 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         // a hunk): routed the same way. The relay only ever sees
         // `sessionId`/`requestId` and an opaque `EncryptedEnvelope`; which
         // file/hunk was addressed never reaches the relay in the clear.
+        // and its #237 sibling git_conflict_resolve_request (propose an
+        // AI resolution for a conflicted file): routed the same way. The
+        // relay only ever sees `sessionId`/`requestId` and an opaque
+        // `EncryptedEnvelope`; which file/hunks were addressed or their
+        // real conflict markers never reach the relay in the clear.
         await routeToOwningNode(message.sessionId, message);
         return;
       case 'git_branch_list_request':
@@ -2985,24 +3085,20 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
         }
         const result = await store.sessions.getEntriesSince(message.sessionId, message.sinceSeq);
         if (result.droppedFromSeq !== undefined && result.droppedToSeq !== undefined) {
-          const marker: ResyncMarker = {
-            type: 'resync_marker',
-            protocolVersion: PROTOCOL_V1,
+          const marker: ResyncMarker = withEnvelope('resync_marker', {
             sessionId: message.sessionId,
             fromSeq: result.droppedFromSeq,
             toSeq: result.droppedToSeq,
             dropped: true,
-          };
+          });
           sendDirect(connection, marker);
         }
         for (const entry of result.entries) {
-          const replay: SessionUpdateEnvelopeV1 = {
-            type: 'session_update',
-            protocolVersion: PROTOCOL_V1,
+          const replay: SessionUpdateEnvelopeV1 = withEnvelope('session_update', {
             sessionId: message.sessionId,
             seq: entry.seq,
             envelope: entry.envelope,
-          };
+          });
           sendDirect(connection, replay);
         }
         return;
@@ -3269,7 +3365,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
   app.register(fastifyWebsocket);
 
   app.register(async (instance) => {
-    instance.get(RELAY_WS_PATH, { websocket: true }, (socket: WsWebSocket) => {
+    instance.get(RELAY_WS_PATH, { websocket: true }, (socket: WsWebSocket, request) => {
       let connection: Connection | undefined;
       // Every store call is now awaited (the Postgres swap makes that
       // unavoidable — see `store.ts`'s `Awaitable` doc comment), so a frame
@@ -3283,7 +3379,7 @@ export function createRelay(opts: CreateRelayOptions = {}): FastifyInstance {
 
       async function processFrame(text: string): Promise<void> {
         if (!connection) {
-          connection = await handleInitialize(socket, text);
+          connection = await handleInitialize(socket, text, request.ip);
           return;
         }
 

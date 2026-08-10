@@ -696,6 +696,10 @@ const NOT_YET_FIXTURED: Record<string, string> = {
     'exercised in packages/protocol/src/v1/git-commit.test.ts; not yet consolidated into this map (issue #910).',
   git_commit_response:
     'exercised in packages/protocol/src/v1/git-commit.test.ts; not yet consolidated into this map (issue #910).',
+  git_conflict_resolve_request:
+    'exercised in packages/protocol/src/v1/git-conflict-resolve.test.ts; not yet consolidated into this map (issue #910).',
+  git_conflict_resolve_response:
+    'exercised in packages/protocol/src/v1/git-conflict-resolve.test.ts; not yet consolidated into this map (issue #910).',
   git_diff_explain_request:
     'exercised in packages/protocol/src/v1/git-diff-explain.test.ts; not yet consolidated into this map (issue #910).',
   git_diff_explain_response:
@@ -756,6 +760,8 @@ const NOT_YET_FIXTURED: Record<string, string> = {
     'exercised in packages/protocol/src/v1/node-self-update.test.ts; not yet consolidated into this map (issue #910).',
   node_self_update_status:
     'exercised in packages/protocol/src/v1/node-self-update.test.ts; not yet consolidated into this map (issue #910).',
+  node_identity_conflict:
+    'exercised in packages/protocol/src/v1/node-identity-conflict.test.ts; not yet consolidated into this map (issue #910).',
   permission_policy_get:
     'exercised in packages/protocol/src/v1/permission-policy.test.ts; not yet consolidated into this map (issue #910).',
   permission_policy_result:
