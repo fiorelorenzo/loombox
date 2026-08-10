@@ -47,6 +47,7 @@ import {
   gitCommitResponse,
 } from './git-commit';
 import { gitDiffExplainRequest, gitDiffExplainResponse } from './git-diff-explain';
+import { gitConflictResolveRequest, gitConflictResolveResponse } from './git-conflict-resolve';
 import {
   gitHunkActionRequest,
   gitHunkActionResponse,
@@ -404,6 +405,8 @@ export const wireMessageV1 = z.discriminatedUnion('type', [
   gitCommitResponse,
   gitDiffExplainRequest,
   gitDiffExplainResponse,
+  gitConflictResolveRequest,
+  gitConflictResolveResponse,
   gitGraphRequest,
   gitGraphResponse,
   ciCheckStatus,

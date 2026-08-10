@@ -145,6 +145,10 @@ import {
   type GitCommitRequest,
   type GitCommitRequestPayloadV1,
   type GitCommitResponsePayloadV1,
+  type GitConflictResolutionHunkV1,
+  type GitConflictResolveRequest,
+  type GitConflictResolveRequestPayloadV1,
+  type GitConflictResolveResponsePayloadV1,
   type GitDiffExplainRequest,
   type GitDiffExplainRequestPayloadV1,
   type GitDiffExplainResponsePayloadV1,
@@ -344,6 +348,14 @@ import {
   computeExplainDiffText,
   GitDiffExplainError,
 } from './git-diff-explain';
+import {
+  assembleResolvedContent,
+  buildConflictResolvePrompt,
+  GitConflictResolveError,
+  MAX_CONFLICT_HUNKS_PER_RESOLVE,
+  parseConflictMarkers,
+  resolveHunkOrigin,
+} from './git-conflict-resolve';
 import {
   assertCustomAgentAllowed,
   createCustomAgentProvider,
@@ -4604,6 +4616,9 @@ export class NodeDaemon extends EventEmitter {
         return;
       case 'git_diff_explain_request':
         this.handleGitDiffExplainRequest(message);
+        return;
+      case 'git_conflict_resolve_request':
+        this.handleGitConflictResolveRequest(message);
         return;
       case 'tracker_snapshot_request':
         this.handleTrackerSnapshotRequest(message);
@@ -11492,6 +11507,185 @@ export class NodeDaemon extends EventEmitter {
     const key = await this.getSessionKey(sessionId);
     const envelope = await sealJson(sessionId, payload, key);
     this.relay.send(withEnvelope('snippet_list_result', { sessionId, requestId, envelope }));
+  }
+
+  /**
+   * A client asked (via the relay) this node to propose a resolution for
+   * every conflicted hunk in one session file (SPEC §7.6; issue #237) —
+   * `handleGitDiffExplainRequest`'s own sibling in shape (an agent-turn-
+   * spending read, never applying anything itself). Appended as one
+   * contiguous block at the end of the class rather than interleaved
+   * next to `handleGitDiffExplainRequest`, the same reasoning that
+   * method's own doc comment already gives: this wave lands several
+   * git/AI-assist issues in `node-daemon.ts` at once, and interleaving
+   * near-identical `handleX`/`decryptX`/`sendX` families is exactly the
+   * merge hazard that reasoning warns about. `resolveConflictHunkViaAgent`
+   * below is a deliberate copy of `explainDiffViaAgent` for the same
+   * reason.
+   */
+  private handleGitConflictResolveRequest(message: GitConflictResolveRequest): void {
+    const routing = this.resolveSessionRouting(message.sessionId);
+    if (!routing) return; // not one of this node's sessions; ignore per SPEC.md §12
+
+    this.decryptGitConflictResolveRequest(message)
+      .then((payload) => this.resolveGitConflictForBridge(routing, payload))
+      .then((responsePayload) =>
+        this.sendGitConflictResolveResponse(routing.session.id, message.requestId, responsePayload),
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `NodeDaemon: failed to handle git_conflict_resolve_request for session ${message.sessionId}: ${detail}`,
+        );
+      });
+  }
+
+  private async decryptGitConflictResolveRequest(
+    message: GitConflictResolveRequest,
+  ): Promise<GitConflictResolveRequestPayloadV1> {
+    const key = await this.getSessionKey(message.sessionId);
+    return openJson<GitConflictResolveRequestPayloadV1>(message.sessionId, message.envelope, key);
+  }
+
+  /**
+   * Reads `payload.path` fresh off disk (the exact same unscoped
+   * `getExecutionTarget(routing.targetId)`/`resolveSessionRelativePath`/
+   * `hashFileContent` primitives `readFileForBridge` uses — a plain
+   * filesystem read, never a spawned `git` command, so this never needs
+   * the policy-scoped two-arg `getExecutionTarget` overload
+   * `computeExplainDiffText`'s own caller does), parses its real conflict
+   * markers, refuses up front when this session has no live agent or the
+   * hunk count is over `MAX_CONFLICT_HUNKS_PER_RESOLVE` (see
+   * `git-conflict-resolve.ts`'s own file doc comment for why that bound
+   * exists), then spends one real agent turn PER hunk
+   * ({@link resolveConflictHunkViaAgent}), sequentially — a real
+   * conversation, not concurrent turns racing the same session. Never
+   * throws: a target that can't be resolved, a path-traversal attempt, a
+   * `GitConflictResolveError` (no conflict markers at all — the file
+   * changed since the caller's last look), or an empty agent reply for
+   * any one hunk all become an `outcome: 'error'` payload instead, so
+   * {@link handleGitConflictResolveRequest} always has a response to
+   * seal and send back. NEVER writes to disk — `baseHash` on the `'ok'`
+   * outcome is the CURRENT hash, handed to the client to apply via a
+   * plain `fs_write_request` (issue #205's own conflict-safe write,
+   * reused rather than reinvented — see `@loombox/protocol`'s
+   * `git-conflict-resolve.ts` file doc comment).
+   */
+  private async resolveGitConflictForBridge(
+    routing: SessionRouting,
+    payload: GitConflictResolveRequestPayloadV1,
+  ): Promise<GitConflictResolveResponsePayloadV1> {
+    const bridge = this.bridges.get(routing.session.id);
+    if (!bridge) {
+      return {
+        outcome: 'error',
+        path: payload.path,
+        message: 'This session has no live agent to resolve a conflict with.',
+      };
+    }
+
+    let resolvedPath: string;
+    try {
+      resolvedPath = resolveSessionRelativePath(routing.session.worktreePath, payload.path);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: payload.path, message: detail };
+    }
+
+    try {
+      const target = await this.getExecutionTarget(routing.targetId);
+      const content = await target.readFile(resolvedPath);
+      const hunks = parseConflictMarkers(content);
+      if (hunks.length > MAX_CONFLICT_HUNKS_PER_RESOLVE) {
+        return {
+          outcome: 'too_large',
+          path: payload.path,
+          message: `This file has ${hunks.length} conflicted hunks — over the ${MAX_CONFLICT_HUNKS_PER_RESOLVE}-hunk bound for one AI resolve. Resolve some by hand, then retry.`,
+          hunkCount: hunks.length,
+          maxHunks: MAX_CONFLICT_HUNKS_PER_RESOLVE,
+        };
+      }
+
+      const resolution: GitConflictResolutionHunkV1[] = [];
+      for (const hunk of hunks) {
+        const prompt = buildConflictResolvePrompt(payload.path, hunk, hunk.index + 1, hunks.length);
+        const resolvedText = await this.resolveConflictHunkViaAgent(bridge, prompt);
+        if (!resolvedText) {
+          return {
+            outcome: 'error',
+            path: payload.path,
+            message: `The agent's resolution for hunk ${hunk.index + 1} of ${hunks.length} came back empty.`,
+          };
+        }
+        resolution.push({
+          index: hunk.index,
+          origin: resolveHunkOrigin(hunk, resolvedText),
+          resolvedText,
+        });
+      }
+
+      return {
+        outcome: 'ok',
+        path: payload.path,
+        baseHash: hashFileContent(content),
+        hunks,
+        resolution,
+        resolvedContent: assembleResolvedContent(content, resolution),
+      };
+    } catch (error) {
+      if (error instanceof GitConflictResolveError) {
+        return { outcome: 'error', path: payload.path, message: error.message };
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      return { outcome: 'error', path: payload.path, message: detail };
+    }
+  }
+
+  /**
+   * Prompts `bridge`'s own live agent and captures its whole reply as one
+   * string — `explainDiffViaAgent`'s (issue #236) own twin for resolving
+   * one conflict hunk rather than explaining a diff: a real turn
+   * (`agentSession.prompt()`), not a hidden side channel, so this
+   * session's subscribed clients see the usual
+   * `turn_started`/`agent_message_chunk`/`turn_ended` sequence exactly
+   * like any other prompt. Kept as its own copy rather than a shared
+   * extraction with `explainDiffViaAgent`/`draftCommitMessageViaAgent` —
+   * see this file's own class doc comment on why that trade-off is
+   * deliberate here.
+   */
+  private async resolveConflictHunkViaAgent(
+    bridge: SessionBridge,
+    promptText: string,
+  ): Promise<string> {
+    const messageTextById = new Map<string, string>();
+    let lastMessageId: string | undefined;
+    const onTranscriptUpdate = (update: AcpTranscriptUpdate): void => {
+      if (update.kind !== 'agent_message_chunk') return;
+      messageTextById.set(
+        update.messageId,
+        (messageTextById.get(update.messageId) ?? '') + update.text,
+      );
+      lastMessageId = update.messageId;
+    };
+    bridge.agentSession.on('transcript_update', onTranscriptUpdate);
+    try {
+      await bridge.agentSession.prompt(promptText);
+    } finally {
+      bridge.agentSession.off('transcript_update', onTranscriptUpdate);
+    }
+    return (lastMessageId ? messageTextById.get(lastMessageId) : undefined)?.trim() ?? '';
+  }
+
+  private async sendGitConflictResolveResponse(
+    sessionId: string,
+    requestId: string,
+    payload: GitConflictResolveResponsePayloadV1,
+  ): Promise<void> {
+    const key = await this.getSessionKey(sessionId);
+    const envelope = await sealJson(sessionId, payload, key);
+    this.relay.send(
+      withEnvelope('git_conflict_resolve_response', { sessionId, requestId, envelope }),
+    );
   }
 }
 

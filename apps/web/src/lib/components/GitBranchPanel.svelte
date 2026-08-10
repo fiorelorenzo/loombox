@@ -52,9 +52,12 @@
   import Button from './ui/Button.svelte';
   import Card from './ui/Card.svelte';
   import ErrorNotice from './ui/ErrorNotice.svelte';
+  import ConflictResolveDialog, {
+    type ConflictResolveDialogClient,
+  } from './ConflictResolveDialog.svelte';
   import { writeErrorMessage, type AsyncPanelState } from '$lib/async-panel';
 
-  export interface GitBranchPanelClient {
+  export interface GitBranchPanelClient extends ConflictResolveDialogClient {
     requestBranches(sessionId: string): Promise<GitBranchListResponsePayloadV1>;
     createBranch(
       sessionId: string,
@@ -141,6 +144,8 @@
   >(undefined);
   let droppingIndex = $state<number | undefined>(undefined);
   let dropError = $state<string | undefined>(undefined);
+  /** Which conflicted path the AI-resolve dialog is open for (SPEC §7.6; issue #237) — `undefined` means closed. One dialog reused across every conflicted path in `mergeConflict.conflictedPaths`, never one instance per path. */
+  let resolvingConflictPath = $state<string | undefined>(undefined);
 
   async function loadBranches(): Promise<void> {
     if (!client) return;
@@ -529,10 +534,20 @@
         <p>{mergeConflict.message}</p>
         <ul>
           {#each mergeConflict.conflictedPaths as path (path)}
-            <li>{path}</li>
+            <li class="git-branch-conflict-row">
+              <span class="git-branch-conflict-path font-mono">{path}</span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onclick={() => (resolvingConflictPath = path)}
+                dataTestId={`git-branch-resolve-ai-${path}`}
+              >
+                Resolve with AI
+              </Button>
+            </li>
           {/each}
         </ul>
-        <p>Resolve the conflicts (file tree, editor, or a terminal), then commit — or:</p>
+        <p>Resolve the conflicts (file tree, editor, a terminal, or AI above), then commit — or:</p>
         <Button
           variant="danger"
           size="sm"
@@ -546,6 +561,16 @@
           <ErrorNotice message={abortError} class="git-branch-inline-error" />
         {/if}
       </div>
+    {/if}
+    {#if resolvingConflictPath}
+      <ConflictResolveDialog
+        open={resolvingConflictPath !== undefined}
+        {sessionId}
+        path={resolvingConflictPath}
+        {client}
+        onClose={() => (resolvingConflictPath = undefined)}
+        onApplied={() => onChanged?.()}
+      />
     {/if}
 
     <div class="git-branch-push">
@@ -782,6 +807,24 @@
   .git-branch-conflict ul {
     margin: var(--space-xs) 0;
     padding-left: var(--space-lg);
+  }
+
+  /* A conflicted path plus its own "Resolve with AI" action share one
+     row (issue #237) — wraps rather than overflowing on the 390px
+     floor every dialog/panel in this codebase already proves, the same
+     `min-width: 0` discipline `.git-branch-name` above already uses. */
+  .git-branch-conflict-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+
+  .git-branch-conflict-path {
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   :global(.git-branch-inline-error) {
