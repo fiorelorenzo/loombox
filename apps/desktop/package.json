@@ -7,7 +7,7 @@
     "dev": "electron .",
     "dev:preview": "LOOMBOX_DESKTOP_ENV=preview electron .",
     "build": "tsc --noEmit",
-    "pretypecheck": "node \"$(git rev-parse --show-toplevel)/scripts/check-worktree-leak.mjs\"",
+    "pretypecheck": "node ../../scripts/check-worktree-leak.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
