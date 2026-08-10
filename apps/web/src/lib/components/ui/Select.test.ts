@@ -243,7 +243,9 @@ describe('Select (redesign v3 design spec §3.5, issue #502)', () => {
       { id: 'sonnet', label: 'Sonnet', group: 'Balanced' },
       { id: 'opus', label: 'Opus', group: 'Balanced' },
     ];
-    render(Select, { props: { value: 'sonnet', options: grouped, onChange: vi.fn(), label: 'Model' } });
+    render(Select, {
+      props: { value: 'sonnet', options: grouped, onChange: vi.fn(), label: 'Model' },
+    });
     await fireEvent.click(screen.getByTestId('ui-select-trigger'));
 
     expect(screen.getByText('Fast')).toBeTruthy();
@@ -259,10 +261,14 @@ describe('Select (redesign v3 design spec §3.5, issue #502)', () => {
       { id: 'sonnet', label: 'Sonnet', group: 'Anthropic' },
       { id: 'custom', label: 'Custom model' },
     ];
-    render(Select, { props: { value: 'sonnet', options: mixed, onChange: vi.fn(), label: 'Model' } });
+    render(Select, {
+      props: { value: 'sonnet', options: mixed, onChange: vi.fn(), label: 'Model' },
+    });
     await fireEvent.click(screen.getByTestId('ui-select-trigger'));
 
-    expect(screen.getByRole('option', { name: 'Custom model' }).closest('[role="group"]')).toBeNull();
+    expect(
+      screen.getByRole('option', { name: 'Custom model' }).closest('[role="group"]'),
+    ).toBeNull();
   });
 
   it('keyboard navigation still addresses options by their flat index across a grouped list, unaffected by heading rows', async () => {

@@ -55,9 +55,16 @@ describe('AcpClient: config-option state from a real session/new + session/set_c
         current: 'default',
         id: 'mode',
         type: 'select',
+        // Descriptions come straight from the recorded session/new; issue #897 is that
+        // they used to be dropped between the wire and this catalogue.
         choices: [
-          { id: 'default', name: 'Default' },
-          { id: 'plan', name: 'Plan' },
+          { id: 'default', name: 'Default', description: 'Standard ACP headless mode' },
+          {
+            id: 'plan',
+            name: 'Plan',
+            description:
+              'Read-only planning mode that drafts a plan to a markdown file before any code changes',
+          },
         ],
       },
       {
@@ -66,8 +73,16 @@ describe('AcpClient: config-option state from a real session/new + session/set_c
         id: 'model',
         type: 'select',
         choices: [
-          { id: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5' },
-          { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' },
+          {
+            id: 'anthropic/claude-sonnet-5',
+            name: 'Claude Sonnet 5',
+            description: 'anthropic/claude-sonnet-5',
+          },
+          {
+            id: 'anthropic/claude-haiku-4-5',
+            name: 'Claude Haiku 4.5',
+            description: 'anthropic/claude-haiku-4-5',
+          },
         ],
       },
       {
@@ -81,7 +96,7 @@ describe('AcpClient: config-option state from a real session/new + session/set_c
         type: 'select',
         choices: [
           { id: 'off', name: 'Off' },
-          { id: 'auto', name: 'Auto' },
+          { id: 'auto', name: 'Auto', description: 'Auto-detect per prompt' },
         ],
       },
       {

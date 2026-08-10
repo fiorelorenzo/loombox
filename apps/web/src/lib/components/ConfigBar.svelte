@@ -465,9 +465,7 @@
       pressed={sources?.[category] === 'project'}
       dataTestId={`config-pin-${category}`}
       onclick={() =>
-        sources?.[category] === 'project'
-          ? onUnpinFromProject(category)
-          : onPinToProject(category)}
+        sources?.[category] === 'project' ? onUnpinFromProject(category) : onPinToProject(category)}
     >
       <Icon name="pin" />
     </IconButton>

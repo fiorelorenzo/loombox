@@ -596,7 +596,10 @@ function mapConfigOptionChoices(
         choices.push({
           id: choice.value,
           name: choice.name,
-          description: typeof choice.description === 'string' ? choice.description : undefined,
+          // Spread rather than `description: … : undefined`: an explicit undefined key is
+          // a present key to `toEqual` and to anything that serialises this, and a choice
+          // that simply has no description should look like one that never had the field.
+          ...(typeof choice.description === 'string' ? { description: choice.description } : {}),
           group: entry.name,
         });
       }
@@ -606,7 +609,7 @@ function mapConfigOptionChoices(
     choices.push({
       id: entry.value,
       name: entry.name,
-      description: typeof entry.description === 'string' ? entry.description : undefined,
+      ...(typeof entry.description === 'string' ? { description: entry.description } : {}),
     });
   }
   return choices;
@@ -618,7 +621,11 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
     if (typeof option.category !== 'string') continue;
     const id = typeof option.id === 'string' ? option.id : undefined;
     const type = typeof option.type === 'string' ? option.type : undefined;
-    const description = typeof option.description === 'string' ? option.description : undefined;
+    // Spread below rather than an explicit `description: undefined` key, for the same
+    // reason `mapConfigOptionChoices` does: an option with no description should be
+    // indistinguishable from one whose agent never carried the field.
+    const description =
+      typeof option.description === 'string' ? { description: option.description } : {};
     if (type === 'boolean') {
       // SessionConfigBoolean's currentValue is a real boolean, not the
       // string `RawConfigOption.currentValue` was typed for before issue
@@ -635,7 +642,7 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
         current: typeof option.currentValue === 'boolean' ? String(option.currentValue) : undefined,
         id,
         type,
-        description,
+        ...description,
         choices: [
           { id: 'true', name: 'On' },
           { id: 'false', name: 'Off' },
@@ -648,7 +655,7 @@ export function mapConfigOptions(wire: RawConfigCatalog | undefined): AcpConfigO
       current: typeof option.currentValue === 'string' ? option.currentValue : undefined,
       id,
       type,
-      description,
+      ...description,
       choices: mapConfigOptionChoices(option.options),
     });
   }

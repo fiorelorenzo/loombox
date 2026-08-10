@@ -129,7 +129,7 @@ describe('config_option_update vs. the real @agentclientprotocol/sdk schema (iss
     expect(options.find((o) => o.category === 'thought_level')?.current).toBe('high');
   });
 
-  it("issue #897's two 'currently unobserved, but real' claims are genuinely SDK-schema-valid, not just plausible-sounding: a type: 'boolean' option and a grouped-options select both parse against the real zSessionConfigOption schema even though mapConfigOptions can't represent either one yet (see client.ts's RawConfigOption doc comment)", async () => {
+  it("carries issue #897's two once-unrepresentable shapes end to end: a type: 'boolean' option and a grouped-options select both parse against the real zSessionConfigOption schema AND now survive mapConfigOptions instead of arriving as an empty choice list", async () => {
     const { zSessionConfigOption } = await loadAcpSdkZodSchemas();
 
     const booleanOption = {
@@ -140,20 +140,18 @@ describe('config_option_update vs. the real @agentclientprotocol/sdk schema (iss
       currentValue: true,
     };
     expect(zSessionConfigOption.safeParse(booleanOption).success).toBe(true);
-    // mapConfigOptions doesn't crash on it, but it can't carry a real
-    // selection either: choices stays empty since there's no `options`
-    // array on a boolean-type entry at all (issue #897).
-    // The wire genuinely sends a boolean `currentValue` here (confirmed
-    // above via the real SDK schema) — `RawConfigOption.currentValue` is
-    // deliberately typed `string`-only (honest for the `'select'` variant
-    // this client actually handles; see `client.ts`'s doc comment), so a
-    // boolean-shaped payload needs the same escape hatch `client.test.ts`
-    // already uses for an untyped recorded fixture.
-    expect(
-      mapConfigOptions({ configOptions: [booleanOption] } as unknown as Parameters<
-        typeof mapConfigOptions
-      >[0])[0]?.choices,
-    ).toEqual([]);
+    // A boolean option has no `options` array on the wire at all, so the choices are
+    // synthesised. `currentValue` is a real boolean here (confirmed against the SDK
+    // schema just above) and is stringified so `current` stays one plain-string field.
+    const mappedBoolean = mapConfigOptions({
+      configOptions: [booleanOption],
+    } as unknown as Parameters<typeof mapConfigOptions>[0])[0];
+    expect(mappedBoolean?.type).toBe('boolean');
+    expect(mappedBoolean?.current).toBe('true');
+    expect(mappedBoolean?.choices).toEqual([
+      { id: 'true', name: 'On' },
+      { id: 'false', name: 'Off' },
+    ]);
 
     const groupedSelectOption = {
       id: 'model',
@@ -170,8 +168,11 @@ describe('config_option_update vs. the real @agentclientprotocol/sdk schema (iss
       ],
     };
     expect(zSessionConfigOption.safeParse(groupedSelectOption).success).toBe(true);
-    // mapConfigOptions's flat-choice filter silently drops every entry of a
-    // grouped response (issue #897) rather than crashing.
-    expect(mapConfigOptions({ configOptions: [groupedSelectOption] })[0]?.choices).toEqual([]);
+    // A grouped response used to be dropped entirely by the flat-choice filter. Each
+    // nested choice now comes through carrying the group it belongs to, which is what
+    // lets the picker render the grouping rather than a flattened list.
+    expect(mapConfigOptions({ configOptions: [groupedSelectOption] })[0]?.choices).toEqual([
+      { id: 'anthropic/claude-haiku-4-5', name: 'Haiku', group: 'Fast' },
+    ]);
   });
 });

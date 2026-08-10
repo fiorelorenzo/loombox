@@ -379,9 +379,17 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
 
     const mode = options.find((o) => o.category === 'mode');
     expect(mode?.current).toBe('default');
+    // The real recorded response carries a `description` on each choice, and issue #897
+    // is precisely that loombox used to drop it on the floor. Asserting it here is the
+    // proof it now survives the wire mapping.
     expect(mode?.choices).toEqual([
-      { id: 'default', name: 'Default' },
-      { id: 'plan', name: 'Plan' },
+      { id: 'default', name: 'Default', description: 'Standard ACP headless mode' },
+      {
+        id: 'plan',
+        name: 'Plan',
+        description:
+          'Read-only planning mode that drafts a plan to a markdown file before any code changes',
+      },
     ]);
 
     const model = options.find((o) => o.category === 'model');
@@ -390,6 +398,9 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
     expect(model?.choices[0]).toEqual({
       id: 'anthropic/claude-3-5-sonnet-20240620',
       name: 'Claude Sonnet 3.5',
+      // This agent uses the model id itself as the description, which is not useful copy
+      // but is what the recording contains; the mapping's job is to carry it, not judge it.
+      description: 'anthropic/claude-3-5-sonnet-20240620',
     });
 
     // The wire entry's own `id` is "thinking", but its `category` is
@@ -402,7 +413,9 @@ describe('mapConfigOptions: real omp acp session/new wire mapping (issue #705)',
     expect(thinking?.current).toBe('high');
     expect(thinking?.choices).toEqual([
       { id: 'off', name: 'Off' },
-      { id: 'auto', name: 'Auto' },
+      // Only this one choice carries a description in the recording; the rest genuinely
+      // have none, and the absent key is asserted here rather than an explicit undefined.
+      { id: 'auto', name: 'Auto', description: 'Auto-detect per prompt' },
       { id: 'low', name: 'low' },
       { id: 'medium', name: 'medium' },
       { id: 'high', name: 'high' },
