@@ -28,9 +28,8 @@ deploy/relay/backups/
 # never covered, since it only matches the repo root.
 apps/desktop/release/
 
-# Ephemeral agent/orchestration worktrees (Workflow tool, emdash)
+# Ephemeral agent/orchestration worktrees (Workflow tool)
 .claude/worktrees/
-.emdash/worktrees/
 
 # temporary UI-audit artifacts (redesign v3)
 apps/web/.audit/
