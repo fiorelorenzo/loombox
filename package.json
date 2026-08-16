@@ -10,10 +10,12 @@
   "scripts": {
     "prepare": "node scripts/install-git-hooks.mjs",
     "build": "pnpm -r build",
+    "pretypecheck": "node scripts/check-worktree-leak.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
+    "preformat:check": "node scripts/check-worktree-leak.mjs",
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",

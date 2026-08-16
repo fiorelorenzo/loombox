@@ -9,6 +9,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc --noEmit",
+    "pretypecheck": "node ../../scripts/check-worktree-leak.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",

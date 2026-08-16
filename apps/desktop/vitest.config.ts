@@ -7,6 +7,7 @@ import { defineConfig } from 'vitest/config';
 // `node` environment + no Electron runtime is all this needs.
 export default defineConfig({
   test: {
+    globalSetup: ['../../scripts/check-worktree-leak.mjs'],
     environment: 'node',
     include: ['src/**/*.{test,spec}.ts'],
   },

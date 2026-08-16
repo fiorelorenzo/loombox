@@ -34,6 +34,7 @@ export default defineConfig({
     conditions: process.env.VITEST ? ['browser'] : undefined,
   },
   test: {
+    globalSetup: ['../../scripts/check-worktree-leak.mjs'],
     environment: 'node',
     include: ['src/**/*.{test,spec}.ts'],
     // relay-client.test.ts drives a real relay plus real crypto over real
