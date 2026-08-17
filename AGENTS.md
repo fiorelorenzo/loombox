@@ -86,6 +86,66 @@ reformats a staged `.changeset/*.md` file with Prettier and re-stages it, so
 there's nothing to remember here either; see CONTRIBUTING.md's changeset
 section for the mechanics and the `--no-verify` bypass.
 
+## Working in a worktree, next to other agents
+
+**`pnpm test` needs no services and isolates nothing, because there is nothing to
+isolate.** Every suite here is hermetic: a relay under test binds `port: 0`
+(`fanout.test.ts`, every `node-daemon-*.test.ts`), and Postgres itself is stood in
+for by `pg-mem`/`ioredis-mock` rather than a real container (`migrate.ts`'s own
+doc comment explains why `CREATE TABLE _migrations` checks
+`information_schema.tables` instead of `IF NOT EXISTS` — `pg-mem` doesn't support
+the combo). No `vitest.config.ts` in the repo, root or per-package, overrides
+`fileParallelism`, so `pnpm test` already runs files in parallel within one
+worktree, and two worktrees running it at the same time do not collide, because
+neither touches anything outside its own process. The exception is a couple of
+tests gated behind `LOOMBOX_TEST_PG_URL` (`store-postgres.test.ts`,
+`backup-restore.integration.test.ts`) that opt into a real Postgres you start and
+point at yourself — skipped by default, not part of `pnpm test` or CI, so ignore
+them unless you're touching backup/restore.
+
+**`scripts/dev.sh` is a singleton, not one per worktree.** Its Postgres
+(`deploy/dev/docker-compose.yml`) runs under the fixed compose project
+`loombox-dev` on `127.0.0.1:5435`, and the ports it starts as host processes —
+relay 8790, web 5173, inspectors 9230/9231 — are hardcoded constants in
+`scripts/dev.sh`, not env-configurable (the GitHub OAuth callback is registered
+against `5173`/`8790` specifically, see "Running the whole thing locally" below).
+Two worktrees running `scripts/dev.sh` at once fight over the same container,
+volume and ports: the script's own preflight reports the squatter by name instead
+of picking a new one, so the second run just fails loudly. Treat the dev loop as
+one shared resource across every worktree on this box — coordinate who has it up,
+rather than expecting a second copy to work.
+
+**No submodule, no private dependency.** Every `@loombox/*` package is
+`workspace:*` (`package.json`), there is no `.gitmodules`, and the marketing site
+is a genuinely separate repo (`loombox-landing`) this one never checks out. A
+fresh worktree runs `pnpm install` and is ready.
+
+**Two of CI's jobs can't be reproduced on this box.** `desktop`
+(`.github/workflows/ci.yml`) matrices across `macos-latest`/`windows-latest`/
+`ubuntu-latest`; this devbox is Linux, so only the Ubuntu leg is checkable here —
+a change under `apps/desktop` still needs the real CI run (or
+`scripts/mac-desktop.sh`, see below) before you can say the other two pass.
+`release-node.yml`/`release-desktop.yml` sign with `secrets.SUPERVISOR_SIGNING_KEY`
+and platform certificates this box doesn't have either.
+
+**Migrations are hand-rolled, so landing two in one wave is a normal merge
+conflict, not a journal trap.** `packages/relay/src/migrations.ts` is a plain
+TypeScript array with no `generate` command and no meta/journal file beside it
+(contrast the drizzle-generated migrations in pitchbox or canonry): two agents
+each appending the next `NNNN_` entry produce an ordinary two-sided git conflict
+at the same array position, resolved by keeping both blocks and renumbering the
+second — not the unmergeable auto-generated-file collision a `drizzle-kit
+generate` journal produces.
+
+**Merging deploys, and nothing deletes your branch for you.** A push to `main`
+triggers `deploy-preview.yml` immediately, with no CI gate
+(`deploy-preview.yml`'s own comment explains the choice) — a PR that merges red
+still reaches preview within minutes. There is no branch protection (`gh api
+repos/fiorelorenzo/loombox/branches/main/protection` returns 404, and
+`repos/fiorelorenzo/loombox/rulesets` is empty) and `delete_branch_on_merge` is
+off, so a merged branch stays on `origin` until you delete it yourself (`git push
+-d origin <branch>`).
+
 ## Checking the PWA here, headless (the Mac is only for Electron)
 
 Most UX/UI work needs no Mac at all. This box has **Chrome 149 and Playwright's own
