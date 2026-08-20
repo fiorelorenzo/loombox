@@ -336,6 +336,15 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/providers/opencode:
+    dependencies:
+      '@loombox/providers-core':
+        specifier: workspace:*
+        version: link:../core
+      '@loombox/providers-generic':
+        specifier: workspace:*
+        version: link:../generic
+
   packages/relay:
     dependencies:
       '@fastify/rate-limit':
