@@ -71,6 +71,7 @@ import {
   type QueuedPrompt,
 } from './outbox';
 import { fileMention } from './mentions';
+import { pickAttachmentImages, type NativeCameraEngine } from './native-attachments';
 
 type CryptoKey = webcrypto.CryptoKey;
 
@@ -2200,6 +2201,81 @@ describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', (
     expect(raw.includes(Buffer.from('PNG'))).toBe(false);
   });
 
+  it('a natively captured image (Capacitor Camera plugin, issue #284) joins the exact same attachFile encrypt+upload+peer-decrypt path as a web-picked file — not a separate one', async () => {
+    const amk = generateAmk();
+    const accountId = 'acct-attach-native';
+
+    node = new FakeNode(relay.url, {
+      deviceId: 'node-attach-native',
+      devicePublicKey: randomBase64(),
+      authToken: accountId,
+    });
+    await node.ready;
+
+    const session = makeSessionMeta({ id: 'sess_attach_native', accountId });
+    const key = await deriveNodeSessionKey(amk, accountId, session.id);
+    const privateEnvelope = await nodeSeal(session.id, { title: 'p', projectPath: '/proj' }, key);
+    node.send({ type: 'session_announce', protocolVersion: PROTOCOL_V1, session, privateEnvelope });
+
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId,
+      deviceId: 'client-attach-native',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+    await waitForStore(client.sessions, (value) => value.length > 0);
+
+    // Stand in for the Capacitor shell: a fake `getPhoto` returning a
+    // `webPath` and a fake `fetch` resolving it to real PNG bytes — the
+    // same shape `pickAttachmentImages` gets from the real
+    // `@capacitor/camera` plugin inside the native shell, just with both
+    // its native dependencies injected instead of live.
+    const pngBytes = realPngBytes(0x02);
+    const camera: NativeCameraEngine = {
+      getPhoto: async () => ({
+        webPath: 'capacitor://localhost/_capacitor_file_/tmp/photo.png',
+        format: 'png',
+        saved: false,
+      }),
+    };
+    const fetchFromCamera = (async () =>
+      new Response(new Blob([pngBytes]))) as unknown as typeof fetch;
+    const [nativeFile] = await pickAttachmentImages(camera, fetchFromCamera);
+
+    // From here on this is exactly the existing web-file test above, with
+    // no branch: `attachFile` never learns or cares that this `File` came
+    // from the native camera picker instead of the hidden `<input>`.
+    const attachments = client.attachmentsFor(session.id);
+    const attachmentId = client.attachFile(session.id, nativeFile);
+
+    const uploaded = await waitForStore(
+      attachments,
+      (list) => list.find((a) => a.id === attachmentId)?.status === 'uploaded',
+    );
+    const entry = uploaded.find((a) => a.id === attachmentId)!;
+    expect(entry.mimeType).toBe('image/png');
+    expect(entry.error).toBeUndefined();
+
+    node.send({
+      type: 'blob_download',
+      protocolVersion: PROTOCOL_V1,
+      sessionId: session.id,
+      ref: attachmentId,
+    });
+    const response = (await node.waitFor(
+      (m) => m.type === 'blob_download_response',
+    )) as BlobDownloadResponse;
+    const decryptedBytes = await nodeOpenAttachment(
+      session.id,
+      attachmentId,
+      response.envelope,
+      key,
+    );
+    expect(decryptedBytes).toEqual(pngBytes);
+  });
+
   it('attachFile rejects a HEIC file client-side with a clear convert-and-re-upload message, before any upload attempt (#152)', async () => {
     const amk = generateAmk();
     const accountId = 'acct-heic';
@@ -2246,6 +2322,39 @@ describe('RelayClient: attachments (SPEC §7.25; issues #151/#152/#153/#155)', (
     await expect(node.waitFor((m) => m.type === 'blob_download_response', 200)).rejects.toThrow(
       /timed out/,
     );
+  });
+
+  it('a HEIC/HEIF image handed back unconverted by the native picker is rejected exactly like a web-picked HEIC file, not decoded on trust (#284, #152)', async () => {
+    const amk = generateAmk();
+    client = new RelayClient({
+      relayUrl: relay.url,
+      amk,
+      accountId: 'acct-heic-native',
+      deviceId: 'client-heic-native',
+    });
+    client.connect();
+    await waitForStore(client.status, (status) => status === 'open');
+
+    const camera: NativeCameraEngine = {
+      getPhoto: async () => ({
+        webPath: 'capacitor://localhost/_capacitor_file_/tmp/photo.heic',
+        format: 'heic',
+        saved: false,
+      }),
+    };
+    const heicBytes = realHeicBytes();
+    const fetchFromCamera = (async () =>
+      new Response(new Blob([heicBytes]))) as unknown as typeof fetch;
+    const [nativeFile] = await pickAttachmentImages(camera, fetchFromCamera);
+
+    const attachments = client.attachmentsFor('sess_heic_native');
+    const attachmentId = client.attachFile('sess_heic_native', nativeFile);
+
+    const list = await waitForStore(
+      attachments,
+      (value) => value.find((a) => a.id === attachmentId)?.status === 'rejected',
+    );
+    expect(list.find((a) => a.id === attachmentId)?.error).toMatch(/heic\/heif/i);
   });
 
   it('attachFile rejects a spoofed file by its real sniffed bytes, ignoring its declared mimeType/extension (#151)', async () => {
