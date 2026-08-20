@@ -10,7 +10,8 @@
     "test": "vitest run",
     "cap:sync": "cap sync",
     "cap:add:android": "cap add android",
-    "cap:add:ios": "cap add ios"
+    "cap:add:ios": "cap add ios",
+    "capacitor:update:after": "node scripts/patch-native-backup-exclusion.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
