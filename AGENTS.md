@@ -216,6 +216,16 @@ button, a filtered list) so a pass means the app reacted rather than that you mu
 its DOM. And stop short of anything with real side effects: creating a session really
 does spawn an agent on the node.
 
+## Design and UI
+
+No Tailwind here: components read every value through a CSS custom property, so a hardcoded number in a component's `<style>` is the violation to flag. The structural token layer (spacing, radius, shadow, z-index, motion, focus-ring geometry, breakpoints) is `apps/web/src/lib/styles/tokens.css`; the color palette (backgrounds, surfaces, borders, text, the accent "thread", status colors) is deliberately split out into `apps/web/src/lib/styles/deck.css` - retuning scale is one file, retuning palette is the other.
+
+`apps/web/src/routes/style-reference` is already the `/design` gallery: colors, spacing, radius, icon sizes, dialog geometry, elevation, motion and every UI primitive rendered together on one page. Point `uishot` there (via the headless routes above) when reviewing the design system as a whole, not at a random app screen.
+
+Dark mode is real and is the default: `:root` ships dark (`color-scheme: dark`), and `prefers-color-scheme: light` plus an explicit, persisted `[data-theme="light"]` (`theme.ts`) both flip it - so a light/dark `uishot` pair should genuinely differ. For the dev command, port and how to reach a rendered page headless (no Mac, no OAuth needed for `tests-e2e` specs), see "Checking the PWA here, headless" above; that's also where `/style-reference` and any other route are reachable from.
+
+For the pipeline itself (brief-first, token discipline, visual review) see the `ui-brief-first` / `ui-design-tokens` / `ui-visual-review` skills and the `uishot`/`uislop` tools.
+
 ## Testing the desktop app on the Mac (from the devbox)
 
 The Electron desktop app (`apps/desktop`) can only render on the Mac (the devbox has
