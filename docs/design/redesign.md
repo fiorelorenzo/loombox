@@ -1,4 +1,14 @@
 
+> **Frozen record.** This spec, `analysis-v2.md`, and every dated deck under
+> `docs/design/` (`audit-2026-08-03/`, `ux-review-2026-08-04/`,
+> `ux-review-2026-08-05/`, `zed-parity-2026-08-05/`, `terminal-dock-2026-08-04/`,
+> `turn-delimitation-2026-08-04/`, `ground-inversion-2026-08-06/`,
+> `node-lifecycle-2026-08-06/`) are the historical record of how Warp Deck was
+> drawn and reviewed by hand. Nothing in them is deleted or rewritten. New
+> design questions from here on are drawn in Claude Design instead, and their
+> answers are recorded in `docs/design/DECISIONS.md`, not in a new HTML deck.
+> See `AGENTS.md`'s "Design and UI" section for the pipeline.
+
 # loombox redesign: "Warp Deck" — a unified design-language spec
 
 ## 0. Synthesis and thesis

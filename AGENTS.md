@@ -222,9 +222,21 @@ No Tailwind here: components read every value through a CSS custom property, so 
 
 `apps/web/src/routes/style-reference` is already the `/design` gallery: colors, spacing, radius, icon sizes, dialog geometry, elevation, motion and every UI primitive rendered together on one page. Point `uishot` there (via the headless routes above) when reviewing the design system as a whole, not at a random app screen.
 
-Dark mode is real and is the default: `:root` ships dark (`color-scheme: dark`), and `prefers-color-scheme: light` plus an explicit, persisted `[data-theme="light"]` (`theme.ts`) both flip it - so a light/dark `uishot` pair should genuinely differ. For the dev command, port and how to reach a rendered page headless (no Mac, no OAuth needed for `tests-e2e` specs), see "Checking the PWA here, headless" above; that's also where `/style-reference` and any other route are reachable from.
+Dark mode is real and is the default: `:root` ships dark (`color-scheme: dark`), and `prefers-color-scheme: light` plus an explicit, persisted `[data-theme="light"]` (`theme.ts`) both flip it - so a light/dark `uishot` pair should genuinely differ. For the dev command, port and how to reach a rendered page headless (no Mac, no OAuth needed for `tests-e2e` specs), see "Checking the PWA here, headless" above (`scripts/dev.sh` → web on `5173`); that's also where `/style-reference` and any other route are reachable from.
 
-For the pipeline itself (brief-first, token discipline, visual review) see the `ui-brief-first` / `ui-design-tokens` / `ui-visual-review` skills and the `uishot`/`uislop` tools.
+**Claude Design is where a new design question gets drawn; the repo is where its answer lives.** Claude Design is a Beta / research preview product on Lorenzo's Max plan — a project's menu is Rename, Duplicate, Delete only, no version history, no restore, no diff — so a canvas is never the source of truth, only a drawing. Two project kinds, named consistently:
+
+- **`loombox design system`** — one durable project for the whole design language (tokens, primitives, motion). Hand-maintained, long-lived.
+- **`loombox · <surface>`** — one disposable project per surface (e.g. `loombox · drawer`, `loombox · onboarding`). Never hand-maintained: when it goes stale, regenerate it from the repo with "Start from code," don't patch the canvas.
+
+**Where an answer lives:** in `docs/design/DECISIONS.md`, one row per decision, in the format `| ID | Round | Question | Answer | Rule it creates |`. `Rule it creates` is usually empty; it's filled only when the decision produced something a component can violate (e.g. "a raw hex in a component is a violated rule" once that's the rule). A row with a rule binds an implementer; a row without one is context. An agent implementing with omp must never need to open Claude Design to know what was decided — read that table.
+
+**Implementation starts from the export archive's `github.md` screen map plus the decision row, never from the export's CSS.** "Project archive" export is a zip with the canvas, assets, and a `github.md` mapping each artboard to the repo files behind it — use that map to find what to touch. The export's CSS is raw hex literals with zero `var(--token)`, even when every color used is one of the repo's own tokens: the values transfer, the token layer does not, so nothing gets implemented by pasting an export's CSS. Route it back through `tokens.css`/`deck.css`.
+
+**When not to open a Claude Design project at all:** a fix inside an existing surface whose structure stays the same (spacing, a wrong token, a broken breakpoint, a missing state, copy) goes straight to implementation and a render — no canvas needed. Anything that's a rule rather than a picture goes straight into `DECISIONS.md`. Nothing client-confidential ever goes on a canvas: it's one personal account inside an organization named after a client's address, and sharing is organization-scoped.
+
+**The render gate does not move.** `uishot` (with `--axe --fail-on serious`) and `uislop` still gate implementation — the canvas is not the product. See the `ui-brief-first` / `ui-design-tokens` / `ui-visual-review` skills for the pipeline itself.
+
 
 ## Testing the desktop app on the Mac (from the devbox)
 
