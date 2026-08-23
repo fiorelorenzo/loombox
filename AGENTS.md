@@ -517,13 +517,34 @@ invent a parallel style:
   the work belongs to a spec milestone, see Build order above. Post-v1 issues
   usually carry no milestone and are grouped by epic instead, so do not invent
   one to fill the field.
-- **Every issue hangs off an epic.** Epics are titled `Epic: Name` (the older
-  SPEC-derived ones, #8 to #39, predate that prefix) and carry the `epic` label.
-  The post-v1 buckets are #558 client UX, #559 node daemon reliability, #560
-  test-suite reliability, #561 deployment and container runtime, plus the
-  feature epics #11 to #37 for spec work. If none of them fits, create a new
-  epic (`Epic: Name`, `epic` label, one per coherent area) and parent the issue
-  to it. An issue with no parent is a defect in the board.
+- **Every issue hangs off an epic, with no exceptions, and that includes an
+  issue filed in the middle of an agent run.** Epics are titled `Epic: Name`
+  (the older SPEC-derived ones, #8 to #39, predate that prefix) and carry the
+  `epic` label. The post-v1 buckets are #558 client UX, #559 node daemon
+  reliability, #560 test-suite reliability, #561 deployment and container
+  runtime, plus the feature epics #11 to #37 for spec work. If none of them
+  fits, create a new epic (`Epic: Name`, `epic` label, one per coherent area)
+  and parent the issue to it. An issue with no parent is a defect in the board,
+  and it is a defect that accumulates in exactly one way: an agent files a real
+  finding mid-run, sets its labels and its four fields, and forgets the one step
+  that is a separate GraphQL mutation. On 2026-08-23 an audit found five of this
+  repo's 531 issues orphaned, every one of them a mid-run split-out. **So parent
+  it in the same turn you create it**, and when a subagent files something on
+  your behalf, parenting it is yours rather than theirs. A closed epic still
+  accepts children, so a defect found today whose home is a shipped area goes
+  there rather than to the newest epic.
+
+  The audit, worth running at the end of any wave that filed issues. It pages
+  100 at a time, so re-run it with `-f c=<endCursor>` until `hasNextPage` is
+  false; empty output on every page is the passing state.
+
+  ```bash
+  gh api graphql -f query='query($c:String){repository(owner:"fiorelorenzo",name:"loombox"){
+    issues(first:100,after:$c,states:[OPEN,CLOSED]){pageInfo{hasNextPage endCursor}
+    nodes{number parent{number} labels(first:20){nodes{name}}}}}}' \
+    --jq '.data.repository.issues.nodes[] | select(.parent==null)
+          | select([.labels.nodes[].name] | index("epic") | not) | .number'
+  ```
 
 ```bash
 # Read the schema, never guess an option value
