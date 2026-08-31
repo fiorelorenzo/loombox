@@ -1,19 +1,21 @@
 /**
- * Routes a Web Push notification action (#165) back to a real permission
- * resolution. `push-payload.ts` gives the pushed notification its
+ * Routes a push notification action (#165) back to a real permission
+ * resolution. `payload.ts` gives the pushed notification its
  * `approve`/`deny`/`open` action buttons; this module is the other half —
- * "the SW notificationclick handler routes each action ... via the existing
- * resolve-permission path when the client wakes" (this wave's brief) — a
- * plain, DOM/SW-API-free module so it is unit-testable the same way
- * `push-payload.ts` itself is, no real `ServiceWorkerGlobalScope`,
- * `RelayClient`, or Svelte component required.
+ * "the notification-tap handler routes each action ... via the existing
+ * resolve-permission path when the client wakes" (issue #165's framing) —
+ * a plain, platform-API-free module so it is unit-testable without any
+ * real `ServiceWorkerGlobalScope`, Capacitor plugin, `RelayClient`, or
+ * Svelte component. Extracted from `apps/web`'s `push-action-routing.ts` by
+ * #282 so `apps/mobile`'s native tap handler shares the exact same
+ * once-tier-preferred resolution logic instead of re-deriving it.
  *
  * The push payload only ever carries a `sessionId` (SPEC §8's blind-relay
  * boundary: the relay never sent a `requestId` or `options[]`, only a
- * routing hint), so there is nothing to resolve inside the service worker
+ * routing hint), so there is nothing to resolve inside the push handler
  * itself. Instead, tapping "Approve"/"Deny" opens/focuses the app at
  * `/?session=<id>&action=approve|deny` (`sessionUrlFromNotificationData` in
- * `push-payload.ts`); once the app "wakes" and that session's real
+ * `payload.ts`); once the app "wakes" and that session's real
  * `PermissionQueueState` arrives over the live WS connection, `+page.svelte`
  * calls {@link resolvePendingPushAction} to turn that URL's action into the
  * actual `{ requestId, option }` pair `RelayClient.resolvePermission`
@@ -26,7 +28,7 @@ import { headPermissionRequest } from '@loombox/providers-core/browser';
 /** The two push-notification actions that resolve a permission request; `'open'` (and a plain, non-`action` click) just navigates — nothing to resolve. */
 export type ResolvingPushAction = 'approve' | 'deny';
 
-/** Narrows an arbitrary `?action=` query value (or a service worker `NotificationEvent.action`) to one this module knows how to resolve. */
+/** Narrows an arbitrary `?action=` query value (or a notification tap's action id) to one this module knows how to resolve. */
 export function parseResolvingPushAction(
   value: string | null | undefined,
 ): ResolvingPushAction | undefined {
@@ -65,14 +67,14 @@ export interface PendingPushActionResolution {
 
 /**
  * The whole "client wakes up" resolve path (#165): given the session's
- * live permission queue and the action a push notification's URL carried,
- * resolves to the exact `{ requestId, option }` `RelayClient.resolvePermission`
- * needs, or `undefined` when there is nothing (yet) to resolve — no pending
- * request for this session (already resolved elsewhere, or the push arrived
- * before the request did), or an action that isn't `approve`/`deny`
- * (`'open'`, or no action at all). Only ever resolves the FIFO head, exactly
- * like a manual tap on `PermissionCard` — a queued, non-head request is
- * never skipped ahead of.
+ * live permission queue and the action a push notification's URL (or tap
+ * event) carried, resolves to the exact `{ requestId, option }`
+ * `RelayClient.resolvePermission` needs, or `undefined` when there is
+ * nothing (yet) to resolve — no pending request for this session (already
+ * resolved elsewhere, or the push arrived before the request did), or an
+ * action that isn't `approve`/`deny` (`'open'`, or no action at all). Only
+ * ever resolves the FIFO head, exactly like a manual tap on
+ * `PermissionCard` — a queued, non-head request is never skipped ahead of.
  */
 export function resolvePendingPushAction(
   queue: PermissionQueueState,
