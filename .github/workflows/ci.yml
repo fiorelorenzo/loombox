@@ -118,14 +118,15 @@ jobs:
         run: pnpm license:check
 
   changes:
-    name: detect desktop-relevant changes
+    name: detect desktop/mobile-relevant changes
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
     outputs:
       desktop: ${{ steps.filter.outputs.desktop }}
+      mobile: ${{ steps.filter.outputs.mobile }}
     steps:
-      - name: Check whether this PR touches desktop-relevant paths
+      - name: Check whether this PR touches desktop/mobile-relevant paths
         id: filter
         env:
           GH_TOKEN: ${{ github.token }}
@@ -136,6 +137,7 @@ jobs:
             # still gets caught here, on the integration branch, rather
             # than at release time.
             echo "desktop=true" >> "$GITHUB_OUTPUT"
+            echo "mobile=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate --jq '.[].filename')
@@ -144,6 +146,11 @@ jobs:
             echo "desktop=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -Eq '^(apps/mobile/|pnpm-lock\.yaml$|\.github/workflows/ci\.yml$)'; then
+            echo "mobile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mobile=false" >> "$GITHUB_OUTPUT"
           fi
 
   desktop:
@@ -201,3 +208,103 @@ jobs:
       - name: Package (--dir, unsigned)
         shell: bash
         run: pnpm --filter @loombox/desktop exec electron-builder --dir
+
+  mobile:
+    name: mobile (${{ matrix.platform }})
+    needs: changes
+    # Same filter shape as the desktop job above, scoped to apps/mobile/ --
+    # see the changes job's own comment. The iOS leg needs macos-latest,
+    # which carries the same 10x billing multiplier PR #607 measured for
+    # the desktop matrix, so a PR that doesn't touch apps/mobile pays none
+    # of it.
+    if: github.event_name == 'push' || needs.changes.outputs.mobile == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-latest
+          - platform: ios
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (@loombox/mobile)
+        shell: bash
+        run: pnpm --filter @loombox/mobile typecheck
+
+      - name: Lint (@loombox/mobile)
+        shell: bash
+        run: pnpm --filter @loombox/mobile lint
+
+      - name: Test (@loombox/mobile)
+        shell: bash
+        run: pnpm --filter @loombox/mobile test
+
+      # webDir stand-in for the real PWA -- see apps/mobile/README.md's
+      # "What apps/mobile actually wraps today" for why, same limit the
+      # #281 spike shipped with.
+      - name: Build www
+        shell: bash
+        run: pnpm --filter @loombox/mobile run build
+
+      # JDK 21: Capacitor 8.5.0's Android Gradle Plugin needs it (issue
+      # #951); ubuntu-latest's default JDK is not new enough, same wall the
+      # #281 spike hit on this devbox.
+      - name: Setup JDK 21 (android)
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: cap add android
+        if: matrix.platform == 'android'
+        shell: bash
+        run: pnpm --filter @loombox/mobile run cap:add:android
+
+      # Unsigned debug build only -- no ANDROID_KEYSTORE_* secret exists in
+      # CI, and none should (see apps/mobile/README.md#signing and
+      # release-mobile.yml, the workflow that actually signs a release
+      # build once those secrets are configured). This is "as far as
+      # credentials allow": a real, installable, unsigned APK.
+      - name: Build android (assembleDebug, unsigned)
+        if: matrix.platform == 'android'
+        shell: bash
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug --console=plain
+
+      - name: cap add ios
+        if: matrix.platform == 'ios'
+        shell: bash
+        run: pnpm --filter @loombox/mobile run cap:add:ios
+
+      # Simulator SDK build only -- CODE_SIGNING_ALLOWED=NO makes that
+      # explicit rather than relying on the simulator destination's own
+      # signing-optional default. A real device/App-Store archive needs
+      # Lorenzo's Apple Developer certificate and provisioning profile (see
+      # release-mobile.yml), neither of which exists in CI. Matches the
+      # exact command the #281 spike ran for real on the team's Mac (see
+      # docs/superpowers/specs/2026-08-08-capacitor-mobile-spike.md).
+      - name: Build ios (simulator SDK, unsigned)
+        if: matrix.platform == 'ios'
+        shell: bash
+        working-directory: apps/mobile/ios/App
+        run: |
+          xcodebuild -scheme App -configuration Debug -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO build
