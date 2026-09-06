@@ -31,28 +31,50 @@ hosted on prodbox).
 - **License: MIT** throughout the core (SPEC §13). Only cloud-only glue (billing,
   provisioning, admin) would ever go in a separately licensed package.
 - **Testing / CI:** **Vitest** (unit/integration) + **Playwright** (PWA e2e). Every
-  package ships tests from commit one; the GitHub Actions workflow
-  (`.github/workflows/ci.yml`) gates merge on lint + format + typecheck + test +
-  a GPL/AGPL license scan. See **Local verification** below for how to run the
-  minimal covering subset locally and let CI be the full gate.
+  package ships tests from commit one. CI (`.github/workflows/ci.yml`) is
+  three-tier: `preflight` runs everything locally before you push; a PR pays
+  only for a cheap, path-scoped gate (lint + format + brand-asset drift +
+  typecheck + test + a GPL/AGPL license scan); `push: main` runs that plus
+  Playwright e2e and the three-OS desktop build, unfiltered. See **Local
+  verification** below for `preflight` and the scoped subset to run by hand.
 - **Releases:** **Changesets** + GitHub Releases (semver + changelog).
 - **Grounding:** SPEC §16 maps every non-trivial mechanism to a real reference or
   example — consult it before building a mechanism from scratch, and prefer the cited
   approach.
 
-## Local verification: CI is the gate, run the minimal covering subset
+## Local verification: `preflight` before you push, CI is the gate after
 
-CI (`.github/workflows/ci.yml`) runs the full `pnpm lint` + `pnpm format:check` +
-`pnpm -r typecheck` + `pnpm test` + license scan on every push and PR to `main`.
-That is the actual merge gate: keep `main` green and let CI run the whole matrix.
-Locally, do NOT re-run the full suite for every change. Run just enough to catch
-an obviously broken change in the code you touched, then rely on CI.
+`.github/preflight.json` is the local tier: it lists every check CI can run and
+the globs that decide whether your diff can break it. `preflight` diffs your
+branch against `origin/main`, matches the changed paths against that manifest,
+and runs only the checks those paths can break, in parallel, writing a
+per-check log under `.git/preflight/logs/` (`preflight --list` shows what would
+run and which paths matched, before you trust it). Run `preflight --install-hook`
+once per clone/worktree: it installs a `pre-push` hook that reuses a pass
+already recorded for the current HEAD, so pushing right after a green run costs
+nothing.
 
-Scope by **amount** (narrow to your diff), never by **category**: if CI runs
-typecheck + lint + format + test for a package, run all of them scoped to your
-change, do not drop one because it seems slow or unrelated. That is the classic
-green-locally / red-CI trap (we hit it once when a scoped Prettier glob skipped a
-`.mjs` fixture that CI's full `format:check` caught).
+`preflight` is the only place two of CI's checks still run before a PR: Playwright
+e2e and a local-platform desktop build (`electron-builder --dir`, unsigned; see
+"Two of CI's jobs can't be reproduced on this box" below for what that does and
+doesn't prove). Both fail loudly instead of skipping when a prerequisite is
+missing — the `e2e` check verifies this checkout's Playwright chromium build is
+actually installed before running and tells you the exact install command if
+it isn't, rather than passing green on nothing having run.
+
+CI (`.github/workflows/ci.yml`) itself is three-tier: a PR gets one path-scoped
+gate (lint, format, brand-asset drift, typecheck, unit tests, license scan;
+skipped entirely for a docs-only PR); `push: main` runs that plus Playwright e2e
+and the three-OS desktop matrix, with no path filtering — main always gets
+everything; the single required status check on `main` is the `ci` aggregate
+job, so the jobs under it can be renamed or moved between tiers without ever
+touching the branch ruleset again.
+
+Scope by **amount** (narrow to your diff), never by **category**, when running
+things by hand instead of `preflight`: if a check runs for your change, run all
+of it scoped to your change, do not drop one because it seems slow or unrelated.
+That is the classic green-locally / red-CI trap (we hit it once when a scoped
+Prettier glob skipped a `.mjs` fixture that the full `format:check` caught).
 
 ```bash
 # Tests - filter to the file(s)/pattern you touched, not the whole suite
@@ -70,13 +92,14 @@ pnpm exec eslint packages/<pkg>/src/foo.ts
 pnpm format:check
 ```
 
-Reach for the full unscoped `pnpm lint && pnpm format:check && pnpm -r typecheck &&
-pnpm test` (exactly what CI runs) only right before opening or merging a PR, for a
-repo-wide change, or for anything touching the wire protocol (`packages/protocol`)
-or crypto (`packages/crypto`). Note: this is a private free-tier GitHub repo, so a
-branch-protection rule cannot mark the check "required"; the gate is procedural,
-CI runs on every PR and we never merge a red one, always via a feature branch + PR,
-never a direct push to `main`.
+Reach for `preflight` itself (or the full unscoped `pnpm lint && pnpm format:check
+&& pnpm -r typecheck && pnpm test`, exactly what the PR-path gate runs) right
+before opening or merging a PR, for a repo-wide change, or for anything touching
+the wire protocol (`packages/protocol`) or crypto (`packages/crypto`). This is a
+public repo with a branch ruleset requiring the `ci` status check on `main`
+(`gh api repos/fiorelorenzo/loombox/rules/branches/main`), so a red PR can't be
+merged through the UI — but `preflight`, not the ruleset, is what makes that a
+non-event: it already told you before you pushed.
 
 One category this scoping advice does not cover: a changeset written last,
 after `pnpm format:check` already ran clean, reaches CI unformatted (three
@@ -120,13 +143,16 @@ rather than expecting a second copy to work.
 is a genuinely separate repo (`loombox-landing`) this one never checks out. A
 fresh worktree runs `pnpm install` and is ready.
 
-**Two of CI's jobs can't be reproduced on this box.** `desktop`
+**Two of CI's jobs can't be fully reproduced on this box.** `desktop`
 (`.github/workflows/ci.yml`) matrices across `macos-latest`/`windows-latest`/
-`ubuntu-latest`; this devbox is Linux, so only the Ubuntu leg is checkable here —
-a change under `apps/desktop` still needs the real CI run (or
-`scripts/mac-desktop.sh`, see below) before you can say the other two pass.
-`release-node.yml`/`release-desktop.yml` sign with `secrets.SUPERVISOR_SIGNING_KEY`
-and platform certificates this box doesn't have either.
+`ubuntu-latest` and only runs on `push: main` now; `preflight`'s `desktop` check
+(`.github/preflight.json`) runs the same typecheck + test +
+`electron-builder --dir` before you push, but this devbox is Linux, so it only
+proves the Ubuntu leg — a change under `apps/desktop` still needs the real
+`push: main` run (or `scripts/mac-desktop.sh`, see below) before you can say the
+other two pass. `release-node.yml`/`release-desktop.yml` sign with
+`secrets.SUPERVISOR_SIGNING_KEY` and platform certificates this box doesn't have
+either.
 
 **Migrations are hand-rolled, so landing two in one wave is a normal merge
 conflict, not a journal trap.** `packages/relay/src/migrations.ts` is a plain
@@ -139,12 +165,14 @@ generate` journal produces.
 
 **Merging deploys, and nothing deletes your branch for you.** A push to `main`
 triggers `deploy-preview.yml` immediately, with no CI gate
-(`deploy-preview.yml`'s own comment explains the choice) — a PR that merges red
-still reaches preview within minutes. There is no branch protection (`gh api
-repos/fiorelorenzo/loombox/branches/main/protection` returns 404, and
-`repos/fiorelorenzo/loombox/rulesets` is empty) and `delete_branch_on_merge` is
-off, so a merged branch stays on `origin` until you delete it yourself (`git push
--d origin <branch>`).
+(`deploy-preview.yml`'s own comment explains the choice) — it does not wait for
+that same push's own `ci` run to finish, though by the time a PR reaches `main`
+`ci` already had to pass on it. The `protect-default-branch` ruleset
+(`gh api repos/fiorelorenzo/loombox/rules/branches/main`) requires exactly one
+status check, the `ci` context, plus `deletion` and `non_fast_forward`; a
+separate ruleset owns `require-pull-request`. A red PR cannot be merged through
+the UI. `delete_branch_on_merge` is off, so a merged branch stays on `origin`
+until you delete it yourself (`git push -d origin <branch>`).
 
 ## Checking the PWA here, headless (the Mac is only for Electron)
 

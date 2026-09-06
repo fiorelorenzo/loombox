@@ -1,0 +1,99 @@
+{
+  "base": "origin/main",
+  "jobs": 4,
+  "checks": [
+    {
+      "id": "lint",
+      "run": "pnpm lint",
+      "when": [
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.js",
+        "**/*.mjs",
+        "**/*.cjs",
+        "**/*.svelte",
+        "eslint.config.js",
+        "tooling/eslint-config/**"
+      ],
+      "why": "eslint . at the root, flat config from tooling/eslint-config"
+    },
+    {
+      "id": "format",
+      "run": "pnpm format:check",
+      "why": "prettier --check . covers every extension, deliberately unscoped: a scoped glob missed a .mjs changeset fixture once (issue #723) and reached CI red"
+    },
+    {
+      "id": "brand-asset-drift",
+      "run": "pnpm --filter @loombox/web exec node scripts/gen-brand-assets.mjs && git diff --exit-code -- apps/web/static apps/desktop/assets",
+      "when": [
+        "apps/web/scripts/gen-brand-assets.mjs",
+        "apps/web/static/**",
+        "apps/desktop/assets/**"
+      ],
+      "why": "regenerates the icon set from the locked vector mark and fails if the checked-in files drifted from it"
+    },
+    {
+      "id": "typecheck",
+      "run": "pnpm -r typecheck",
+      "when": [
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.svelte",
+        "**/tsconfig*.json",
+        "package.json",
+        "**/package.json",
+        "pnpm-lock.yaml"
+      ],
+      "serial": true
+    },
+    {
+      "id": "test",
+      "run": "pnpm test",
+      "when": [
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.svelte",
+        "vitest.config.ts",
+        "**/vitest.config.ts",
+        "package.json",
+        "**/package.json",
+        "pnpm-lock.yaml"
+      ],
+      "serial": true
+    },
+    {
+      "id": "license-scan",
+      "run": "pnpm license:check",
+      "when": ["package.json", "**/package.json", "pnpm-lock.yaml"],
+      "why": "fails on an AGPL/GPL-family license anywhere in the resolved dependency tree"
+    },
+    {
+      "id": "e2e",
+      "run": "plan=$(pnpm --filter @loombox/web exec playwright install --dry-run chromium 2>&1)\nmissing=0\nwhile IFS= read -r loc; do\n  [ -d \"$loc\" ] || missing=1\ndone < <(printf '%s\\n' \"$plan\" | grep 'Install location:' | awk '{print $NF}')\nif [ \"$missing\" = \"1\" ]; then\n  echo \"preflight: Playwright's chromium build for apps/web is not installed in this checkout's cache.\" >&2\n  echo \"Run: pnpm --filter @loombox/web exec playwright install --with-deps chromium\" >&2\n  exit 1\nfi\npnpm --filter @loombox/web run e2e",
+      "when": [
+        "apps/web/**",
+        "packages/protocol/**",
+        "packages/crypto/**",
+        "packages/relay/**",
+        "packages/shared/**",
+        "packages/providers/**",
+        "pnpm-lock.yaml"
+      ],
+      "why": "Playwright against a real throwaway relay + fake node (tests-e2e/fixtures.ts); fails loudly instead of skipping if this checkout's chromium build is missing, since a skip here would be a silent hole",
+      "serial": true
+    },
+    {
+      "id": "desktop",
+      "run": "pnpm --filter @loombox/desktop typecheck\npnpm --filter @loombox/desktop test\npnpm --filter @loombox/desktop exec electron-builder --dir",
+      "when": [
+        "apps/desktop/**",
+        "packages/node/**",
+        "apps/web/scripts/gen-brand-assets.mjs",
+        "apps/web/static/**",
+        "pnpm-lock.yaml"
+      ],
+      "why": "the CI desktop matrix moved to main-only (three-OS billing on every PR bought nothing actionable); this is the ubuntu-latest leg's equivalent, --dir/unsigned, on whatever this checkout's host platform is",
+      "serial": true
+    }
+  ]
+}
