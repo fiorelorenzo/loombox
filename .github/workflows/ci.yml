@@ -154,7 +154,17 @@ jobs:
             # Never --depth here: a shallow base has no merge base with the
             # head, and pnpm would then match nothing and typecheck nothing.
             git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/$base"
-            pnpm --filter "...[$base]" typecheck
+            # `--changed-files-ignore-pattern` is what makes the scoping real.
+            # The repo root is itself a workspace project that all 17 others
+            # depend on, so pnpm attributes any file outside a package to it
+            # and `...[base]` then selects everything: measured 16 of 17
+            # projects for a diff that touched nothing but this file. With
+            # these three patterns ignored, the same diff selects no projects
+            # and exits 0. A lockfile or root package.json change still
+            # selects everything, which is correct.
+            pnpm --filter "...[$base]" \
+              --changed-files-ignore-pattern="{.github/**,docs/**,**/*.md}" \
+              typecheck
           else
             pnpm -r typecheck
           fi
