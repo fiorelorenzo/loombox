@@ -19,6 +19,14 @@ export default tseslint.config(
       '**/coverage/**',
       '**/node_modules/**',
       'docs/**',
+      // Playwright's own generated artifacts (gitignored, .gitignore lines
+      // 36-37) - vendored/minified trace-viewer JS under a local
+      // `playwright-report/` fails eslint's own rules on code we didn't
+      // write, and only shows up when e2e ran in this same working tree
+      // before lint did (e.g. `preflight`, or CI=1 selecting the HTML
+      // reporter locally).
+      'apps/web/playwright-report/**',
+      'apps/web/test-results/**',
     ],
   },
   js.configs.recommended,

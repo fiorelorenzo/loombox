@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -62,7 +63,11 @@ jobs:
   checks:
     name: lint · format · brand-asset drift
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.code == 'true'
+    # always() is load-bearing: `changes` only runs on pull_request, so on
+    # push it is `skipped`, and GitHub's default needs-gating treats a
+    # skipped dependency as unmet and skips this job too, regardless of the
+    # boolean below, unless a status-check function overrides that gate.
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -105,7 +110,7 @@ jobs:
   typecheck:
     name: typecheck
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.code == 'true'
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -129,7 +134,7 @@ jobs:
   test:
     name: test
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.code == 'true'
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
