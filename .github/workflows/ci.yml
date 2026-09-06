@@ -116,7 +116,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # fetch-depth: 0 only because the Typecheck step below asks pnpm which
+      # packages changed since the base, and pnpm answers that from git
+      # history. A shallow clone makes `...[origin/main]` match nothing, which
+      # would silently typecheck zero packages rather than fail.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -130,8 +136,38 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `pnpm -r typecheck` walks all 17 packages whatever the diff was, which
+      # measured 6m36s of a 7m19s PR and was the whole reason the PR path
+      # missed its target. On a PR, typecheck the changed packages and their
+      # dependents (`...[<base>]` is pnpm's own "changed since this ref, plus
+      # everything that depends on them"), which is the same change-scoping the
+      # `changes` job does one level up. A push to main still walks everything:
+      # main always gets the full suite.
       - name: Typecheck
-        run: pnpm -r typecheck
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            # The base branch as a local ref. `fetch-depth: 0` gives full
+            # history for the PR's own ref, not necessarily a ref named
+            # origin/<base>, and `...[origin/main]` needs the name to resolve.
+            # Never --depth here: a shallow base has no merge base with the
+            # head, and pnpm would then match nothing and typecheck nothing.
+            git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/$base"
+            # `--changed-files-ignore-pattern` is what makes the scoping real.
+            # The repo root is itself a workspace project that all 17 others
+            # depend on, so pnpm attributes any file outside a package to it
+            # and `...[base]` then selects everything: measured 16 of 17
+            # projects for a diff that touched nothing but this file. With
+            # these three patterns ignored, the same diff selects no projects
+            # and exits 0. A lockfile or root package.json change still
+            # selects everything, which is correct.
+            pnpm --filter "...[$base]" \
+              --changed-files-ignore-pattern="{.github/**,docs/**,**/*.md}" \
+              typecheck
+          else
+            pnpm -r typecheck
+          fi
 
   test:
     name: test
@@ -140,7 +176,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # fetch-depth: 0 on a PR for the same reason as the typecheck job: the
+      # Test step asks pnpm which packages changed since the base, and pnpm
+      # answers that from git history.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -154,8 +195,22 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same change-scoping as the typecheck job, and for the same reason: with
+      # typecheck down to 31s from 6m36s, an unfiltered `pnpm test` became the
+      # critical path at 5m12s. A push to main still runs every package's
+      # suite.
       - name: Test
-        run: pnpm test
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/$base"
+            pnpm --filter "...[$base]" \
+              --changed-files-ignore-pattern="{.github/**,docs/**,**/*.md}" \
+              test
+          else
+            pnpm test
+          fi
 
   licenses:
     name: license scan (no AGPL/GPL)
