@@ -176,7 +176,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # fetch-depth: 0 on a PR for the same reason as the typecheck job: the
+      # Test step asks pnpm which packages changed since the base, and pnpm
+      # answers that from git history.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -190,8 +195,22 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same change-scoping as the typecheck job, and for the same reason: with
+      # typecheck down to 31s from 6m36s, an unfiltered `pnpm test` became the
+      # critical path at 5m12s. A push to main still runs every package's
+      # suite.
       - name: Test
-        run: pnpm test
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch --no-tags origin "${{ github.base_ref }}:refs/remotes/$base"
+            pnpm --filter "...[$base]" \
+              --changed-files-ignore-pattern="{.github/**,docs/**,**/*.md}" \
+              test
+          else
+            pnpm test
+          fi
 
   licenses:
     name: license scan (no AGPL/GPL)
