@@ -122,7 +122,7 @@ jobs:
       # would silently typecheck zero packages rather than fail.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -181,7 +181,7 @@ jobs:
       # answers that from git history.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
