@@ -9,7 +9,7 @@ import {
   parseResolvingPushAction,
   pickPermissionOptionForAction,
   resolvePendingPushAction,
-} from './push-action-routing';
+} from './action-routing';
 
 describe('parseResolvingPushAction (#165)', () => {
   it('recognizes approve and deny', () => {
