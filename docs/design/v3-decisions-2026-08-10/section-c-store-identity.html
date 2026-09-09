@@ -1,0 +1,112 @@
+<section class="item" id="c1">
+  <div class="item-head">
+    <span class="item-id">C1</span>
+    <h2>Whose identity signs and lists loombox in each store</h2>
+    <span class="item-status urgent">Urgent — blocks #283's own acceptance</span>
+  </div>
+  <p class="item-note">
+    Neither store account exists yet. This repo's own facts point one way today: the GitHub owner is
+    <code>fiorelorenzo</code>, a personal account, not an organisation; <code>LICENSE</code> reads
+    "Copyright (c) 2026 Lorenzo Fiore", one person, not a company; and SPEC only ever mentions
+    <code>loombox-the-company</code> as a hypothetical operator of a possible future managed-cloud
+    edition, explicitly gated "well past v1" and deferred past v3 (SPEC §12, §17.1). No legal entity
+    exists for loombox to enroll as, today, even if you wanted to. <code>apps/mobile</code>'s
+    Capacitor <code>appId</code> is already <code>dev.loombox.app</code>
+    (<code>apps/mobile/capacitor.config.ts</code>) — a reverse-DNS identifier, unaffected by which
+    account type eventually signs it.
+  </p>
+  <p class="item-note">
+    Both stores draw the same line, and both cite the same underlying reason: an organisation account
+    requires a real, verifiable legal entity. Apple: "Individuals or sole proprietors/single-person
+    businesses. Apps are listed under the developer's personal name" versus "Organizations. Apps are
+    listed under the organization's legal entity name. Companies and educational institutions must
+    provide a D-U-N-S Number (available for free) registered to their legal entity"
+    (<a href="https://developer.apple.com/support/compare-memberships/">developer.apple.com/support/compare-memberships</a>).
+    Apple is explicit that it will not accept a stand-in for that entity: "Apple does not accept DBAs,
+    fictitious businesses, trade names, or branches for enrollment as a company/organization"
+    (<a href="https://developer.apple.com/help/account/membership/D-U-N-S/">developer.apple.com/help/account/membership/D-U-N-S</a>).
+    Google Play draws the identical line: "To create a developer account for an organization, you
+    must have a D-U-N-S number," while a personal account needs only "a private email address and
+    phone number... and a developer email address," with no entity or D-U-N-S involved
+    (<a href="https://support.google.com/googleplay/android-developer/answer/13634885">support.google.com/googleplay/android-developer/answer/13634885</a>).
+    Neither store's fee differs by account type: Apple is 99 USD/year either way
+    (<code>compare-memberships</code>, above); Google is a 25 USD one-time registration fee either
+    way (<code>support.google.com/googleplay/android-developer/answer/6112435</code>, "Step 3: Pay
+    registration fee ... US$25 one-time registration fee").
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">No Apple Developer Program or Google Play Console account exists for loombox at all</span>
+      </div>
+      <p class="opt-why">
+        #283 is otherwise ready to build: a signed build/release pipeline can be scripted and verified
+        against a throwaway or personal account today. Only the actual store <i>listing</i> — the part
+        of #283's acceptance criteria that needs a real, permanent account identity — is blocked on
+        this pick.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-1</span><span class="opt-title">Individual/personal accounts, under Lorenzo Fiore</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> enrollable today, with nothing but your own identity — no D-U-N-S number, no
+        legal-entity paperwork, no business registration — which matches loombox's actual legal
+        status right now exactly (one person, no company, per <code>LICENSE</code> and SPEC §12/§17.1
+        above). <b>Costs:</b> Apple lists every app "under the developer's personal name," and moving
+        the <b>Account Holder</b> role off an individual account later is not a normal operation —
+        Apple's own docs restrict it to "when a minor reaches the age of majority... or when the
+        Account Holder is deceased," requiring Apple Developer Support's direct assistance either way
+        (<a href="https://developer.apple.com/help/account/access/transfer-the-account-holder-role/">developer.apple.com/help/account/access/transfer-the-account-holder-role</a>).
+        There is structurally no "hand this to a future company" path from an individual account —
+        only opening a brand-new organisation enrollment and re-signing/re-provisioning both app
+        listings under it, which is precisely the "hard to change later" #283 itself names.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-2</span><span class="opt-title">Organisation accounts, under a loombox legal entity</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> apps ship under a real legal entity's name from day one, and the Account Holder
+        role can later move to <i>any</i> team member "who has the legal authority to bind your
+        organization to legal agreements" — a normal operation, not a support-only exception
+        (<a href="https://developer.apple.com/help/account/access/transfer-the-account-holder-role/">Apple, above</a>).
+        This is the option that actually solves #283's "hard to change later" framing, permanently.
+        <b>Costs:</b> it needs a D-U-N-S number and a legal entity Apple/Google will accept as real —
+        neither exists for loombox today, and forming one is a legal and financial decision an app
+        store enrollment form cannot make for you. This option is blocked on that step happening
+        first; it is not a checkbox you can tick at signup.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">C1-3</span><span class="opt-title">Ship #283's pipeline now under C1-1, hold the actual store listing until a legal entity exists</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> never pays C1-1's transfer cost, because nothing is ever listed under a personal
+        name to begin with — when/if a company forms, the very first listing is already the
+        organisation's. #283's own acceptance criteria (a documented, scripted, signed
+        <code>.ipa</code>/<code>.aab</code> build, and Changesets covering <code>apps/mobile</code>
+        version bumps) do not require a live store listing to verify — Apple's compare-memberships
+        page lists "App management, testing, and analytics with App Store Connect" as included in the
+        Apple Developer Program regardless of account type, and Google Play's testing/internal
+        distribution tracks work the same way under a personal account. <b>Costs:</b> "shippable
+        rather than a dev-only spike" — #283's own framing — stays half true: buildable and signable,
+        not actually reachable by a real user through either store, for as long as the entity
+        question stays open. That is a real cost if "get this in front of a beta user soon" matters
+        more than avoiding the C1-1 transfer friction.
+      </p>
+    </div>
+  </div>
+  <div class="rec">
+    <p><span class="rec-label">There is a real technical constraint right now, not just a preference:</span>
+    C1-2 is not actually available today — there is no legal entity for either store to verify, so
+    picking it means picking "form a company first," which is a decision far bigger than an app-store
+    enrollment form and outside what this artifact can settle for you. The genuinely open question is
+    C1-1 vs. C1-3: enroll as yourself now and accept the one-way transfer cost if you ever incorporate,
+    or delay the store listing specifically (not the rest of #283) until that question is settled on
+    its own terms.</p>
+  </div>
+</section>

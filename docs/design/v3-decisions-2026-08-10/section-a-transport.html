@@ -1,0 +1,85 @@
+<section class="item" id="a1">
+  <div class="item-head">
+    <span class="item-id">A1</span>
+    <h2>Where a realtime voice session's audio socket lives</h2>
+    <span class="item-status deferrable">Not urgent</span>
+  </div>
+  <p class="item-note">
+    #277's design (<code>docs/superpowers/specs/2026-08-08-voice-backend-design.md</code>, "Who talks
+    to the vendor" section) already settles who holds a BYO vendor key: the node, always, the same
+    rule SPEC §8 already gives SSH credentials and connected accounts ("held per node/target, not
+    shared through the relay"). A client never sees the raw ElevenLabs key. That is not this
+    decision. This decision only exists for a <b>genuinely realtime, duplex</b> backend — SPEC §7.12
+    names "a realtime API" as a second backend shape alongside ElevenLabs — because a live,
+    bidirectional audio session cannot be proxied for free the way a request/response call can.
+  </p>
+  <p class="item-note">
+    Both vendors #277 checked while writing that design build the same escape hatch into their
+    realtime products. ElevenLabs' streaming TTS WebSocket accepts either the real <code>xi-api-key</code>
+    header or a <code>single_use_token</code> minted separately, "recommended for client-side access
+    to avoid exposing your API key"
+    (<a href="https://elevenlabs.io/docs/api-reference/text-to-speech/v-1-text-to-speech-voice-id-stream-input">elevenlabs.io/docs/api-reference/text-to-speech/…/stream-input</a>);
+    its realtime Scribe STT endpoint takes the same shape, "an alternative to API key or bearer token
+    authentication for frontend clients," a token from
+    <code>POST /v1/single-use-token/batch_scribe</code> that expires after 15 minutes
+    (<a href="https://elevenlabs.io/docs/api-reference/speech-to-text/convert">elevenlabs.io/docs/api-reference/speech-to-text/convert</a>).
+    OpenAI's Realtime API mirrors it: a standard bearer key for a server-to-server socket, or a
+    short-lived ephemeral client token "when the connection needs to originate from a browser/mobile
+    device directly"
+    (<a href="https://developers.openai.com/api/docs/guides/realtime-websocket">developers.openai.com/api/docs/guides/realtime-websocket</a>).
+    Every realtime-shaped vendor checked here has already built the same two doors.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">No realtime backend exists, so this decision has zero effect on anything currently open</span>
+      </div>
+      <p class="opt-why">
+        #278 and #279 are both turn-based only — a complete recorded clip in, a complete synthesized
+        reply out, using ElevenLabs' batch <code>POST /v1/text-to-speech/{voice_id}</code> and
+        <code>POST /v1/speech-to-text</code>, never a socket. The <code>VoiceBackend</code> interface
+        #277 sketched has an optional <code>connect(): Promise&lt;VoiceRealtimeSession&gt;</code>, but
+        it is typed <code>undefined</code> for ElevenLabs and for the local stub — nothing in the v3
+        epic calls it. This is genuinely a decision about a backend nobody has proposed yet, not a
+        blocker hiding inside #278/#279.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-1</span><span class="opt-title">Always proxied through the node (the design's own default)</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> one trust model for every backend shape, with no new exception to "a vendor only
+        ever sees the node, never a client's IP" — the same guarantee SSH credentials already have
+        under SPEC §8. Nothing about the mobile client (#278/#279's Android/iOS work already ships)
+        needs to change either: it already talks only to the relay. <b>Costs:</b> real added latency
+        per audio frame, for a product category whose entire value proposition is sub-200ms
+        turnaround — loombox's own relay/session fan-out becomes the bottleneck for the one feature
+        that exists specifically to avoid one.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">A1-2</span><span class="opt-title">Node mints a vendor ephemeral token, client connects to the vendor directly for the live duplex only</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> the actual latency a realtime backend is for. The raw BYO key still never leaves
+        the node under this option — only a vendor-minted, single-purpose, time-boxed token does (15
+        minutes for ElevenLabs' Scribe token, per its own docs above). <b>Costs:</b> for the lifetime
+        of that one session, the vendor sees the client device's real IP directly and can correlate
+        its own timing/volume metadata with it — a real, if narrowly scoped (one vendor, one live
+        session, token-expiring) new category of exception to "no third party ever sees anything
+        about the user except through the node."
+      </p>
+    </div>
+  </div>
+  <div class="rec">
+    <p><span class="rec-label">Not urgent:</span> nothing currently open needs this pick, and it is
+    safe to leave unanswered — #278/#279 build the same way either way. It is listed because #277
+    asked that it not get lost before a real duplex backend is proposed, and because it is a genuine
+    latency-vs-key-custody trade with no vendor-mandated right answer: both ElevenLabs and OpenAI
+    support either shape, so this is a loombox trust-model call, not a platform constraint. If you'd
+    rather decide it now than have it resurface later, A1-1 is the safer default to bank until then —
+    it's what #277's design already assumes.</p>
+  </div>
+</section>
