@@ -479,131 +479,82 @@ the same URLs resolve there. See CONTRIBUTING.md for the one-time OAuth App setu
 
 Ship in milestone order — **v0** (validation spike) → **v1** (core cockpit) → **v2**
 (trackers / git / editor / auth / connected accounts) → **v3** (voice / native / reach).
-See SPEC §12 and the GitHub Project. Do not build later-milestone work before its
-milestone.
+See SPEC §12 and Linear (initiative `loombox`) for where things stand. Do not build
+later-milestone work before its milestone.
 
-## The GitHub Project is the source of truth
+## Linear is the source of truth
 
-Current state and future roadmap live on **Project #4 "loombox roadmap"** (owner
-`fiorelorenzo`), not in this file, not in SPEC, and not in a chat transcript.
-SPEC says what loombox is, the board says where it stands. Keeping the board
-current is part of doing the work, not paperwork at the end: it is how Lorenzo
-sees state without reading session logs, so a board that lags reality is worse
-than no board.
+Current state and future roadmap live in Linear (workspace `fiorelorenzo`, initiative
+`loombox`), not in this file, not in SPEC, and not in a chat transcript. SPEC says what
+loombox is, Linear says where it stands. Keeping it current is part of doing the work,
+not paperwork at the end: it is how Lorenzo sees state without reading session logs, so
+a tracker that lags reality is worse than no tracker.
+
+Two projects carry the initiative's work: `loombox v3` (in progress, the work actually
+scheduled right now) and `loombox far-future` (planned, scope that is decided but not
+yet scheduled). 32 milestones sit across the two, holding 28 issues migrated from
+GitHub. The 23 epics that came over with no open children became empty milestones (22
+in far-future, the post-v1 ones in v3): they are placeholders waiting for work to be cut
+into them, not evidence that the area is finished.
+
+Before writing to Linear for the first time in a session, call `list_projects` or
+`list_issues` on the `linear-personal` MCP server and check the workspace name in the
+result. Two Linear workspaces are reachable from this box, and writing to the wrong one
+puts loombox work on a client's board.
 
 **Status is a claim about reality, keep it true.**
 
-- Before you write code for an issue, move it to `In Progress`. If what you are
-  about to do has no issue, create one first (see below), then start.
+- Before you write code for an issue, move it to `In Progress`. If what you are about
+  to do has no issue, create one first (see below), then start.
 - Move it to `Done` only when the change is merged and verified (and for
-  deploy-affecting work, verified on prod the way "Shipping to prod" describes),
-  not when the code is written. Merged but something is still open? Say so in a
-  comment and leave it `In Progress`.
-- Board fields, the same four on every one of Lorenzo's roadmap boards on
-  purpose: `Status` (`Todo` / `In Progress` / `Done`), `Priority` (P0-P3),
-  `Effort` (S/M/L/XL) and `Parallel` (Yes/No, whether a parallel agent can take
-  the issue without colliding with other work). Set all four on anything you
-  file. Never write a value that is not already an option, read the schema
-  instead of guessing, and never add, rename or drop a field on this board
-  alone: the convention is shared across the projects.
+  deploy-affecting work, verified on prod the way "Shipping to prod" describes), not
+  when the code is written. Merged but something is still open? Say so in a comment
+  and leave it `In Progress`.
+- `In Review` is where an issue sits while its PR is open on GitHub. The GitHub
+  connection on this Linear workspace moves issues on its own as the PR moves, so a
+  merged PR closes its issue without anyone touching the state by hand. Do not chase a
+  state that already moved.
+- Priority and estimate are native Linear fields, not labels. Set them on `save_issue`,
+  in the same call that sets the project and milestone, not as a follow-up edit.
 
-**Comment when a reader would want to know.** A decision taken, an approach
-tried and abandoned, a blocker hit, a surprise in the code, a scope change, a
-finding that invalidates the issue as written. One comment per meaningful turn
-in the work, not one per commit, and no routine progress narration.
+**Comment when a reader would want to know.** A decision taken, an approach tried and
+abandoned, a blocker hit, a surprise in the code, a scope change, a finding that
+invalidates the issue as written. One comment per meaningful turn in the work, not one
+per commit, and no routine progress narration. Write a project update, not just an
+issue comment, when something changed that the issue list alone would not show: a
+milestone slipping, a change in health, a decision, a release.
 
 **File the work you discover.** When something real surfaces mid-task or in a
-conversation with Lorenzo (a flake you tripped over, a follow-up the fix
-implies, a UX gap you noticed), open an issue for it instead of silently
-widening the current change or letting it evaporate. Then say in the current
-issue that you split it out, with a link.
+conversation with Lorenzo (a flake you tripped over, a follow-up the fix implies, a UX
+gap you noticed), file it in Linear instead of silently widening the current change or
+letting it evaporate. Then say in the current issue that you split it out, with a link.
 
-**Conventions for a new issue.** Match what the board already shows, do not
-invent a parallel style:
+**Conventions for a new issue.** Match what Linear already shows, do not invent a
+parallel style:
 
 - Title is a plain descriptive sentence naming the actual defect or change, e.g.
   `node-daemon-ssh.test.ts leaks real setsid-detached echo-acp-agent.mjs
   processes on every run`. Specific beats short.
-- Labels follow one taxonomy, identical in every repo: exactly one `type:*`
-  (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`,
-  `security`, `spike`), exactly one of `priority:P0`-`priority:P3`, and one or
-  more `area:*` naming the surfaces the change touches. `epic` and `flagship`
-  (an epic, and headline work) are the only unprefixed labels. Priority is
-  deliberately in two places, the `Priority` board field and the `priority:*`
-  label, so set both.
+- Labels: exactly one `repo` label (here, `loombox`), exactly one `type` label
+  (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`, `security`,
+  `spike`), and one or more `area:*` labels naming the surfaces the change touches.
+  `flagship` and `parallel` are separate flat labels; set either only when it actually
+  applies.
 - `area:*` values here: `accounts`, `attachments`, `auth`, `client`, `cloud`,
   `crypto`, `editor`, `git`, `inbox`, `infra`, `landing`, `mcp`, `node`,
   `notifications`, `observability`, `permissions`, `persistence`, `protocol`,
   `providers`, `provisioning`, `relay`, `resources`, `supervisor`, `terminal`,
-  `tests`, `trackers`, `transcript`, `voice`. Add one only when the surface
-  really is new, and never reintroduce an unprefixed or differently shaped
-  label.
-- `redesign`, `redesign-v2` and `wave-1`-`wave-7` are process markers (a
-  workstream, and the parallel-agent batches), not taxonomy. Leave them off a
-  new issue unless you are actually scheduling a wave.
-- Milestone: one of the milestones still open (`v2`, `v3`, `far-future`) when
-  the work belongs to a spec milestone, see Build order above. Post-v1 issues
-  usually carry no milestone and are grouped by epic instead, so do not invent
-  one to fill the field.
-- **Every issue hangs off an epic, with no exceptions, and that includes an
-  issue filed in the middle of an agent run.** Epics are titled `Epic: Name`
-  (the older SPEC-derived ones, #8 to #39, predate that prefix) and carry the
-  `epic` label. The post-v1 buckets are #558 client UX, #559 node daemon
-  reliability, #560 test-suite reliability, #561 deployment and container
-  runtime, plus the feature epics #11 to #37 for spec work. If none of them
-  fits, create a new epic (`Epic: Name`, `epic` label, one per coherent area)
-  and parent the issue to it. An issue with no parent is a defect in the board,
-  and it is a defect that accumulates in exactly one way: an agent files a real
-  finding mid-run, sets its labels and its four fields, and forgets the one step
-  that is a separate GraphQL mutation. On 2026-08-23 an audit found five of this
-  repo's 531 issues orphaned, every one of them a mid-run split-out. **So parent
-  it in the same turn you create it**, and when a subagent files something on
-  your behalf, parenting it is yours rather than theirs. A closed epic still
-  accepts children, so a defect found today whose home is a shipped area goes
-  there rather than to the newest epic.
+  `tests`, `trackers`, `transcript`, `voice`. Add one only when the surface really is
+  new.
+- Project and milestone: pick `loombox v3` for scheduled spec-milestone work (see
+  Build order above) or `loombox far-future` for decided-but-unscheduled scope, then
+  the milestone inside it the issue actually belongs to. An empty far-future milestone
+  is a fine home for a new issue in that area; do not leave an issue milestone-less to
+  avoid picking one. Project, milestone, labels, priority and estimate all go into the
+  same `save_issue` call: there is no separate step to remember afterward.
 
-  The audit, worth running at the end of any wave that filed issues. It pages
-  100 at a time, so re-run it with `-f c=<endCursor>` until `hasNextPage` is
-  false; empty output on every page is the passing state.
-
-  ```bash
-  gh api graphql -f query='query($c:String){repository(owner:"fiorelorenzo",name:"loombox"){
-    issues(first:100,after:$c,states:[OPEN,CLOSED]){pageInfo{hasNextPage endCursor}
-    nodes{number parent{number} labels(first:20){nodes{name}}}}}}' \
-    --jq '.data.repository.issues.nodes[] | select(.parent==null)
-          | select([.labels.nodes[].name] | index("epic") | not) | .number'
-  ```
-
-```bash
-# Read the schema, never guess an option value
-gh project field-list 4 --owner fiorelorenzo --format json
-gh label list -R fiorelorenzo/loombox --limit 100
-
-# Fill these three in; everything below runs as written, no placeholders to edit
-ISSUE=123                 # the issue you are working on
-EPIC=456                  # its parent epic
-STATUS="In Progress"      # Todo | In Progress | Done
-
-PROJECT_ID=$(gh project view 4 --owner fiorelorenzo --format json --jq '.id')
-STATUS_FIELD=$(gh project field-list 4 --owner fiorelorenzo --format json \
-  --jq '.fields[] | select(.name=="Status") | .id')
-OPTION_ID=$(gh project field-list 4 --owner fiorelorenzo --format json \
-  --jq ".fields[] | select(.name==\"Status\") | .options[] | select(.name==\"$STATUS\") | .id")
-ITEM_ID=$(gh project item-list 4 --owner fiorelorenzo --format json --limit 500 \
-  --jq ".items[] | select(.content.number==$ISSUE) | .id")
-gh project item-edit --id "$ITEM_ID" --project-id "$PROJECT_ID" \
-  --field-id "$STATUS_FIELD" --single-select-option-id "$OPTION_ID"
-
-# New issue: create, put it on the board, hang it off its epic.
-# `gh issue create` prints the new issue's URL, so capture it and reuse it.
-ISSUE_URL=$(gh issue create -R fiorelorenzo/loombox --title "..." --body "..." \
-  --label "type:fix,priority:P1,area:node")
-gh project item-add 4 --owner fiorelorenzo --url "$ISSUE_URL"
-gh api graphql -f query='mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){subIssue{number}}}' \
-  -f p="$(gh issue view $EPIC -R fiorelorenzo/loombox --json id --jq '.id')" \
-  -f c="$(gh issue view "$ISSUE_URL" --json id --jq '.id')"
-```
-
-`item-edit` is idempotent, so re-setting a value that is already correct is a
-fine way to make sure the board is right. An issue can have only one parent: to
-move it to a different epic, pass `replaceParent: true` in the same mutation.
+**The old GitHub Project board and every GitHub issue are a read-only archive.**
+Project #4 ("loombox roadmap") and the GitHub issues it tracked do not sync with Linear
+in either direction, and no bidirectional sync is getting built. Issues that were still
+open when we migrated stay open on GitHub for now, but they are no longer the source of
+truth: new work gets filed in Linear.
