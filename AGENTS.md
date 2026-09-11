@@ -538,8 +538,10 @@ parallel style:
 - Labels: exactly one `repo` label (here, `loombox`), exactly one `type` label
   (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`, `security`,
   `spike`), and one or more `area:*` labels naming the surfaces the change touches.
-  `flagship` and `parallel` are separate flat labels; set either only when it actually
-  applies.
+  `flagship` is a separate flat label, set only when it actually applies. Parallel
+  safety is two labels, `parallel:yes` and `parallel:no`, never a bare `parallel`: one
+  label would conflate "must not run concurrently" with "never assessed", and the
+  absence of both is that third state, assessed at wave time rather than assumed safe.
 - `area:*` values here: `accounts`, `attachments`, `auth`, `client`, `cloud`,
   `crypto`, `editor`, `git`, `inbox`, `infra`, `landing`, `mcp`, `node`,
   `notifications`, `observability`, `permissions`, `persistence`, `protocol`,
