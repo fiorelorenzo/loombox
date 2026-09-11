@@ -42,6 +42,37 @@ hosted on prodbox).
   example — consult it before building a mechanism from scratch, and prefer the cited
   approach.
 
+## Pull requests
+
+One shape for every repo of mine: `skill://opening-a-pull-request`. The issue and its
+neighbours before the branch, the branch name Linear renders on the issue, Conventional
+Commits in the first person, the body's four sections from
+`.github/PULL_REQUEST_TEMPLATE.md` (Screenshots is never deleted), an independent
+review applied in a second commit, and the card closed only against evidence. What is
+true only here:
+
+- **Scopes** for the subject: `web`, `node`, `relay`, `protocol`, `providers-core`,
+  `supervisor`, `crypto`, `shared`, `desktop`, `mobile`, plus `docs`, `ci`, `design`,
+  `agents` and `infra` for cross-cutting changes, and a comma-separated list
+  (`feat(protocol,relay,node,web): ...`) when a change genuinely spans packages.
+- **Required check**: the aggregate `ci` context (`required_status_checks` on the
+  `protect-default-branch` ruleset), plus `deletion` and `non_fast_forward`; a separate
+  ruleset requires the PR itself. A red PR cannot be merged through the UI.
+- **Merge**: `gh pr merge <n> --squash --delete-branch` (or `--auto --squash
+  --delete-branch` right after opening, since `allow_auto_merge` is on), the only
+  method the ruleset allows, then `git checkout main && git reset --hard origin/main`,
+  because local `main` diverges on every squash. `delete_branch_on_merge` is also on,
+  so the remote branch is gone by the time you get there.
+
+The old template's `## Spec / grounding` section is dropped, not folded into a
+conditional: describing what you built under **What this changes** is where the SPEC
+section you implemented belongs, and a SPEC §16 reference you deliberately deviated
+from is exactly the kind of thing **Anything a reviewer should look at twice** exists
+for. The `## Clean-room and changeset` checklist stays, appended after **Anything a
+reviewer should look at twice** and before **Screenshots**, because those two claims
+(the AGPL/GPL clean-room gate and the changeset-on-publish rule) are check-once facts
+about the diff, not narrative.
+
 ## Local verification: `preflight` before you push, CI is the gate after
 
 `.github/preflight.json` is the local tier: it lists every check CI can run and
