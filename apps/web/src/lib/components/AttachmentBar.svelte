@@ -39,7 +39,9 @@
    * of it only added a dead tab stop.
    */
   import type { Snippet } from 'svelte';
+  import { Capacitor } from '@capacitor/core';
   import type { ComposerAttachment } from '../attachments';
+  import { pickAttachmentImages } from '../native-attachments';
   import Button from './ui/Button.svelte';
   import IconButton from './ui/IconButton.svelte';
   import { Icon } from './icons';
@@ -58,7 +60,22 @@
   let fileInput: HTMLInputElement | undefined = $state(undefined);
   let dragActive = $state(false);
 
-  function pickFiles(): void {
+  /**
+   * The composer's single "Attach image" trigger (SPEC §7.25, native
+   * parity issue #284): inside the Capacitor shell this opens the
+   * device's own combined camera/photo-library chooser
+   * (`pickAttachmentImages`) and feeds whatever it returns into the exact
+   * same `onFiles` sink a web pick/drop/paste uses; everywhere else it is
+   * unchanged — click the hidden input, let `handleInputChange` call
+   * `onFiles`. One `Capacitor.isNativePlatform()` check, made once, right
+   * here — not a branch repeated at every place a file could arrive.
+   */
+  async function pickFiles(): Promise<void> {
+    if (Capacitor.isNativePlatform()) {
+      const files = await pickAttachmentImages();
+      if (files.length > 0) onFiles(files);
+      return;
+    }
     fileInput?.click();
   }
 
