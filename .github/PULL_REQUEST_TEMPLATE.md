@@ -1,25 +1,33 @@
-<!-- Keep this concise. The spec (SPEC.md) is the source of truth. -->
+## What this changes
 
-## What & why
-
-<!-- What does this change do, and which issue does it close? -->
-
-Closes #
-
-## Spec / grounding
-
-<!-- Which SPEC.md section(s) does this implement? Which SPEC §16 reference did
-     you build against, if any? -->
+<!-- One paragraph, in the first person. The first sentence names the problem: what was
+wrong, missing or impossible before. Then what is true now, in words a product person
+understands. Example strings, numbers and states beat descriptions of them. -->
 
 ## How I verified it
 
-<!-- The real commands you ran and what you observed. Not just "tests pass". -->
+<!-- The commands you ran and what they said, not "tests pass". If a UI changed, say
+what you looked at. If you could not verify something, say which part and why. -->
 
-## Checklist
+## Anything a reviewer should look at twice
 
-- [ ] Tests ship with this change and `pnpm test` passes locally.
-- [ ] `pnpm lint`, `pnpm format:check`, and `pnpm -r typecheck` pass locally.
+<!-- The bit you are least sure about, a decision that could have gone the other way, or
+a path that no test covers. Delete this section if there is genuinely nothing. -->
+
+## Clean-room and changeset
+
+<!-- Delete either line if it does not apply. -->
+
 - [ ] A changeset is included if a published package changed (`pnpm changeset`).
 - [ ] **Clean-room:** no code was copied from HAPI or any AGPL/GPL source, and no
       code was copied verbatim from emdash / Happy / Nimbalyst. Design
       inspiration only.
+
+## Screenshots
+
+<!-- For anything a person could see: one before-and-after pair per change, composed into
+a single side-by-side image and attached with `gh pr edit <n> --attach`. If nothing
+visible changed, or a pair cannot be captured, say so and why. Keep this section either
+way. -->
+
+Linear: LOR-
