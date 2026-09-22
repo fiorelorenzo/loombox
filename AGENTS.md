@@ -521,12 +521,25 @@ loombox is, Linear says where it stands. Keeping it current is part of doing the
 not paperwork at the end: it is how Lorenzo sees state without reading session logs, so
 a tracker that lags reality is worse than no tracker.
 
-Two projects carry the initiative's work: `loombox v3` (in progress, the work actually
-scheduled right now) and `loombox far-future` (planned, scope that is decided but not
-yet scheduled). 32 milestones sit across the two, holding 28 issues migrated from
-GitHub. The 23 epics that came over with no open children became empty milestones (22
-in far-future, the post-v1 ones in v3): they are placeholders waiting for work to be cut
-into them, not evidence that the area is finished.
+Two projects carry the initiative's work: `Ship mobile, voice and the cockpit
+overhaul` (in progress, the work actually scheduled right now) and `Hold the
+loombox scope not yet scheduled` (planned, scope that is decided but not yet
+scheduled). A project is named with a verb and the work it does, no `vN`. 32
+milestones sit across the two, holding 28 issues migrated from GitHub. The 23
+epics that came over with no open children became empty milestones: they are
+placeholders waiting for work to be cut into them, not evidence that the area is
+finished.
+
+**Naming, on the board.** Every name starts with a verb and names the work, under
+80 characters: an issue title, a project, a milestone. One clause, or two when the
+second only names what makes the first visible. No `type(scope):` prefix on a
+Linear title (commits and PR titles keep Conventional Commits), no product prefix
+or `vN` on a project name, no state word anywhere. An end-state clause reads as a
+riddle to whoever did not write it. The body fits one screen: at most four bold
+lead words (`**Observed.**`, `**Needed.**`, and `**Done when.**` as one line,
+`**Not here.**`, `**Adjacent.**` when they speak), two or three sentences each. A
+comment is two or three sentences plus the closing evidence bullets; a project
+update is three sentences.
 
 Before writing to Linear for the first time in a session, call `list_projects` or
 `list_issues` on the `linear-personal` MCP server and check the workspace name in the
@@ -563,9 +576,9 @@ letting it evaporate. Then say in the current issue that you split it out, with 
 **Conventions for a new issue.** Match what Linear already shows, do not invent a
 parallel style:
 
-- Title is a plain descriptive sentence naming the actual defect or change, e.g.
-  `node-daemon-ssh.test.ts leaks real setsid-detached echo-acp-agent.mjs
-  processes on every run`. Specific beats short.
+- Title: a verb and the work it does, under 80 characters (§ Naming above). The
+  plain descriptive sentence is not enough; the one that starts with what the run
+  does is.
 - Labels: exactly one `repo` label (here, `loombox`), exactly one `type` label
   (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`, `security`,
   `spike`), and one or more `area:*` labels naming the surfaces the change touches.
@@ -579,11 +592,12 @@ parallel style:
   `providers`, `provisioning`, `relay`, `resources`, `supervisor`, `terminal`,
   `tests`, `trackers`, `transcript`, `voice`. Add one only when the surface really is
   new.
-- Project and milestone: pick `loombox v3` for scheduled spec-milestone work (see
-  Build order above) or `loombox far-future` for decided-but-unscheduled scope, then
-  the milestone inside it the issue actually belongs to. An empty far-future milestone
-  is a fine home for a new issue in that area; do not leave an issue milestone-less to
-  avoid picking one. Project, milestone, labels, priority and estimate all go into the
+- Project and milestone: pick `Ship mobile, voice and the cockpit overhaul` for
+  scheduled spec-milestone work (see Build order above) or `Hold the loombox scope
+  not yet scheduled` for decided-but-unscheduled scope, then the milestone inside
+  it the issue actually belongs to. An empty unscheduled-scope milestone is a fine
+  home for a new issue in that area; do not leave an issue milestone-less to avoid
+  picking one. Project, milestone, labels, priority and estimate all go into the
   same `save_issue` call: there is no separate step to remember afterward.
 
 **The old GitHub Project board and every GitHub issue are a read-only archive.**
