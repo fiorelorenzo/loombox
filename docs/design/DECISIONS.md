@@ -1,10 +1,10 @@
 # Design decisions
 
-One row per design answer that actually landed. The canvas (now Claude Design,
-before that the hand-built HTML decks under `docs/design/`) draws the options;
-this file is the answer. An agent implementing with omp should never need to
-open a design tool to know what was decided — read this table and the export's
-`github.md` screen map instead.
+One row per design answer that actually landed. An artifact (since 2026-10-19; before
+that Claude Design, and before that the hand-built HTML decks under `docs/design/`)
+draws the options and is deleted once it is answered; this file is the answer. An
+agent implementing with omp should never need to see a drawing to know what was
+decided: read this table.
 
 `Rule it creates` is usually empty. It is filled only when the decision produced
 something a component can violate — a row with a rule is binding on an
