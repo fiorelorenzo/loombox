@@ -5,8 +5,8 @@
 > `turn-delimitation-2026-08-04/`, `ground-inversion-2026-08-06/`,
 > `node-lifecycle-2026-08-06/`) are the historical record of how Warp Deck was
 > drawn and reviewed by hand. Nothing in them is deleted or rewritten. New
-> design questions from here on are drawn in Claude Design instead, and their
-> answers are recorded in `docs/design/DECISIONS.md`, not in a new HTML deck.
+> design questions from here on are shown as artifacts in Vera (Claude Design was
+> retired on 2026-10-19), and their answers are recorded in `docs/design/DECISIONS.md`, not in a new HTML deck.
 > See `AGENTS.md`'s "Design and UI" section for the pipeline.
 
 # loombox redesign: "Warp Deck" — a unified design-language spec

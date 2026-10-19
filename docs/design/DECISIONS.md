@@ -4,7 +4,7 @@ One row per design answer that actually landed. An artifact (since 2026-10-19; b
 that Claude Design, and before that the hand-built HTML decks under `docs/design/`)
 draws the options and is deleted once it is answered; this file is the answer. An
 agent implementing with omp should never need to see a drawing to know what was
-decided — read this table.
+decided: read this table.
 
 `Rule it creates` is usually empty. It is filled only when the decision produced
 something a component can violate — a row with a rule is binding on an
