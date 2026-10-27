@@ -52,6 +52,10 @@ jobs:
               - 'vitest.config.ts'
               - '.github/workflows/ci.yml'
               - '.github/preflight.json'
+              - '.github/workflow.json'
+              - '.claude/settings.json'
+              - '.omp/**'
+              - '.prettierignore'
 
   # Tier 2: the PR-path gate. Runs scoped to `changes.outputs.code` on a PR
   # (a docs-only PR skips it entirely - `preflight` already covers the same
@@ -363,7 +367,7 @@ jobs:
   # The single required status check. Never rename it: it is the one context
   # in the branch ruleset, so the jobs above can be renamed, split or moved
   # between tiers forever without a ruleset edit. `skipped` counts as
-  # passing - that's what makes a docs-only PR (every job above skips) or a
+  # passing - that's what makes a docs-only PR (every job above skips except `kit`) or a
   # PR-path run (e2e/desktop skip by design) come out green.
   ci:
     name: ci

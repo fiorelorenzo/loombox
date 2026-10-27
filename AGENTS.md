@@ -63,8 +63,9 @@ rules, for an agent with no skills loaded:
 What is true only here:
 
 - **Scopes** for the subject: `web`, `node`, `relay`, `protocol`, `providers-core`,
-  `supervisor`, `crypto`, `shared`, `desktop`, `mobile`, plus `docs`, `ci`, `design`,
-  `agents` and `infra` for cross-cutting changes, and a comma-separated list
+  `supervisor`, `crypto`, `shared`, `desktop`, `mobile`, `providers-codex`, `trackers`,
+  `terminal`, plus `docs`, `ci`, `design`, `agents`, `infra`, `deps` and `repo` for
+  cross-cutting changes (`.github/workflow.json` is the list `pr_lint` enforces), and a comma-separated list
   (`feat(protocol,relay,node,web): ...`) when a change genuinely spans packages.
 - **Required check**: the aggregate `ci` context (`required_status_checks` on the
   `protect-default-branch` ruleset), plus `deletion` and `non_fast_forward`; a separate
@@ -99,7 +100,7 @@ it isn't, rather than passing green on nothing having run.
 
 CI (`.github/workflows/ci.yml`) itself is three-tier: a PR gets one path-scoped
 gate (lint, format, brand-asset drift, typecheck, unit tests, license scan;
-skipped entirely for a docs-only PR); `push: main` runs that plus Playwright e2e
+skipped for a docs-only PR, except the seconds-long `kit` job); `push: main` runs that plus Playwright e2e
 and the three-OS desktop matrix, with no path filtering — main always gets
 everything; the single required status check on `main` is the `ci` aggregate
 job, so the jobs under it can be renamed or moved between tiers without ever
@@ -536,12 +537,15 @@ Before writing to Linear for the first time in a session, call `list_projects` o
 result. Two Linear workspaces are reachable from this box, and writing to the wrong one
 puts loombox work on a client's board.
 
-- **Labels:** exactly one `repo` label (here, `loombox`), exactly one `type` label, and
-  one or more `area:*` labels naming the surfaces the change touches. `flagship` is a
+- **Labels:** exactly one `repo` label (here, `loombox`), exactly one `type` label
+  (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`, `security`,
+  `spike`), and exactly one `area:*` label, the surface the change mostly touches. `flagship` is a
   separate flat label, set only when it actually applies. Parallel safety is two labels,
   `parallel:yes` and `parallel:no`, never a bare `parallel`: one label would conflate
   "must not run concurrently" with "never assessed", and the absence of both is that
-  third state, assessed at wave time rather than assumed safe.
+  third state, assessed at wave time rather than assumed safe. The skill's bare `parallel`
+  label (unclaimed, anyone may take it) has no counterpart here: `parallel:yes` is not a
+  claim signal.
 - **`area:*` values here** (also in `.github/workflow.json`): `accounts`, `attachments`,
   `auth`, `client`, `cloud`, `crypto`, `editor`, `git`, `inbox`, `infra`, `landing`,
   `mcp`, `node`, `notifications`, `observability`, `permissions`, `persistence`,
@@ -556,7 +560,11 @@ puts loombox work on a client's board.
   picking one.
 - **Done means verified.** For deploy-affecting work, verified on prod the way "Shipping
   to prod" describes. The GitHub connection on this workspace moves an issue to `In
-  Review` and `Done` with its PR, so do not chase a state that already moved.
+  Review` and `Done` with its PR, so do not chase a state that already moved. Merged but something still open, or the
+  card flipped to `Done` before prod was verified? Say so in a comment and move it back
+  to `In Progress`.
+- **File the work you discover.** A flake, a follow-up the fix implies, a UX gap: file it
+  in Linear instead of widening the current change, and link it from the current card.
 
 **The old GitHub Project board and every GitHub issue are a read-only archive.**
 Project #4 ("loombox roadmap") and the GitHub issues it tracked do not sync with Linear
