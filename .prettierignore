@@ -11,3 +11,12 @@ SPEC.md
 AGENTS.md
 CLAUDE.md
 docs/
+
+# The workflow kit's copy (kit.py check holds it byte-identical to the manifest), so
+# Prettier must not reflow it.
+.agents/skills/linear-ticket
+.agents/skills/linear-content
+.agents/skills/pr-creation
+.claude/skills
+.omp/hooks/pre/linear-gate.ts
+.github/kit

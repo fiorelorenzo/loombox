@@ -94,6 +94,19 @@
       ],
       "why": "the CI desktop matrix moved to main-only (three-OS billing on every PR bought nothing actionable); this is the ubuntu-latest leg's equivalent, --dir/unsigned, on whatever this checkout's host platform is",
       "serial": true
+    },
+    {
+      "id": "kit",
+      "run": "python3 .github/kit/bin/kit.py check",
+      "when": [
+        ".agents/**",
+        ".claude/**",
+        ".github/kit/**",
+        ".github/workflow.json",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".omp/**"
+      ],
+      "why": "the workflow kit's copy matches its manifest; the kit job in ci runs the same command"
     }
   ]
 }

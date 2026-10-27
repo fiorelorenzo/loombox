@@ -32,7 +32,7 @@ hosted on prodbox).
   provisioning, admin) would ever go in a separately licensed package.
 - **Testing / CI:** **Vitest** (unit/integration) + **Playwright** (PWA e2e). Every
   package ships tests from commit one. CI (`.github/workflows/ci.yml`) is
-  three-tier: `preflight` runs everything locally before you push; a PR pays
+  three-tier: `python3 .github/kit/bin/preflight` (below: `preflight`) runs everything locally before you push; a PR pays
   only for a cheap, path-scoped gate (lint + format + brand-asset drift +
   typecheck + test + a GPL/AGPL license scan); `push: main` runs that plus
   Playwright e2e and the three-OS desktop build, unfiltered. See **Local
@@ -42,18 +42,30 @@ hosted on prodbox).
   example — consult it before building a mechanism from scratch, and prefer the cited
   approach.
 
-## Pull requests
+## Pull requests and Linear: the workflow kit
 
-One shape for every repo of mine: `skill://opening-a-pull-request`. The issue and its
-neighbours before the branch, the branch name Linear renders on the issue, Conventional
-Commits in the first person, the body's four sections from
-`.github/PULL_REQUEST_TEMPLATE.md` (Screenshots is never deleted), an independent
-review applied in a second commit, and the card closed only against evidence. What is
-true only here:
+The procedure is the workflow kit's, copied here from letsrebase/rebase and not edited
+here: the skills `linear-ticket`, `linear-content` and `pr-creation` in
+`.agents/skills/` (Claude Code reads the copy in `.claude/skills/`), their data in
+`.github/workflow.json`, checked in `ci` by `kit.py check` and `pr_lint.py` (the `kit`
+job), with a gate that refuses a malformed Linear write in Claude Code and omp. What is
+true only here is below and in `docs/agents/pr-creation.md`, which the skill reads. The
+rules, for an agent with no skills loaded:
+
+- A Linear card exists before the branch; a verb-first title under 80 characters.
+- Conventional Commits in the first person, English, no em dash; the card id (`LOR-N.`)
+  is the last line of the message.
+- The PR body keeps the template's sections (`What this changes`, `How I verified it`,
+  `Anything a reviewer should look at twice`, `Clean-room and changeset`, `Screenshots`).
+- The body's last line is `Linear: LOR-N.`
+- Squash merge on a green `ci`.
+
+What is true only here:
 
 - **Scopes** for the subject: `web`, `node`, `relay`, `protocol`, `providers-core`,
-  `supervisor`, `crypto`, `shared`, `desktop`, `mobile`, plus `docs`, `ci`, `design`,
-  `agents` and `infra` for cross-cutting changes, and a comma-separated list
+  `supervisor`, `crypto`, `shared`, `desktop`, `mobile`, `providers-codex`, `trackers`,
+  `terminal`, plus `docs`, `ci`, `design`, `agents`, `infra`, `deps` and `repo` for
+  cross-cutting changes (`.github/workflow.json` is the list `pr_lint` enforces), and a comma-separated list
   (`feat(protocol,relay,node,web): ...`) when a change genuinely spans packages.
 - **Required check**: the aggregate `ci` context (`required_status_checks` on the
   `protect-default-branch` ruleset), plus `deletion` and `non_fast_forward`; a separate
@@ -63,15 +75,8 @@ true only here:
   method the ruleset allows, then `git checkout main && git reset --hard origin/main`,
   because local `main` diverges on every squash. `delete_branch_on_merge` is also on,
   so the remote branch is gone by the time you get there.
-
-The old template's `## Spec / grounding` section is dropped, not folded into a
-conditional: describing what you built under **What this changes** is where the SPEC
-section you implemented belongs, and a SPEC §16 reference you deliberately deviated
-from is exactly the kind of thing **Anything a reviewer should look at twice** exists
-for. The `## Clean-room and changeset` checklist stays, appended after **Anything a
-reviewer should look at twice** and before **Screenshots**, because those two claims
-(the AGPL/GPL clean-room gate and the changeset-on-publish rule) are check-once facts
-about the diff, not narrative.
+- The template's **Clean-room and changeset** section, and why it replaced the old
+  `## Spec / grounding` one, are in `docs/agents/pr-creation.md`.
 
 ## Local verification: `preflight` before you push, CI is the gate after
 
@@ -79,8 +84,8 @@ about the diff, not narrative.
 the globs that decide whether your diff can break it. `preflight` diffs your
 branch against `origin/main`, matches the changed paths against that manifest,
 and runs only the checks those paths can break, in parallel, writing a
-per-check log under `.git/preflight/logs/` (`preflight --list` shows what would
-run and which paths matched, before you trust it). Run `preflight --install-hook`
+per-check log under `.git/preflight/logs/` (`python3 .github/kit/bin/preflight --list` shows what would
+run and which paths matched, before you trust it). Run `python3 .github/kit/bin/preflight --install-hook`
 once per clone/worktree: it installs a `pre-push` hook that reuses a pass
 already recorded for the current HEAD, so pushing right after a green run costs
 nothing.
@@ -95,7 +100,7 @@ it isn't, rather than passing green on nothing having run.
 
 CI (`.github/workflows/ci.yml`) itself is three-tier: a PR gets one path-scoped
 gate (lint, format, brand-asset drift, typecheck, unit tests, license scan;
-skipped entirely for a docs-only PR); `push: main` runs that plus Playwright e2e
+skipped for a docs-only PR, except the seconds-long `kit` job); `push: main` runs that plus Playwright e2e
 and the three-OS desktop matrix, with no path filtering — main always gets
 everything; the single required status check on `main` is the `ci` aggregate
 job, so the jobs under it can be renamed or moved between tiers without ever
@@ -123,7 +128,7 @@ pnpm exec eslint packages/<pkg>/src/foo.ts
 pnpm format:check
 ```
 
-Reach for `preflight` itself (or the full unscoped `pnpm lint && pnpm format:check
+Reach for `python3 .github/kit/bin/preflight` itself (or the full unscoped `pnpm lint && pnpm format:check
 && pnpm -r typecheck && pnpm test`, exactly what the PR-path gate runs) right
 before opening or merging a PR, for a repo-wide change, or for anything touching
 the wire protocol (`packages/protocol`) or crypto (`packages/crypto`). This is a
@@ -194,7 +199,7 @@ at the same array position, resolved by keeping both blocks and renumbering the
 second — not the unmergeable auto-generated-file collision a `drizzle-kit
 generate` journal produces.
 
-**Merging deploys, and nothing deletes your branch for you.** A push to `main`
+**Merging deploys.** A push to `main`
 triggers `deploy-preview.yml` immediately, with no CI gate
 (`deploy-preview.yml`'s own comment explains the choice) — it does not wait for
 that same push's own `ci` run to finish, though by the time a PR reaches `main`
@@ -202,8 +207,8 @@ that same push's own `ci` run to finish, though by the time a PR reaches `main`
 (`gh api repos/fiorelorenzo/loombox/rules/branches/main`) requires exactly one
 status check, the `ci` context, plus `deletion` and `non_fast_forward`; a
 separate ruleset owns `require-pull-request`. A red PR cannot be merged through
-the UI. `delete_branch_on_merge` is off, so a merged branch stays on `origin`
-until you delete it yourself (`git push -d origin <branch>`).
+the UI. `delete_branch_on_merge` is on, so a merged branch is gone from `origin`
+once the PR merges.
 
 ## Checking the PWA here, headless (the Mac is only for Electron)
 
@@ -512,11 +517,11 @@ later-milestone work before its milestone.
 
 ## Linear is the source of truth
 
-Current state and future roadmap live in Linear (workspace `fiorelorenzo`, initiative
-`loombox`), not in this file, not in SPEC, and not in a chat transcript. SPEC says what
-loombox is, Linear says where it stands. Keeping it current is part of doing the work,
-not paperwork at the end: it is how Lorenzo sees state without reading session logs, so
-a tracker that lags reality is worse than no tracker.
+Current state and future roadmap live in Linear (workspace `fiorelorenzo`, team
+`Lorenzo Fiore`, prefix `LOR`, initiative `loombox`), not in this file, not in SPEC, and
+not in a chat transcript. SPEC says what loombox is, Linear says where it stands. How to
+file, move and write a card is the `linear-ticket` and `linear-content` skills (see
+"Pull requests and Linear" above); this section is what is true of this board.
 
 Two projects carry the initiative's work: `Ship mobile, voice and the cockpit
 overhaul` (in progress, the work actually scheduled right now) and `Hold the
@@ -527,75 +532,39 @@ epics that came over with no open children became empty milestones: they are
 placeholders waiting for work to be cut into them, not evidence that the area is
 finished.
 
-**Naming, on the board.** Every name starts with a verb and names the work, under
-80 characters: an issue title, a project, a milestone. One clause, or two when the
-second only names what makes the first visible. No `type(scope):` prefix on a
-Linear title (commits and PR titles keep Conventional Commits), no product prefix
-or `vN` on a project name, no state word anywhere. An end-state clause reads as a
-riddle to whoever did not write it. The body fits one screen: at most four bold
-lead words (`**Observed.**`, `**Needed.**`, and `**Done when.**` as one line,
-`**Not here.**`, `**Adjacent.**` when they speak), two or three sentences each. A
-comment is two or three sentences plus the closing evidence bullets; a project
-update is three sentences.
-
 Before writing to Linear for the first time in a session, call `list_projects` or
 `list_issues` on the `linear-personal` MCP server and check the workspace name in the
 result. Two Linear workspaces are reachable from this box, and writing to the wrong one
 puts loombox work on a client's board.
 
-**Status is a claim about reality, keep it true.**
-
-- Before you write code for an issue, move it to `In Progress`. If what you are about
-  to do has no issue, create one first (see below), then start.
-- Move it to `Done` only when the change is merged and verified (and for
-  deploy-affecting work, verified on prod the way "Shipping to prod" describes), not
-  when the code is written. Merged but something is still open? Say so in a comment
-  and leave it `In Progress`.
-- `In Review` is where an issue sits while its PR is open on GitHub. The GitHub
-  connection on this Linear workspace moves issues on its own as the PR moves, so a
-  merged PR closes its issue without anyone touching the state by hand. Do not chase a
-  state that already moved.
-- Priority and estimate are native Linear fields, not labels. Set them on `save_issue`,
-  in the same call that sets the project and milestone, not as a follow-up edit.
-
-**Comment when a reader would want to know.** A decision taken, an approach tried and
-abandoned, a blocker hit, a surprise in the code, a scope change, a finding that
-invalidates the issue as written. One comment per meaningful turn in the work, not one
-per commit, and no routine progress narration. Write a project update, not just an
-issue comment, when something changed that the issue list alone would not show: a
-milestone slipping, a change in health, a decision, a release.
-
-**File the work you discover.** When something real surfaces mid-task or in a
-conversation with Lorenzo (a flake you tripped over, a follow-up the fix implies, a UX
-gap you noticed), file it in Linear instead of silently widening the current change or
-letting it evaporate. Then say in the current issue that you split it out, with a link.
-
-**Conventions for a new issue.** Match what Linear already shows, do not invent a
-parallel style:
-
-- Title: a verb and the work it does, under 80 characters (§ Naming above). The
-  plain descriptive sentence is not enough; the one that starts with what the run
-  does is.
-- Labels: exactly one `repo` label (here, `loombox`), exactly one `type` label
+- **Labels:** exactly one `repo` label (here, `loombox`), exactly one `type` label
   (`feature`, `fix`, `refactor`, `test`, `chore`, `ci`, `docs`, `design`, `security`,
-  `spike`), and one or more `area:*` labels naming the surfaces the change touches.
-  `flagship` is a separate flat label, set only when it actually applies. Parallel
-  safety is two labels, `parallel:yes` and `parallel:no`, never a bare `parallel`: one
-  label would conflate "must not run concurrently" with "never assessed", and the
-  absence of both is that third state, assessed at wave time rather than assumed safe.
-- `area:*` values here: `accounts`, `attachments`, `auth`, `client`, `cloud`,
-  `crypto`, `editor`, `git`, `inbox`, `infra`, `landing`, `mcp`, `node`,
-  `notifications`, `observability`, `permissions`, `persistence`, `protocol`,
-  `providers`, `provisioning`, `relay`, `resources`, `supervisor`, `terminal`,
-  `tests`, `trackers`, `transcript`, `voice`. Add one only when the surface really is
-  new.
-- Project and milestone: pick `Ship mobile, voice and the cockpit overhaul` for
+  `spike`), and exactly one `area:*` label, the surface the change mostly touches. `flagship` is a
+  separate flat label, set only when it actually applies. Parallel safety is two labels,
+  `parallel:yes` and `parallel:no`, never a bare `parallel`: one label would conflate
+  "must not run concurrently" with "never assessed", and the absence of both is that
+  third state, assessed at wave time rather than assumed safe. The skill's bare `parallel`
+  label (unclaimed, anyone may take it) has no counterpart here: `parallel:yes` is not a
+  claim signal.
+- **`area:*` values here** (also in `.github/workflow.json`): `accounts`, `attachments`,
+  `auth`, `client`, `cloud`, `crypto`, `editor`, `git`, `inbox`, `infra`, `landing`,
+  `mcp`, `node`, `notifications`, `observability`, `permissions`, `persistence`,
+  `protocol`, `providers`, `provisioning`, `relay`, `resources`, `supervisor`,
+  `terminal`, `tests`, `trackers`, `transcript`, `voice`. Add one only when the surface
+  really is new.
+- **Project and milestone:** pick `Ship mobile, voice and the cockpit overhaul` for
   scheduled spec-milestone work (see Build order above) or `Hold the loombox scope
   not yet scheduled` for decided-but-unscheduled scope, then the milestone inside
   it the issue actually belongs to. An empty unscheduled-scope milestone is a fine
   home for a new issue in that area; do not leave an issue milestone-less to avoid
-  picking one. Project, milestone, labels, priority and estimate all go into the
-  same `save_issue` call: there is no separate step to remember afterward.
+  picking one.
+- **Done means verified.** For deploy-affecting work, verified on prod the way "Shipping
+  to prod" describes. The GitHub connection on this workspace moves an issue to `In
+  Review` and `Done` with its PR, so do not chase a state that already moved. Merged but something still open, or the
+  card flipped to `Done` before prod was verified? Say so in a comment and move it back
+  to `In Progress`.
+- **File the work you discover.** A flake, a follow-up the fix implies, a UX gap: file it
+  in Linear instead of widening the current change, and link it from the current card.
 
 **The old GitHub Project board and every GitHub issue are a read-only archive.**
 Project #4 ("loombox roadmap") and the GitHub issues it tracked do not sync with Linear
