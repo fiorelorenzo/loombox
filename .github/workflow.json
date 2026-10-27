@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "tracker": {
+    "kind": "linear",
+    "workspace": "fiorelorenzo",
+    "team": "Lorenzo Fiore",
+    "prefix": "LOR",
+    "language": "English",
+    "contract": "AGENTS.md",
+    "labels": {
+      "type": [
+        "feature",
+        "fix",
+        "refactor",
+        "chore",
+        "docs",
+        "test",
+        "ci",
+        "design",
+        "security",
+        "spike"
+      ],
+      "area": [
+        "area:accounts",
+        "area:attachments",
+        "area:auth",
+        "area:client",
+        "area:cloud",
+        "area:crypto",
+        "area:editor",
+        "area:git",
+        "area:inbox",
+        "area:infra",
+        "area:landing",
+        "area:mcp",
+        "area:node",
+        "area:notifications",
+        "area:observability",
+        "area:permissions",
+        "area:persistence",
+        "area:protocol",
+        "area:providers",
+        "area:provisioning",
+        "area:relay",
+        "area:resources",
+        "area:supervisor",
+        "area:terminal",
+        "area:tests",
+        "area:trackers",
+        "area:transcript",
+        "area:voice"
+      ]
+    }
+  },
+  "github": {
+    "merge": "squash",
+    "required_check": "ci",
+    "review_bots": []
+  },
+  "commits": {
+    "types": [
+      "feat",
+      "fix",
+      "refactor",
+      "perf",
+      "test",
+      "docs",
+      "build",
+      "ci",
+      "chore",
+      "style",
+      "revert",
+      "spike"
+    ],
+    "scope_required": false,
+    "scopes": [
+      "web",
+      "node",
+      "relay",
+      "protocol",
+      "providers-core",
+      "providers-codex",
+      "supervisor",
+      "crypto",
+      "shared",
+      "desktop",
+      "mobile",
+      "trackers",
+      "terminal",
+      "docs",
+      "ci",
+      "design",
+      "agents",
+      "infra",
+      "deps",
+      "repo"
+    ]
+  },
+  "pr": {
+    "title_max": 72,
+    "card_line": true,
+    "milestone_card_line": true,
+    "exempt_authors": ["dependabot[bot]", "app/dependabot"],
+    "sections": [
+      { "title": "What this changes", "required": true },
+      { "title": "How I verified it", "required": true },
+      { "title": "Anything a reviewer should look at twice" },
+      {
+        "title": "Clean-room and changeset",
+        "required": true,
+        "hint": "Two lines, each a checked box or a sentence on why it does not apply:\n- [ ] A changeset is included if a published package changed (`pnpm changeset`).\n- [ ] Clean-room: no code was copied from HAPI or any AGPL/GPL source, and no code was\n      copied verbatim from emdash / Happy / Nimbalyst. Design inspiration only."
+      },
+      {
+        "title": "Screenshots",
+        "required": true,
+        "hint": "For anything a person could see: one before-and-after pair per change, composed into\na single side-by-side image and attached with `gh pr edit <n> --attach`. If nothing\nvisible changed, or a pair cannot be captured, say so and why. Keep this section either\nway."
+      }
+    ]
+  },
+  "extras": "docs/agents"
+}
