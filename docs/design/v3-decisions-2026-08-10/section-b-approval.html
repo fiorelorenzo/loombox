@@ -1,0 +1,91 @@
+<section class="item" id="b1">
+  <div class="item-head">
+    <span class="item-id">B1</span>
+    <h2>Does voice ever resolve an "always"-kind permission option</h2>
+    <span class="item-status urgent">Urgent — blocks #280</span>
+  </div>
+  <p class="item-note">
+    Every pending permission request already carries its own <code>options[]</code>, each tagged
+    <code>kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always'</code>
+    (<code>AcpPermissionOption</code>, <code>packages/providers/core/src/types.ts:154-161</code>), and
+    the client resolves one by sending back its <code>optionId</code> as a
+    <code>PermissionResponse.decision</code> over the exact same wire message a tap or a keyboard
+    digit already uses (<code>permissionResponse</code>, <code>packages/protocol/src/v1/steering.ts:44-51</code>).
+    #280's own acceptance criteria require voice to resolve that <i>same</i> decision, not invent a
+    second permission model. The two live provider adapters' real fixtures show what "every kind" 
+    actually contains: Claude's set includes <code>Allow once</code> (once) alongside
+    <code>Allow all edits</code>, <code>Bypass everything</code>, and <code>Allow for this session</code>
+    (all <code>allow_always</code> — <code>providers/claude/src/permissions.test.ts:9-13</code>); Codex's
+    is narrower — <code>Allow Once</code>, <code>Allow for Session</code> (<code>allow_always</code>),
+    <code>Reject</code> (<code>providers/codex/src/permissions.test.ts:15-17</code>), though its
+    execpolicy-amendment flow adds standing network/command grants of its own
+    (<code>:65-77</code>). <code>allow_always</code>/<code>bypass</code>-kind options grant standing
+    access beyond the one tool call currently on screen — a misheard "always" is a plausible STT
+    failure mode, not a hypothetical one, and it has a materially worse blast radius than a misheard
+    "once", which only ever affects one already-visible tool call.
+  </p>
+  <div class="options stack">
+    <div class="opt is-current">
+      <div class="opt-head">
+        <span class="opt-tag">Today</span><span class="opt-title">The keyboard/tap path already resolves every kind equally, and nothing about voice exists yet</span>
+      </div>
+      <p class="opt-why">
+        A tap or a <code>1</code>..<code>n</code> keystroke on a focused permission card sends
+        whichever <code>optionId</code> it points at, <code>allow_always</code>/<code>bypass</code>
+        included, with no extra gate today. Voice would be the first time speech, not a deliberate
+        physical action, can reach that same standing-grant outcome.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-1</span><span class="opt-title">Restrict voice to <code>*_once</code> kinds only</span>
+      </div>
+      <p class="opt-why">
+        An <code>allow_always</code>/<code>reject_always</code>-shaped option, if the request offers
+        one, is never voice-resolvable — it falls through to "unrecognized" and stays queued for a
+        tap. <b>Buys:</b> the single highest-consequence class of permission decision (a standing
+        grant like Claude's own <code>Bypass everything</code>) can never be issued by a misheard
+        word, full stop. <b>Costs:</b> a genuinely deliberate, correctly-recognized "always" spoken
+        command still has to be tapped instead — friction #280 never asked for, on the case that is
+        least likely to be the misrecognition.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-2</span><span class="opt-title">Allow every kind the request offers, gated only by a confidence floor</span>
+      </div>
+      <p class="opt-why">
+        <b>Buys:</b> full parity with the keyboard-shortcut path, which is #280's own stated bar —
+        "exactly as the existing <code>1</code>..<code>n</code> keyboard-shortcut path does." No
+        option kind is ever structurally out of reach for voice. <b>Costs:</b> the confidence floor
+        becomes the only thing standing between a misheard word and a standing grant, and there is no
+        recognition-accuracy data yet — from ElevenLabs' STT or from real usage — to set that floor
+        responsibly. #277's design explicitly declined to bake a number in for exactly this reason.
+      </p>
+    </div>
+    <div class="opt">
+      <div class="opt-head">
+        <span class="opt-tag">B1-3</span><span class="opt-title">B1-2, plus a spoken re-confirmation step before an "always"/"bypass" decision commits</span>
+      </div>
+      <p class="opt-why">
+        Not one of #277's own two options — a synthesis of its third recommendation (any
+        destructive-shaped decision gets an audible read-back via <code>VoiceBackend.synthesize()</code>
+        before or immediately after committing, "Approved: allow once" or similar) applied
+        specifically to the always/bypass kinds, as a second utterance rather than a passive
+        announcement. <b>Buys:</b> most of B1-2's parity while adding a deliberate second gate on
+        exactly the decisions B1-1 worries about, closer to a two-step confirmation than either pure
+        option gives you. <b>Costs:</b> new interaction surface #280 was not scoped to build (a
+        second listen-and-match cycle, its own confidence floor, its own timeout-and-fall-through
+        behavior), and it does not structurally close the risk B1-1 closes — a second misheard "yes"
+        still resolves the confirmation, it only narrows the window.
+      </p>
+    </div>
+  </div>
+  <div class="rec">
+    <p><span class="rec-label">No clean technical answer here</span> — this is a real
+    security/UX trade-off, not a platform constraint either vendor forces. #280 is otherwise ready to
+    build; it is blocked specifically on this pick, per #277's design ("this one is urgent for #280
+    specifically and should be settled before that issue's implementation, not after"). If you don't
+    have recognition-accuracy numbers you trust yet, B1-1 is the option that stays safe without them.</p>
+  </div>
+</section>
