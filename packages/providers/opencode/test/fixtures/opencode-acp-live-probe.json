@@ -1,0 +1,889 @@
+{
+  "_recordedFrom": {
+    "package": "opencode-ai",
+    "version": "1.18.16",
+    "command": "'opencode acp' (the platform binary opencode-ai@1.18.16's postinstall.mjs downloads to bin/opencode.exe)",
+    "recordedOn": "2026-08-10",
+    "note": "Live JSON-RPC 2.0 traffic against the real, published npm package's downloaded binary over stdio, using OpenCode's own free 'OpenCode Zen' models (no API key configured on this box). Every section below is a real, unmodified response from that live process -- see docs/research/opencode-acp-completeness.md for the full citation trail (including source at the exact GitHub commit this npm version's git tag resolves to). availableCommandsSample.availableCommands is trimmed to two representative entries from a longer real list (this devbox happened to have several unrelated project skills installed, which are irrelevant to OpenCode ACP conformance) -- same trimming convention packages/providers/core/test/fixtures/omp-acp-available-commands-update.json already established."
+  },
+  "initializeResult": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "authMethods": [
+      {
+        "description": "Run `opencode auth login` in the terminal",
+        "name": "Login with opencode",
+        "id": "opencode-login"
+      }
+    ],
+    "agentInfo": {
+      "name": "OpenCode",
+      "version": "1.18.16"
+    }
+  },
+  "methodProbe": [
+    {
+      "method": "session/resume",
+      "response": {
+        "error": {
+          "code": -32603,
+          "message": "Internal error: OpenCode service failure",
+          "data": {
+            "service": "session"
+          }
+        }
+      }
+    },
+    {
+      "method": "session/list",
+      "response": {
+        "result": {
+          "sessions": []
+        }
+      }
+    },
+    {
+      "method": "session/close",
+      "response": {
+        "result": {}
+      }
+    },
+    {
+      "method": "session/delete",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": session/delete",
+          "data": {
+            "method": "session/delete"
+          }
+        }
+      }
+    },
+    {
+      "method": "session/load",
+      "response": {
+        "error": {
+          "code": -32603,
+          "message": "Internal error: OpenCode service failure",
+          "data": {
+            "service": "session"
+          }
+        }
+      }
+    },
+    {
+      "method": "totally/bogus/method",
+      "response": {
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": totally/bogus/method",
+          "data": {
+            "method": "totally/bogus/method"
+          }
+        }
+      }
+    }
+  ],
+  "sessionNewResult": {
+    "sessionId": "ses_012763458ffe9QgJbqkvMd2bIj",
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "opencode/big-pickle",
+        "options": [
+          {
+            "value": "opencode/big-pickle",
+            "name": "OpenCode Zen/Big Pickle"
+          },
+          {
+            "value": "opencode/deepseek-v4-flash-free",
+            "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+          },
+          {
+            "value": "opencode/laguna-s-2.1-free",
+            "name": "OpenCode Zen/Laguna S 2.1 Free"
+          },
+          {
+            "value": "opencode/ling-3.0-tiny-free",
+            "name": "OpenCode Zen/Ling-3.0-tiny Free"
+          },
+          {
+            "value": "opencode/longcat-2.0-free",
+            "name": "OpenCode Zen/LongCat-2.0 Free"
+          },
+          {
+            "value": "opencode/mimo-v2.5-free",
+            "name": "OpenCode Zen/MiMo V2.5 Free"
+          },
+          {
+            "value": "opencode/nemotron-3-ultra-free",
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+          },
+          {
+            "value": "opencode/north-mini-code-free",
+            "name": "OpenCode Zen/North Mini Code Free"
+          }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Session Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "build",
+        "options": [
+          {
+            "value": "build",
+            "name": "build",
+            "description": "The default agent. Executes tools based on configured permissions."
+          },
+          {
+            "value": "plan",
+            "name": "plan",
+            "description": "Plan mode. Disallows all edit tools."
+          }
+        ]
+      }
+    ]
+  },
+  "toolCallNotifications": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "call_00_ET_fktix4mdfHD2DQ8imjDw8124",
+          "title": "bash",
+          "kind": "execute",
+          "status": "pending",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record"
+            }
+          ],
+          "rawInput": {
+            "cwd": "/tmp/opencode-record"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_fktix4mdfHD2DQ8imjDw8124",
+          "status": "in_progress",
+          "kind": "execute",
+          "title": "ls -la",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record"
+            }
+          ],
+          "rawInput": {
+            "command": "ls -la",
+            "cwd": "/tmp/opencode-record"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_fktix4mdfHD2DQ8imjDw8124",
+          "status": "in_progress",
+          "kind": "execute",
+          "title": "ls -la",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record"
+            }
+          ],
+          "rawInput": {
+            "command": "ls -la",
+            "cwd": "/tmp/opencode-record"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_fktix4mdfHD2DQ8imjDw8124",
+          "status": "in_progress",
+          "kind": "execute",
+          "title": "ls -la",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record"
+            }
+          ],
+          "rawInput": {
+            "command": "ls -la",
+            "cwd": "/tmp/opencode-record"
+          },
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "total 0\ndrwxrwxr-x    2 dev  dev     40 Aug 10 23:17 .\ndrwxrwxrwt 2162 root root 70620 Aug 10 23:17 ..\n"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_fktix4mdfHD2DQ8imjDw8124",
+          "status": "completed",
+          "title": "ls -la",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "total 0\ndrwxrwxr-x    2 dev  dev     40 Aug 10 23:17 .\ndrwxrwxrwt 2162 root root 70620 Aug 10 23:17 ..\n"
+              }
+            }
+          ],
+          "rawOutput": {
+            "output": "total 0\ndrwxrwxr-x    2 dev  dev     40 Aug 10 23:17 .\ndrwxrwxrwt 2162 root root 70620 Aug 10 23:17 ..\n",
+            "metadata": {
+              "output": "total 0\ndrwxrwxr-x    2 dev  dev     40 Aug 10 23:17 .\ndrwxrwxrwt 2162 root root 70620 Aug 10 23:17 ..\n",
+              "exit": 0,
+              "truncated": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "call_00_ET_vIo6LeXYHbceyPb0NO0Z1944",
+          "title": "write",
+          "kind": "edit",
+          "status": "pending",
+          "locations": [],
+          "rawInput": {}
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_vIo6LeXYHbceyPb0NO0Z1944",
+          "status": "in_progress",
+          "kind": "edit",
+          "title": "write",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record/touch.txt"
+            }
+          ],
+          "rawInput": {
+            "filePath": "/tmp/opencode-record/touch.txt",
+            "content": "done"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_vIo6LeXYHbceyPb0NO0Z1944",
+          "status": "completed",
+          "title": "tmp/opencode-record/touch.txt",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Wrote file successfully."
+              }
+            }
+          ],
+          "rawOutput": {
+            "output": "Wrote file successfully.",
+            "metadata": {
+              "diagnostics": {},
+              "filepath": "/tmp/opencode-record/touch.txt",
+              "exists": false,
+              "truncated": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "call_00_ET_e4aRIZTEXYYBlTD90XWu0273",
+          "title": "read",
+          "kind": "read",
+          "status": "pending",
+          "locations": [],
+          "rawInput": {}
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_e4aRIZTEXYYBlTD90XWu0273",
+          "status": "in_progress",
+          "kind": "read",
+          "title": "read",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record/touch.txt"
+            }
+          ],
+          "rawInput": {
+            "filePath": "/tmp/opencode-record/touch.txt"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_e4aRIZTEXYYBlTD90XWu0273",
+          "status": "completed",
+          "title": "tmp/opencode-record/touch.txt",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "done"
+              }
+            }
+          ],
+          "rawOutput": {
+            "output": "<path>/tmp/opencode-record/touch.txt</path>\n<type>file</type>\n<content>\n1: done\n\n(End of file - total 1 lines)\n</content>",
+            "metadata": {
+              "preview": "done",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/tmp/opencode-record/touch.txt",
+                "text": "done",
+                "lineStart": 1,
+                "lineEnd": 1,
+                "totalLines": 1,
+                "truncated": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "call_00_ET_gj1TmpsFO253FMn1RZne4113",
+          "title": "edit",
+          "kind": "edit",
+          "status": "pending",
+          "locations": [],
+          "rawInput": {}
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_gj1TmpsFO253FMn1RZne4113",
+          "status": "in_progress",
+          "kind": "edit",
+          "title": "edit",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record/touch.txt"
+            }
+          ],
+          "rawInput": {
+            "filePath": "/tmp/opencode-record/touch.txt",
+            "oldString": "done",
+            "newString": "done\nedited"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_gj1TmpsFO253FMn1RZne4113",
+          "status": "in_progress",
+          "kind": "edit",
+          "title": "edit",
+          "locations": [
+            {
+              "path": "/tmp/opencode-record/touch.txt"
+            }
+          ],
+          "rawInput": {
+            "filePath": "/tmp/opencode-record/touch.txt",
+            "oldString": "done",
+            "newString": "done\nedited"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_00_ET_gj1TmpsFO253FMn1RZne4113",
+          "status": "completed",
+          "title": "tmp/opencode-record/touch.txt",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Edit applied successfully."
+              }
+            },
+            {
+              "type": "diff",
+              "path": "/tmp/opencode-record/touch.txt",
+              "oldText": "done",
+              "newText": "done\nedited"
+            }
+          ],
+          "rawOutput": {
+            "output": "Edit applied successfully.",
+            "metadata": {
+              "diagnostics": {},
+              "diff": "Index: /tmp/opencode-record/touch.txt\n===================================================================\n--- /tmp/opencode-record/touch.txt\n+++ /tmp/opencode-record/touch.txt\n@@ -1,1 +1,2 @@\n-done\n\\ No newline at end of file\n+done\n+edited\n\\ No newline at end of file\n",
+              "filediff": {
+                "file": "/tmp/opencode-record/touch.txt",
+                "patch": "Index: /tmp/opencode-record/touch.txt\n===================================================================\n--- /tmp/opencode-record/touch.txt\n+++ /tmp/opencode-record/touch.txt\n@@ -1,1 +1,2 @@\n-done\n\\ No newline at end of file\n+done\n+edited\n\\ No newline at end of file\n",
+                "additions": 2,
+                "deletions": 1
+              },
+              "truncated": false
+            }
+          }
+        }
+      }
+    }
+  ],
+  "messageChunkSample": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "msg_fed89e600001VvrGax73u5Xgzk",
+        "content": {
+          "type": "text",
+          "text": "Done"
+        }
+      }
+    }
+  },
+  "usageUpdateSample": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 8863,
+        "size": 200000,
+        "cost": {
+          "amount": 0,
+          "currency": "USD"
+        }
+      }
+    }
+  },
+  "availableCommandsSample": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+      "update": {
+        "sessionUpdate": "available_commands_update",
+        "availableCommands": [
+          {
+            "name": "init",
+            "description": "guided AGENTS.md setup"
+          },
+          {
+            "name": "review",
+            "description": "review changes [commit|branch|pr], defaults to uncommitted"
+          }
+        ]
+      }
+    }
+  },
+  "permissionRequest": {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "ses_01275f9feffeoDfBRd3ihrTVWu",
+      "toolCall": {
+        "toolCallId": "call_00_ET_gEos67SNuICOabokA6mJ3851",
+        "title": "echo hi",
+        "kind": "execute",
+        "status": "pending",
+        "locations": [],
+        "rawInput": {
+          "command": "echo hi"
+        }
+      },
+      "options": [
+        {
+          "optionId": "once",
+          "kind": "allow_once",
+          "name": "Allow once"
+        },
+        {
+          "optionId": "always",
+          "kind": "allow_always",
+          "name": "Always allow"
+        },
+        {
+          "optionId": "reject",
+          "kind": "reject_once",
+          "name": "Reject"
+        }
+      ]
+    }
+  },
+  "setConfigOptionModeResult": {
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "opencode/big-pickle",
+        "options": [
+          {
+            "value": "opencode/big-pickle",
+            "name": "OpenCode Zen/Big Pickle"
+          },
+          {
+            "value": "opencode/deepseek-v4-flash-free",
+            "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+          },
+          {
+            "value": "opencode/laguna-s-2.1-free",
+            "name": "OpenCode Zen/Laguna S 2.1 Free"
+          },
+          {
+            "value": "opencode/ling-3.0-tiny-free",
+            "name": "OpenCode Zen/Ling-3.0-tiny Free"
+          },
+          {
+            "value": "opencode/longcat-2.0-free",
+            "name": "OpenCode Zen/LongCat-2.0 Free"
+          },
+          {
+            "value": "opencode/mimo-v2.5-free",
+            "name": "OpenCode Zen/MiMo V2.5 Free"
+          },
+          {
+            "value": "opencode/nemotron-3-ultra-free",
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+          },
+          {
+            "value": "opencode/north-mini-code-free",
+            "name": "OpenCode Zen/North Mini Code Free"
+          }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Session Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "plan",
+        "options": [
+          {
+            "value": "build",
+            "name": "build",
+            "description": "The default agent. Executes tools based on configured permissions."
+          },
+          {
+            "value": "plan",
+            "name": "plan",
+            "description": "Plan mode. Disallows all edit tools."
+          }
+        ]
+      }
+    ]
+  },
+  "setConfigOptionModelResult": {
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "opencode/deepseek-v4-flash-free",
+        "options": [
+          {
+            "value": "opencode/big-pickle",
+            "name": "OpenCode Zen/Big Pickle"
+          },
+          {
+            "value": "opencode/deepseek-v4-flash-free",
+            "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+          },
+          {
+            "value": "opencode/laguna-s-2.1-free",
+            "name": "OpenCode Zen/Laguna S 2.1 Free"
+          },
+          {
+            "value": "opencode/ling-3.0-tiny-free",
+            "name": "OpenCode Zen/Ling-3.0-tiny Free"
+          },
+          {
+            "value": "opencode/longcat-2.0-free",
+            "name": "OpenCode Zen/LongCat-2.0 Free"
+          },
+          {
+            "value": "opencode/mimo-v2.5-free",
+            "name": "OpenCode Zen/MiMo V2.5 Free"
+          },
+          {
+            "value": "opencode/nemotron-3-ultra-free",
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+          },
+          {
+            "value": "opencode/north-mini-code-free",
+            "name": "OpenCode Zen/North Mini Code Free"
+          }
+        ]
+      },
+      {
+        "id": "effort",
+        "name": "Effort",
+        "description": "Available effort levels for this model",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "low",
+        "options": [
+          {
+            "value": "low",
+            "name": "Low"
+          },
+          {
+            "value": "high",
+            "name": "High"
+          },
+          {
+            "value": "max",
+            "name": "Max"
+          }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Session Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "plan",
+        "options": [
+          {
+            "value": "build",
+            "name": "build",
+            "description": "The default agent. Executes tools based on configured permissions."
+          },
+          {
+            "value": "plan",
+            "name": "plan",
+            "description": "Plan mode. Disallows all edit tools."
+          }
+        ]
+      }
+    ]
+  },
+  "resumeResult": {
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "opencode/big-pickle",
+        "options": [
+          {
+            "value": "opencode/big-pickle",
+            "name": "OpenCode Zen/Big Pickle"
+          },
+          {
+            "value": "opencode/deepseek-v4-flash-free",
+            "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+          },
+          {
+            "value": "opencode/laguna-s-2.1-free",
+            "name": "OpenCode Zen/Laguna S 2.1 Free"
+          },
+          {
+            "value": "opencode/ling-3.0-tiny-free",
+            "name": "OpenCode Zen/Ling-3.0-tiny Free"
+          },
+          {
+            "value": "opencode/longcat-2.0-free",
+            "name": "OpenCode Zen/LongCat-2.0 Free"
+          },
+          {
+            "value": "opencode/mimo-v2.5-free",
+            "name": "OpenCode Zen/MiMo V2.5 Free"
+          },
+          {
+            "value": "opencode/nemotron-3-ultra-free",
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+          },
+          {
+            "value": "opencode/north-mini-code-free",
+            "name": "OpenCode Zen/North Mini Code Free"
+          }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Session Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "build",
+        "options": [
+          {
+            "value": "build",
+            "name": "build",
+            "description": "The default agent. Executes tools based on configured permissions."
+          },
+          {
+            "value": "plan",
+            "name": "plan",
+            "description": "Plan mode. Disallows all edit tools."
+          }
+        ]
+      }
+    ]
+  },
+  "listAfterResumeResult": {
+    "sessions": [
+      {
+        "sessionId": "ses_01275d8feffeyLKpr90HAPei9N",
+        "cwd": "/tmp/opencode-record",
+        "title": "New session - 2026-08-10T21:18:01.985Z",
+        "updatedAt": "2026-08-10T21:18:04.256Z"
+      },
+      {
+        "sessionId": "ses_01275e185ffeFSyfw5sP0cJzPV",
+        "cwd": "/tmp/opencode-record",
+        "title": "New session - 2026-08-10T21:17:59.802Z",
+        "updatedAt": "2026-08-10T21:17:59.802Z"
+      },
+      {
+        "sessionId": "ses_01275f9feffeoDfBRd3ihrTVWu",
+        "cwd": "/tmp/opencode-record",
+        "title": "Run echo hi command",
+        "updatedAt": "2026-08-10T21:17:57.616Z"
+      },
+      {
+        "sessionId": "ses_012762bc1ffeOJAcK8XyKgZT4E",
+        "cwd": "/tmp/opencode-record",
+        "title": "ls -la and write done to touch.txt",
+        "updatedAt": "2026-08-10T21:17:51.517Z"
+      },
+      {
+        "sessionId": "ses_012763458ffe9QgJbqkvMd2bIj",
+        "cwd": "/tmp/opencode-record",
+        "title": "New session - 2026-08-10T21:17:38.599Z",
+        "updatedAt": "2026-08-10T21:17:38.599Z"
+      }
+    ]
+  },
+  "closeResult": {}
+}
