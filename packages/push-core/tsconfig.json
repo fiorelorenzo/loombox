@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // Both the web `Notification`/`NotificationOptions` shape and Capacitor's
+  // native plugin types this package's consumers adapt to are DOM-shaped
+  // (`payload.ts`'s `PushNotificationOptions extends NotificationOptions`)
+  // — same override as `apps/mobile/tsconfig.json` for the same reason:
+  // this is pure decision logic consumed by two DOM-lib-having clients
+  // (`apps/web`, `apps/mobile`), never Node.
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"]
+  },
+  "include": ["src"]
+}

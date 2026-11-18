@@ -19,6 +19,7 @@
     "@loombox/crypto": "workspace:*",
     "@loombox/protocol": "workspace:*",
     "@loombox/providers-core": "workspace:*",
+    "@loombox/push-core": "workspace:*",
     "@loombox/shared": "workspace:*",
     "@sveltejs/adapter-node": "^5.5.7",
     "@xterm/addon-fit": "^0.11.0",

@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  defaultNotificationPreferences,
-  type NotificationPreferences,
-} from './notification-preferences';
-import { shouldSuppressPush } from './push-suppression';
+import { defaultNotificationPreferences, type NotificationPreferences } from './preferences';
+import { shouldSuppressPush } from './suppression';
 
 describe('shouldSuppressPush (#166)', () => {
   it('never suppresses with no mutes/quiet-hours configured', () => {
